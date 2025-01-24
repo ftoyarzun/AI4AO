@@ -20,7 +20,7 @@ WFSParams = dict(
 "RON" : 0    ,                                                                     # Read-out noise in photons per pixel per frame
 "Nzernike" : 50 ,                                                                  # Number of Zernike modes to reconstruct
 "Nactuator" : 10,                                                                  # Number of actuators across the diameter of the DM
-"useNoise" : True,
+"useNoise" : False,
 },
 
 )  

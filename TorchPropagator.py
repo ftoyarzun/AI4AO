@@ -252,6 +252,8 @@ class WFS:
         
         self.param = nn.Parameter(torch.tensor([0.02]).to(device))
         self.param_name = "toy example parameter"
+        self.param2 = nn.Parameter(torch.tensor([0.15]).to(device))
+        self.param_name2 = "toy example parameter 2"
 
 
         self.BuildPyramidMask()

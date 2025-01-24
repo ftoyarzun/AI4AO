@@ -60,7 +60,8 @@ class PhaseDataset(Dataset):
 
          
         atmosphere_PSD = Propagator.GetAtmospherePSD(self.fx, self.fy, self.dF, r0, L0, self.pupil, self.pupil_logical)
-        #atmospheric only
+        
+        # if atmospheric only
         #[outPhaseMap, outZe] = Propagator.GetMultiplePhaseMapAndZernike(atmosphere_PSD, self.pupil, self.pupil_logical, self.invZ, self.Nphases)  
         
         [outPhaseMap, outZe] = Propagator.GetMultiplePhaseMapAndZernike(atmosphere_PSD * self.fitting_PSD + self.temporalErrorPSD * atmosphere_PSD, self.pupil, self.pupil_logical, self.invZ, self.Nphases)  
@@ -71,6 +72,10 @@ class PhaseDataset(Dataset):
         
         
         outPhaseMap = torch.from_numpy(outPhaseMap).to(self.device)
+        
+        # add a channel dimension necessary to use the conventional nn dimension BxCxXxY
+        
+        outPhaseMap = torch.unsqueeze(outPhaseMap,1)
         
         outZe = torch.from_numpy(outZe).to(self.device)
         
@@ -99,7 +104,7 @@ if __name__ == "__main__":
     outPhaseMap, outZe,_,_ = dataset[0]
     
     plt.figure(1)
-    plt.imshow(outPhaseMap[0,:,:].cpu().data.numpy())
+    plt.imshow(outPhaseMap[0,0,:,:].cpu().data.numpy())
     plt.colorbar()
     plt.show()
     

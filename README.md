@@ -20,3 +20,10 @@ Missing/to do :
 - check the transcription from numpy to torch
 - saving the network and optimized parameters after training
 - put batch of images at the network input
+- make the noise differentiable (reparametrization trick ?)
+
+Newt step :
+
+- Fransisco : run the code :)
+- Fransisco & Benoît : prepare toy examples for optimization with known results to check the training
+- Pauline : make a new branch to fix the OptimizedLinearEstimator

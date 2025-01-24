@@ -74,7 +74,7 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
         phaseGT,zernike,_,_=dataset[0]
       
        
-        output = End2EndWFS(phaseGT[0,:,:])  
+        output = End2EndWFS(phaseGT[0,0,:,:])  
         
    
         #here it should take a batch of ground truth phase and return estimated zernike coeffs - here only a single image        
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     # Setting the optimizer (here Adam)
     
     # To optimize the optical and the processing parameters 
-    optimizer_o = torch.optim.SGD([Trained_End2EndWFS.WFS.param],lro)
+    optimizer_o = torch.optim.SGD([Trained_End2EndWFS.WFS.param,Trained_End2EndWFS.WFS.param2],lro)
     optimizer_n = None
     #optimizer_n = torch.optim.SGD([Trained_End2EndWFS.PhaseEstimator.LearnedReconstructionMatrix],lrn)
  
