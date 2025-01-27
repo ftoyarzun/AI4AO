@@ -15,12 +15,15 @@ Requirements :
 - TorchPropagator.py : translation to torch of the numpy functions
 - Train.py : training of the end2end pipeline
 
-Missing/to do :
+Missing :
 
 - check the transcription from numpy to torch
+
+Done :
+- fix bug on parameters optimization
 - saving the network and optimized parameters after training
-- put batch of images at the network input
-- make the noise differentiable (reparametrization trick ?)
+- put batch of images at the network input 
+- make the noise differentiable (reparametrization trick ?) 
 
 Newt step :
 

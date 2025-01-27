@@ -20,7 +20,7 @@ WFSParams = dict(
 "RON" : 0    ,                                                                     # Read-out noise in photons per pixel per frame
 "Nzernike" : 50 ,                                                                  # Number of Zernike modes to reconstruct
 "Nactuator" : 10,                                                                  # Number of actuators across the diameter of the DM
-"useNoise" : False,
+"useNoise" : True,
 },
 
 )  
@@ -31,7 +31,7 @@ AtmosParams = dict(
     {                                                                   
 "r0" : [-0.8239,-0.8239],           # warning : min and max range taken in log10 space
 "L0" : [20,20.0001],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 31,
+"Nphases" : 1,
 }
 )                             
 
@@ -50,7 +50,7 @@ LoopParams = dict(
 ## Train parameters
 TrainParams = dict(
 {
-"lro" : 0.1,
+"lro" : 10000,
 "lrn" : 0.1,
 "TrainRunNb" : 100,
 "TestRunNb" : 10,

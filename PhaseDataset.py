@@ -73,10 +73,7 @@ class PhaseDataset(Dataset):
         
         outPhaseMap = torch.from_numpy(outPhaseMap).to(self.device)
         
-        # add a channel dimension necessary to use the conventional nn dimension BxCxXxY
-        
-        outPhaseMap = torch.unsqueeze(outPhaseMap,1)
-        
+         
         outZe = torch.from_numpy(outZe).to(self.device)
         
          
@@ -104,7 +101,7 @@ if __name__ == "__main__":
     outPhaseMap, outZe,_,_ = dataset[0]
     
     plt.figure(1)
-    plt.imshow(outPhaseMap[0,0,:,:].cpu().data.numpy())
+    plt.imshow(outPhaseMap[0,:,:].cpu().data.numpy())
     plt.colorbar()
     plt.show()
     
