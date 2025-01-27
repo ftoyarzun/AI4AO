@@ -27,6 +27,6 @@ Done :
 
 Newt step :
 
-- Fransisco : run the code :)
-- Fransisco & Benoît : prepare toy examples for optimization with known results to check the training
+- Francisco : run the code :)
+- Francisco & Benoît : prepare toy examples for optimization with known results to check the training
 - Pauline : make a new branch to fix the OptimizedLinearEstimator
