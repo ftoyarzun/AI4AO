@@ -35,6 +35,8 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
         
      
         phaseGT,zernike,_,_=dataset[0]
+        
+       
       
        # take a batch of images to estimage a batch of zernike parameters
         output = End2EndWFS(phaseGT)  
@@ -92,9 +94,17 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
         
         optimizer_o.step()
         optimizer_n.step()
+        
+        with torch.no_grad():  # Clip the parameter values after optimization step
+        
+            for param in End2EndWFS.WFSmodule.WFS.param:
+                param.clamp_(0.001, 1000)
+        
+        
 
         # parameters values should change during the loop
-        print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
+        #print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
+        print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
         
    
     return l
@@ -104,7 +114,7 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
 
 if __name__ == "__main__":
     
-    device = 'cpu' # set to "cpu" if Cuda is not available
+    device = 'cuda' # set to "cpu" if Cuda is not available
     
     paramfile = 'params_exp.py'  # file of experimental parameters
 
@@ -128,6 +138,9 @@ if __name__ == "__main__":
     # Initialisation of the system 
     Trained_End2EndWFS = End2EndWFS (WFSParams,device)
     
+    
+   
+    
     # Optimization parameters (learning rate lr and nb of runs)
     lrn = TrainParams['lrn']
     lro = TrainParams['lro']
@@ -142,7 +155,8 @@ if __name__ == "__main__":
     # To optimize the optical and the processing parameters 
     optimizer_o = torch.optim.SGD([Trained_End2EndWFS.WFSmodule.WFS.param],lro)
 
-    optimizer_n = torch.optim.SGD([Trained_End2EndWFS.PhaseEstimator.param],lrn)
+    #optimizer_n = torch.optim.SGD([Trained_End2EndWFS.PhaseEstimator.param],lrn)
+    optimizer_n = torch.optim.SGD(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn)
  
    
     # Training part for parameters optimization  

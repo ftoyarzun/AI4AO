@@ -31,7 +31,7 @@ AtmosParams = dict(
     {                                                                   
 "r0" : [-0.8239,-0.8239],           # warning : min and max range taken in log10 space
 "L0" : [20,20.0001],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 1,
+"Nphases" : 31,
 }
 )                             
 
@@ -50,9 +50,9 @@ LoopParams = dict(
 ## Train parameters
 TrainParams = dict(
 {
-"lro" : 10000,
-"lrn" : 0.1,
-"TrainRunNb" : 100,
+"lro" : 0.001,
+"lrn" :1,
+"TrainRunNb" : 1000,
 "TestRunNb" : 10,
 }
 )

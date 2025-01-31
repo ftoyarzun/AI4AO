@@ -250,6 +250,7 @@ class WFS:
         self.RON = RON
         self.useNoise = useNoise  ### changed to a setting parameter
         self.device = device
+        
         x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, dtype=torch.float64).to(device)
                                          # Build the mesh
         [x,y] = torch.meshgrid(x,x)                                        
@@ -258,7 +259,10 @@ class WFS:
         
         self.param = param
 
-        self.BuildPyramidMask()
+        #self.BuildPyramidMask()
+        
+        self.BuildZernikeMask()
+        
         
     def Propagator(self, phase):
         """
@@ -278,7 +282,6 @@ class WFS:
         
         uin = self.pupil[None, :, :] * torch.exp(1j * phase).to(self.device)
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
-       
        
         ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))                           # Propagation of the field to the focal plane
           
@@ -330,6 +333,38 @@ class WFS:
         self.mask = phase_mask
         self.BuildReferenceIntensity()
         
+        
+    def BuildZernikeMask(self):
+       """
+       Builds a Zernike mask and sets it using the SetMask function.
+   
+       Args:
+           dot_diameter (float): Diameter of the dot in units of lambda/d
+           dot_depth (float): Depth of the dot in radians
+       Returns:
+           None
+       """
+       x_mask = torch.linspace(-self.Npix/2, self.Npix/2-1, self.Npix).to(self.device)
+       [x_mask,y_mask] = torch.meshgrid(x_mask,x_mask)
+       rho = torch.sqrt(x_mask ** 2 + y_mask ** 2)
+       
+       diameter_in_pixels = self.param[0] * self.sampling
+       
+       # this line is not differentiable I use a tanh function to model the mask
+       
+       #zernike_mask = self.param[1] * (rho < diameter_in_pixels / 2.)
+       slope =100
+      
+       ring_mask = torch.tanh(slope*( diameter_in_pixels/2. -rho))/2
+       annular = ring_mask+0.5
+
+       
+       zernike_mask = self.param[1] * annular
+       
+       
+       
+       self.SetMask(zernike_mask)
+        
     
 
     def BuildPyramidMask(self):
@@ -360,7 +395,7 @@ class WFS:
             None
         """
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float64))
+        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float64)).to(self.device)
         self.useNoise = True
     
     def BuildReconstructionMatrix(self, modes, mask):
@@ -411,10 +446,11 @@ class WFS:
 
 #%% Set general parameter and build classes
 if __name__ == "__main__":
-
+    
+    plt.close('all')
     ## WFS parameters
     Nres = 50                                                                       # Number of pixels in the aperture of the telescope
-    sampling = 3                                                                    # Zero-padding factor (2 is Shannon)
+    sampling = 4                                                                   # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
     Nphotons = 1e7                                                                  # Number of photons in measurement    
@@ -427,7 +463,7 @@ if __name__ == "__main__":
     r0 = 0.15                                                                       # Fried parameter (m)
     l0 = 1e-10                                                                      # Inner scale (m)
     L0 = 20                                                                         # Outter scale (m)
-    Nphases = 10                                                                # Number of independent phase screens to simulate
+    Nphases = 30                                                                # Number of independent phase screens to simulate
     
     
     ## Loop parameters
@@ -437,10 +473,10 @@ if __name__ == "__main__":
     
     ## device ('cuda' or 'cpu')
     
-    device  = 'cpu'
+    device  = 'cuda'
     
     ## intialization of the parameter vector 
-    param = torch.tensor([0.0,0.0],dtype=torch.float64)
+    param = torch.tensor([5.0,0.78],dtype=torch.float64)
     ## Generate the wfs object
     wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,device)
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
@@ -448,6 +484,7 @@ if __name__ == "__main__":
     
     ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
     #Warning : requires the librairy aotools which works only on cpu'
+    
     
     [z, z_FullRes] = Zernike(wfs.pupil.cpu(), wfs.pupil_logical, wfs.Nres, Nzernike)
    
@@ -468,10 +505,9 @@ if __name__ == "__main__":
     # #%% This section is just to test how the images look like, what would be the perfect estimation and what is the phase estimation using a linear reconstructor 
   
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)  
-
+   
     test_frame = wfs.Propagator(outPhaseMap_test)
     
-   
     
     ## Set initial data for figures
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -542,8 +578,13 @@ if __name__ == "__main__":
     # [outPhaseMap_correction, outZe_correction] = GetMultiplePhaseMapAndZernike(atmosphere_PSD*fitting_PSD, wfs.pupil, wfs.pupil_logical, invZ, Ndataset_each) 
 
 
-    
+   # Check of the phase mask compared to the numpy version
+ 
+    # plt.figure()
+    # plt.imshow(wfs.mask.real.cpu().data.numpy())
+    # plt.show()
 
+   
 
 
 

@@ -241,7 +241,7 @@ class WFS:
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
         self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
         
-        self.BuildPyramidMask()
+        self.BuildZernikeMask(10,0.78)
         
     def Propagator(self, phase):
         """
@@ -254,7 +254,7 @@ class WFS:
          """
         uin = self.pupil * np.exp(1j * phase)
         uin_padded = np.pad(uin, self.Nres * (self.sampling - 1)//2)                # Pad the pupil 
-         
+       
         ufocal = np.fft.fft2(np.fft.fftshift(uin_padded))                           # Propagation of the field to the focal plane
         upupil = np.fft.fft2(ufocal * np.fft.fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
         frame_no_noise = abs(np.fft.fftshift(upupil))**2
@@ -381,7 +381,7 @@ class WFS:
 
 #%% Set general parameter and build classes
 if __name__ == "__main__":
-
+    plt.close('all')
     ## WFS parameters
     Nres = 50                                                                       # Number of pixels in the aperture of the telescope
     sampling = 4                                                                    # Zero-padding factor (2 is Shannon)
@@ -410,7 +410,7 @@ if __name__ == "__main__":
     ## Generate the wfs object
     wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise)
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
-    
+   
     
     ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
     [z, z_FullRes] = Zernike(wfs.pupil, wfs.pupil_logical, wfs.Nres, Nzernike)
@@ -431,8 +431,7 @@ if __name__ == "__main__":
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)  
     test_frame = wfs.Propagator(outPhaseMap_test[:,:,0])
     
-         
-       
+   
     #%% Generate datasets
    
     ## Set initial data for figures
@@ -498,7 +497,15 @@ if __name__ == "__main__":
     [outPhaseMap_correction, outZe_correction] = GetMultiplePhaseMapAndZernike(atmosphere_PSD*fitting_PSD, wfs.pupil, wfs.pupil_logical, invZ, Ndataset_each) 
 
 
+    # Check of the phase mask compared to the torch version
     
+    # plt.figure()
+    # plt.imshow(wfs.mask.imag)
+    # plt.show()
+    
+    # plt.figure()
+    # plt.imshow(wfs.mask.real)
+    # plt.show()
 
 
 
