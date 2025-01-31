@@ -308,7 +308,24 @@ class WFS:
         pyramid_mask = np.pi/2 * (abs(x_mask) + abs(y_mask))
         self.SetMask(pyramid_mask)
     
-    
+    def BuildZernikeMask(self, dot_diameter, dot_depth):
+       """
+       Builds a Zernike mask and sets it using the SetMask function.
+   
+       Args:
+           dot_diameter (float): Diameter of the dot in units of lambda/d
+           dot_depth (float): Depth of the dot in radians
+       Returns:
+           None
+       """
+       x_mask = np.linspace(-self.Npix/2, self.Npix/2-1, self.Npix)
+       [x_mask,y_mask] = np.meshgrid(x_mask,x_mask)
+       rho = np.sqrt(x_mask ** 2 + y_mask ** 2)
+       
+       diameter_in_pixels = dot_diameter * self.sampling
+       
+       zernike_mask = dot_depth * (rho < diameter_in_pixels / 2.)
+       self.SetMask(zernike_mask)
     
     def BuildReferenceIntensity(self):
         """
@@ -367,7 +384,7 @@ if __name__ == "__main__":
 
     ## WFS parameters
     Nres = 50                                                                       # Number of pixels in the aperture of the telescope
-    sampling = 3                                                                    # Zero-padding factor (2 is Shannon)
+    sampling = 4                                                                    # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
     Nphotons = 1e7                                                                  # Number of photons in measurement    
