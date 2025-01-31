@@ -196,9 +196,9 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
      """
     resolution = PSD.shape[0]
      
-    sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(PSD))
+    sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(PSD)).to(pupil.device)
     
-    randMap = torch.randn(Nphases,resolution,resolution)
+    randMap = torch.randn(Nphases,resolution,resolution).to(pupil.device)
    
     
     phaseMap = torch.fft.ifft2(sqrt_fftshift_PSD * torch.fft.fft2(randMap))
@@ -212,9 +212,15 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
     return phaseMap, Ze
 
 
+def PoissonNoise(x):
+    '''From M. Dufraisse PhD : differentiable Poisson Noise Model using Gaussian approx for each pixel and reparametrization tricks'''
+    
+    return x + torch.sqrt(torch.clamp(x, min=1e-9)) * torch.randn(x.shape, device=x.device, dtype=x.dtype)
+
+
 
 class WFS:
-    def __init__(self, resolution, sampling, diameter, Nphotons, RON, useNoise,device):
+    def __init__(self, resolution, sampling, diameter, Nphotons, RON, useNoise,param,device):
         """
         The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
 
@@ -250,9 +256,7 @@ class WFS:
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
         self.pupil_logical =  torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
         
-        self.param = nn.Parameter(torch.tensor([0.02]).to(device))
-        self.param_name = "toy example parameter"
-
+        self.param = param
 
         self.BuildPyramidMask()
         
@@ -261,9 +265,9 @@ class WFS:
          Simulates the propagation considering a input phase aberration and a phase mask
 
          Args:
-            phase (torch tensor): Input phase aberration
+            phase (torch tensor): Input phase aberration dim (NphasesxNresxNres)
          Returns:
-            torch tensor: Sensor measurement
+            torch tensor: Sensor measurement NphasesxNresxNres
             
          """
          
@@ -271,23 +275,28 @@ class WFS:
 
         
         pad = self.Nres * (self.sampling - 1)//2
-       
-        uin = self.pupil * torch.exp(1j * phase).to(self.device)
+        
+        uin = self.pupil[None, :, :] * torch.exp(1j * phase).to(self.device)
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
-        
-         
-        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded))                           # Propagation of the field to the focal plane
+       
+       
+        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))                           # Propagation of the field to the focal plane
           
-        upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask ))                        # Multiplication to the phase mask and propagation to the detector
-        frame_no_noise = torch.abs(torch.fft.fftshift(upupil))**2                    # Return the noisy image, normalized the the number of counts
+        upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))                        # Multiplication to the phase mask and propagation to the detector
+        frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[1,2]))**2                    # Return the noisy image, normalized the the number of counts
 
-        
+     
         if not self.useNoise:
-            return frame_no_noise / torch.sum(frame_no_noise)
+            normalization_factor = frame_no_noise.sum(1).sum(1)
+            return frame_no_noise / normalization_factor[:,None,None]
         
-        frame_no_noise = frame_no_noise / torch.sum(frame_no_noise) * self.Nphotons    # Set the number of photons in the frame
-        frame_with_noise = torch.poisson(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape)
-        return frame_with_noise / torch.sum(frame_with_noise)  
+        normalization_factor = frame_no_noise.sum(1).sum(1)
+        
+        frame_no_noise = frame_no_noise / normalization_factor[:,None,None] * self.Nphotons    # Set the number of photons in the frame
+        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape).to(frame_no_noise.device)
+        normalization_factor = frame_with_noise.sum(1).sum(1)
+        
+        return frame_with_noise / normalization_factor[:,None,None]
     
     def GetPSF(self, phase):
         """
@@ -298,10 +307,10 @@ class WFS:
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
-        uin = self.pupil * torch.exp(1j * phase)
+        uin = self.pupil[None, :, :] * torch.exp(1j * phase)
         pad = self.Nres * (self.sampling - 1)//2
         uin_padded = torch.nn.functional(uin, (pad,pad,pad,pad))                # Pad the pupil 
-        return torch.abs(torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(uin_padded))))**2     # Propagation of the field to the focal plane
+        return torch.abs(torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))))**2     # Propagation of the field to the focal plane
 
 
     
@@ -335,9 +344,9 @@ class WFS:
         x_mask = torch.linspace(-self.Npix/2, self.Npix/2-1, self.Npix).to(self.device)
         [x_mask,y_mask] = torch.meshgrid(x_mask,x_mask) 
 
-        pyramid_mask = (torch.pi/2 +self.param ) * (torch.abs(x_mask) + torch.abs(y_mask))
+        pyramid_mask = (torch.pi/2 +self.param[1] ) * (torch.abs(x_mask) + torch.abs(y_mask))
         
-        self.SetMask(pyramid_mask)
+        self.SetMask(pyramid_mask+ self.param[0])
     
     
     
@@ -351,7 +360,7 @@ class WFS:
             None
         """
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.tensor([0],dtype=torch.float64))
+        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float64))
         self.useNoise = True
     
     def BuildReconstructionMatrix(self, modes, mask):
@@ -367,11 +376,11 @@ class WFS:
         self.useNoise = False
         delta = 1e-5
         Nmodes = modes.shape[2]
-        iMat = torch.zeros((self.Npix**2, Nmodes),dtype=torch.float64)
+        iMat = torch.zeros((self.Npix**2, Nmodes),dtype=torch.float64).to(mask.device)
         
         for ii in range(Nmodes):
-            push = self.Propagator(modes[:,:,ii] * delta)
-            pull = self.Propagator(-modes[:,:,ii] * delta)
+            push = self.Propagator(modes[None,:,:,ii] * delta)
+            pull = self.Propagator(-modes[None,:,:,ii] * delta)
             
             signal = (push - pull) / 2. / delta
             
@@ -390,9 +399,15 @@ class WFS:
         Returns:
             torch tensor: Reconstructed phase aberration
         """
-        reduced_intensity = intensity - self.reference_intensity  
+        
+        
+        reduced_intensity = intensity - self.reference_intensity
+        
        
-        return self.reconstructionMatrix @ reduced_intensity.flatten()
+        
+        temp = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.reconstructionMatrix.T)  
+       
+        return temp
 
 #%% Set general parameter and build classes
 if __name__ == "__main__":
@@ -424,16 +439,21 @@ if __name__ == "__main__":
     
     device  = 'cpu'
     
+    ## intialization of the parameter vector 
+    param = torch.tensor([0.0,0.0],dtype=torch.float64)
     ## Generate the wfs object
-    wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,device)
+    wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,device)
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
     
     
     ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
     #Warning : requires the librairy aotools which works only on cpu'
-    [z, z_FullRes] = Zernike(wfs.pupil, wfs.pupil_logical, wfs.Nres, Nzernike)
-    invZ = torch.linalg.pinv(z)
     
+    [z, z_FullRes] = Zernike(wfs.pupil.cpu(), wfs.pupil_logical, wfs.Nres, Nzernike)
+   
+    invZ = torch.linalg.pinv(z).to(device)
+    
+    z_FullRes =z_FullRes.to(device)
     # ## Build the reconstruction matrix
     wfs.BuildReconstructionMatrix(z_FullRes, wfs.mask)
     
@@ -446,32 +466,36 @@ if __name__ == "__main__":
     
     
     # #%% This section is just to test how the images look like, what would be the perfect estimation and what is the phase estimation using a linear reconstructor 
-    
+  
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)  
-    
-    test_frame = wfs.Propagator(outPhaseMap_test[0,:,:])
+
+    test_frame = wfs.Propagator(outPhaseMap_test)
     
    
     
     ## Set initial data for figures
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.suptitle('Full atmospheric turbulence', fontsize=16)
-    img = axes[0].imshow(test_frame.detach().numpy())
-    line1, = axes[1].plot(outZe_test[0,:])
-    line2, = axes[1].plot(outZe_test[0,:])
+    img = axes[0].imshow(test_frame[0,:,:].cpu().detach().numpy())
+    line1, = axes[1].plot(outZe_test[0,:].cpu())
+    line2, = axes[1].plot(outZe_test[0,:].cpu())
     axes[1].legend(['Ground truth', 'Linear reconstructor'])
     
     ## run through the small dataset to observe the system in action
+    test_frame = wfs.Propagator(outPhaseMap_test)
+    estimated_phase = wfs.GetReconstructedPhase(test_frame)
+   
+    
     for ii in  range(Nphases):
-        test_frame = wfs.Propagator(outPhaseMap_test[ii,:,:])
+      
         plt.figure(1)
         plt.subplot(1,2,1)
-        img.set_data(test_frame.detach().numpy())
+        img.set_data(test_frame[ii,:,:].cpu().detach().numpy())
 
         plt.subplot(1,2,2)
-        line1.set_ydata(outZe_test[ii,:].detach().numpy())
-        line2.set_ydata(wfs.GetReconstructedPhase(test_frame).detach().numpy())
-        plt.xlabel('Zernie mode index')
+        line1.set_ydata(outZe_test[ii,:].cpu().detach().numpy())
+        line2.set_ydata(estimated_phase[ii,:].cpu().detach().numpy())
+        plt.xlabel('Zernike mode index')
         plt.ylabel('Zernike mode Amplitude')
         plt.pause(0.1)
         plt.show()
@@ -479,15 +503,18 @@ if __name__ == "__main__":
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)
     fig.suptitle('Residual turbulence after the AO loop', fontsize=16)
     
+    test_frame = wfs.Propagator(outPhaseMap_test)
+    estimated_phase = wfs.GetReconstructedPhase(test_frame)
+    
     for ii in  range(Nphases):
-        test_frame = wfs.Propagator(outPhaseMap_test[ii,:,:])
+        
         plt.figure(1)
         plt.subplot(1,2,1)
-        img.set_data(test_frame.detach().numpy())
+        img.set_data(test_frame[ii,:,:].cpu().detach().numpy())
         plt.subplot(1,2,2)
-        line1.set_ydata(outZe_test[ii,:])
-        line2.set_ydata(wfs.GetReconstructedPhase(test_frame).detach().numpy())
-        plt.xlabel('Zernie mode index')
+        line1.set_ydata(outZe_test[ii,:].cpu())
+        line2.set_ydata(estimated_phase[ii,:].cpu().detach().numpy())
+        plt.xlabel('Zernike mode index')
         plt.ylabel('Zernike mode Amplitude')
         plt.pause(0.1)
         plt.show()
