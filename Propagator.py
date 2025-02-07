@@ -241,7 +241,7 @@ class WFS:
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
         self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
         
-        self.BuildZernikeMask(10,0.78)
+        self.BuildZernikeMask(1,0.78)
         
     def Propagator(self, phase):
         """

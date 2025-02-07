@@ -64,7 +64,8 @@ class OptimizedLinearEstimator (nn.Module) :
             self.param_name = "Reconstruction matrix as a parameter"
         # Reconstruction matrix initalized at 0
         else :
-            self.param = nn.Parameter(torch.zeros((Nzernike,22500),dtype = torch.float64))
+            number_of_pixels = WFS.Npix**2
+            self.param = nn.Parameter(torch.zeros((Nzernike,number_of_pixels),dtype = torch.float64))
             
             
     def forward(self, image):
@@ -85,7 +86,7 @@ class WFSmodule (nn.Module) :
         super().__init__()
         
 
-        self.param = nn.Parameter(torch.tensor([8.0,0.78]).to(device))
+        self.param = nn.Parameter(torch.tensor([1.5,0.5]).to(device))
         self.param_name = "toy example parameter vector"
         
         self.WFS = WFS(ParamsDict['Nres'],ParamsDict['sampling'],ParamsDict['D'],ParamsDict['Nphotons'], ParamsDict['RON'],ParamsDict['useNoise'],self.param,device)
@@ -136,7 +137,7 @@ class End2EndWFS (nn.Module):
         # change here the processing for phase estimation
         #self.PhaseEstimator = LinearEstimator(self.WFSmodule.WFS, Nzernike,device)
         
-        self.PhaseEstimator = OptimizedLinearEstimator(1,self.WFSmodule.WFS, Nzernike).to(device)
+        self.PhaseEstimator = OptimizedLinearEstimator(0,self.WFSmodule.WFS, Nzernike).to(device)
         #self.PhaseEstimator = SimpleNet(Nzernike).to(device)
        
         

@@ -476,7 +476,7 @@ if __name__ == "__main__":
     device  = 'cuda'
     
     ## intialization of the parameter vector 
-    param = torch.tensor([5.0,0.78],dtype=torch.float64)
+    param = torch.tensor([1.0,0.78],dtype=torch.float64)
     ## Generate the wfs object
     wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,device)
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask

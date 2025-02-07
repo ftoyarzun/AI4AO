@@ -14,7 +14,7 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
 { "Nres": 50,                                                                      # Number of pixels in the aperture of the telescope
-"sampling" : 3,                                                                    # Zero-padding factor (2 is Shannon)
+"sampling" : 6,                                                                    # Zero-padding factor (2 is Shannon)
 "D" : 1.0 ,                                                                        # Telescope diameter (m)
 "Nphotons" : 1e7  ,                                                                # Number of photons in measurement    
 "RON" : 0    ,                                                                     # Read-out noise in photons per pixel per frame
@@ -50,7 +50,7 @@ LoopParams = dict(
 ## Train parameters
 TrainParams = dict(
 {
-"lro" : 0.001,
+"lro" : 0.01,
 "lrn" :1,
 "TrainRunNb" : 1000,
 "TestRunNb" : 10,

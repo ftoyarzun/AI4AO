@@ -159,7 +159,9 @@ if __name__ == "__main__":
     optimizer_n = torch.optim.SGD(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn)
  
    
-    # Training part for parameters optimization  
+    # Training part for parameters optimization
+    print("Initialized parameters",Trained_End2EndWFS.WFSmodule.param)
+    
     train_loss = train(Trained_End2EndWFS,dataset,loss,TrainRunNb,optimizer_o,optimizer_n,device)
        
     # Testing part
