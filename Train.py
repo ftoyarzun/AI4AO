@@ -16,10 +16,10 @@ import time
 
 def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
-    L = 0
+  
     phaseGT,zernike,_,_=dataset[0]
       
-       
+    plt.close('all')   
     output = End2EndWFS(phaseGT[0,:,:]) 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
  
@@ -29,50 +29,58 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
     final_test_loss = 0
     
-    for u in range(0,TestRunNb) :
-        
-        End2EndWFS.train()
-        
-     
-        phaseGT,zernike,_,_=dataset[0]
-        
-       
-      
-       # take a batch of images to estimage a batch of zernike parameters
-        output = End2EndWFS(phaseGT)  
-
-        l = loss(output,zernike)
-        
-        final_test_loss = l +final_test_loss
-        
-        # plot of an example within the batch
-        
+    End2EndWFS.eval()
+    
+    with torch.no_grad():
+    
+        for u in range(0,TestRunNb) :
+ 
+            phaseGT,zernike,_,_=dataset[0]
+            
+           
+          
+           # take a batch of images to estimage a batch of zernike parameters
+            output = End2EndWFS(phaseGT)  
+            
+            
+    
+            l = loss(output,zernike.to(output.dtype))
+            
+            final_test_loss = l +final_test_loss
+            
+            print(" Test Run n°  {}, test loss : {:.4f}  \n".format(u, l), end="")
+            
+            
+            #plot of an example within the batch
+            
         plt.subplot(1,2,1)
         img.set_data(End2EndWFS.WFSmodule(phaseGT)[0,:,:].cpu().detach().numpy())
-
+    
         plt.subplot(1,2,2)
         line1.set_ydata(zernike[0,:].cpu().data.numpy())
         line2.set_ydata(output[0,:].cpu().data.numpy())
         plt.xlabel('Zernike mode index')
         plt.ylabel('Zernike mode Amplitude')
+        plt.title(" MSE " + str(loss(output[0,:],zernike[0,:]).item()))
         plt.pause(0.1)
         plt.show()
-
-        
-        print(" Test Run n°  {}, train loss : {:.4f}  \n".format(u, l), end="")
-        
+    
+            
+            
    
     return final_test_loss /TestRunNb
 
 
 def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, device = 'cuda'):
     
-    L = 0
+    final_train_loss = 0
+    
+    End2EndWFS.train()
     
     for u in range(0,TrainRunNb) :
         
         
-        End2EndWFS.train()
+        
         
         optimizer_n.zero_grad()
         optimizer_o.zero_grad()
@@ -85,7 +93,7 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
    
         # take a batch of images to estimage a batch of zernike parameters
      
-        l = loss(output,zernike)
+        l = loss(output,zernike.to(output.dtype))
    
           
         l. backward()
@@ -106,8 +114,9 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
         #print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
         print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
         
-   
-    return l
+        final_train_loss = l +final_train_loss
+        
+    return final_train_loss/TrainRunNb
 
 
 
@@ -153,10 +162,10 @@ if __name__ == "__main__":
     # Setting the optimizer (here Adam)
     
     # To optimize the optical and the processing parameters 
-    optimizer_o = torch.optim.SGD([Trained_End2EndWFS.WFSmodule.WFS.param],lro)
+    optimizer_o = torch.optim.Adam([Trained_End2EndWFS.WFSmodule.WFS.param],lro)
 
-    #optimizer_n = torch.optim.SGD([Trained_End2EndWFS.PhaseEstimator.param],lrn)
-    optimizer_n = torch.optim.SGD(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn)
+   
+    optimizer_n = torch.optim.Adam(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn)
  
    
     # Training part for parameters optimization

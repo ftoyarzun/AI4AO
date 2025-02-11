@@ -52,7 +52,7 @@ def Zernike(pupil, pupil_logical, resolution, j):
         out[:, i-1] = Z
        
         outFullRes[pupil_logical, i-1] = Z
-        
+     
     outFullRes = np.reshape( outFullRes, [resolution, resolution, j] )
     return out, outFullRes
 
@@ -185,6 +185,8 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
         phaseMap (numpy array): Output phase map
         Ze (vector): True zernike coefficients of the phaseMap
      """
+     
+   
     resolution = PSD.shape[0]
     outPhaseMap = np.zeros((resolution,resolution,Nphases))
     outZe = np.zeros((CM.shape[0],Nphases))
@@ -415,7 +417,7 @@ if __name__ == "__main__":
     ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
     [z, z_FullRes] = Zernike(wfs.pupil, wfs.pupil_logical, wfs.Nres, Nzernike)
     invZ = np.linalg.pinv(z)
-    
+  
     ## Build the reconstruction matrix
     wfs.BuildReconstructionMatrix(z_FullRes, wfs.mask)
     
@@ -460,6 +462,8 @@ if __name__ == "__main__":
         
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)
     fig.suptitle('Residual turbulence after the AO loop', fontsize=16)
+    
+   
     
     for ii in  range(Nphases):
         test_frame = wfs.Propagator(outPhaseMap_test[:,:,ii])

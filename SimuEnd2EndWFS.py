@@ -15,28 +15,31 @@ from mmengine import Config
 
 class SimpleNet (nn.Module) :
     
-    def __init__(self,Nzernike) :
+    def __init__(self,Nzernike,Npix) :
         
         super().__init__()
         
         
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64), nn.ReLU(),
+            nn.BatchNorm2d(64,track_running_stats = False), nn.ReLU(),
             nn.MaxPool2d(2),
             nn.Conv2d(64, 128, kernel_size=5, stride=5),
-            nn.BatchNorm2d(128), nn.ReLU(),
-            nn.MaxPool2d(3),
+            nn.BatchNorm2d(128,track_running_stats = False), nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, kernel_size=5, stride=5),
+            nn.BatchNorm2d(256,track_running_stats = False), nn.ReLU(),
+            nn.MaxPool2d(2),
            
             nn.Flatten()
         )
-        
-        self.outputlayer = nn.Linear(3200,Nzernike)
+  
+        self.outputlayer = nn.Linear(256*int(((Npix/2-4)/5/2-4)/5/2),Nzernike)
 
        
         
     def forward(self, x):
-      
+        # no complex32 in pytorch
         x = self.encoder(x[:,None,:,:].type(torch.float32))
        
        
@@ -73,30 +76,12 @@ class OptimizedLinearEstimator (nn.Module) :
          ## (Learned) Matrix multiplication
          
         
-         reduced_intensity= image 
+         reduced_intensity= image
          
          EstimatedZernike = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.param.T) 
          
          return EstimatedZernike
      
-class WFSmodule (nn.Module) :
-    
-    def __init__(self, ParamsDict,device) :
-        
-        super().__init__()
-        
-
-        self.param = nn.Parameter(torch.tensor([1.5,0.5]).to(device))
-        self.param_name = "toy example parameter vector"
-        
-        self.WFS = WFS(ParamsDict['Nres'],ParamsDict['sampling'],ParamsDict['D'],ParamsDict['Nphotons'], ParamsDict['RON'],ParamsDict['useNoise'],self.param,device)
-       
-        
-    def forward(self, phase):
-        
-        
-        return self.WFS.Propagator(phase)     
-
 class LinearEstimator (nn.Module) :
     
     def __init__(self, WFS,Nzernike,device) :
@@ -120,8 +105,30 @@ class LinearEstimator (nn.Module) :
          ## Build the reconstruction matrix for each forward (because it depends on the optimized parameters)
         self.WFS.BuildReconstructionMatrix(self.z_FullRes, self.WFS.mask)
         
-        return self.WFS.GetReconstructedPhase(image)
+        EstimatedZernike = torch.matmul(image.flatten(start_dim = -2), self.WFS.reconstructionMatrix.T.detach()) 
+         
+        return  EstimatedZernike
     
+     
+class WFSmodule (nn.Module) :
+    
+    def __init__(self, ParamsDict,device) :
+        
+        super().__init__()
+        
+
+        self.param = nn.Parameter(torch.tensor([ParamsDict['InitParam1'],ParamsDict['InitParam2']]).to(device))
+        self.param_name = "toy example parameter vector"
+        
+        self.WFS = WFS(ParamsDict['Nres'],ParamsDict['sampling'],ParamsDict['D'],ParamsDict['Nphotons'], ParamsDict['RON'],ParamsDict['useNoise'],self.param,ParamsDict['MaskType'],device)
+       
+        
+    def forward(self, phase):
+        
+        
+        return self.WFS.Propagator(phase)     
+
+
     
 class End2EndWFS (nn.Module):
     
@@ -133,12 +140,12 @@ class End2EndWFS (nn.Module):
         self.WFSmodule = WFSmodule(ParamsDict,device)
         # Choice of phase estimator (Linear or learned optimized)
         Nzernike = ParamsDict['Nzernike']
-        
+        self.maskType = ParamsDict['MaskType']
         # change here the processing for phase estimation
         #self.PhaseEstimator = LinearEstimator(self.WFSmodule.WFS, Nzernike,device)
         
-        self.PhaseEstimator = OptimizedLinearEstimator(0,self.WFSmodule.WFS, Nzernike).to(device)
-        #self.PhaseEstimator = SimpleNet(Nzernike).to(device)
+        #self.PhaseEstimator = OptimizedLinearEstimator(0,self.WFSmodule.WFS, Nzernike).to(device)
+        self.PhaseEstimator = SimpleNet(Nzernike,self.WFSmodule.WFS.Npix).to(device)
        
         
         
@@ -147,9 +154,13 @@ class End2EndWFS (nn.Module):
         # output : estimated phase
         
         # Reload the ZernikeMask according to current parameter
-        
-         #self.WFSmodule.WFS.BuildPyramidMask()
-         self.WFSmodule.WFS.BuildZernikeMask()
+         if self.maskType == "Pyramid":
+             
+             self.WFSmodule.WFS.BuildPyramidMask()
+             
+         else :
+                 self.WFSmodule.WFS.BuildZernikeMask()
+         
          self.WFSmodule.WFS.BuildReferenceIntensity()
          
          # Compute the image from the phase

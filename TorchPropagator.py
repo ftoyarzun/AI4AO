@@ -2,7 +2,7 @@
 """
 Created on Fri Dec  6 17:02:43 2024
 
-@author: franc
+@author: pauline : conversion of propagator to torch
 """
 
 import torch
@@ -35,13 +35,13 @@ def Zernike(pupil, pupil_logical, resolution, j):
     R = torch.sqrt(X**2 + Y**2)
     R = R/R.max()
     theta = torch.arctan2(Y, X)
-    out = torch.zeros([torch.sum(pupil),j])
-    outFullRes = torch.zeros([resolution**2, j])
+    out = torch.zeros([torch.sum(pupil),j],dtype =torch.float64)
+    outFullRes = torch.zeros([resolution**2, j],dtype =torch.float64)
     
 
     for i in range(1, j+1):
         n, m = ao.zernike.zernIndex(i+1)
-        n_t = torch.tensor(n, dtype=torch.float32)
+        n_t = torch.tensor(n, dtype=torch.float64)
        
         
         if m == 0:
@@ -58,8 +58,10 @@ def Zernike(pupil, pupil_logical, resolution, j):
 
         # clip
         out[:, i-1] = Z
+        
        
-        outFullRes[pupil_logical[0], i-1] = Z.float()
+       
+        outFullRes[pupil_logical[0], i-1] = Z
         
     outFullRes = torch.reshape( outFullRes, [resolution, resolution, j] )
     return out, outFullRes
@@ -80,7 +82,7 @@ def GetSpatialFrequencies(D, resolution):
             - fy (torch array): Spatial frequency components in the y direction
     """
     dF = 1 / (D)
-    fx = torch.linspace(-resolution/2, resolution/2-1, resolution) * dF
+    fx = torch.linspace(-resolution/2, resolution/2-1, resolution,dtype=torch.float64) * dF
     [fx,fy] = torch.meshgrid(fx,fx)
     return dF, fx, fy
 
@@ -198,7 +200,7 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
      
     sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(PSD)).to(pupil.device)
     
-    randMap = torch.randn(Nphases,resolution,resolution).to(pupil.device)
+    randMap = torch.randn(Nphases,resolution,resolution,dtype=torch.float64).to(pupil.device)
    
     
     phaseMap = torch.fft.ifft2(sqrt_fftshift_PSD * torch.fft.fft2(randMap))
@@ -206,8 +208,11 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
     
    
     phaseMap = pupil * phaseMap
+    
    
     Ze = torch.matmul(phaseMap[:,pupil],CM.transpose(0,1))
+    
+ 
    
     return phaseMap, Ze
 
@@ -220,7 +225,7 @@ def PoissonNoise(x):
 
 
 class WFS:
-    def __init__(self, resolution, sampling, diameter, Nphotons, RON, useNoise,param,device):
+    def __init__(self, resolution, sampling, diameter, Nphotons, RON, useNoise,param,maskType,device):
         """
         The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
 
@@ -258,10 +263,14 @@ class WFS:
         self.pupil_logical =  torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
         
         self.param = param
-
-        #self.BuildPyramidMask()
         
-        self.BuildZernikeMask()
+        if maskType =="Pyramid":
+
+            self.BuildPyramidMask()
+        
+        else :
+            
+            self.BuildZernikeMask()
         
         
     def Propagator(self, phase):
@@ -282,7 +291,7 @@ class WFS:
         
         uin = self.pupil[None, :, :] * torch.exp(1j * phase).to(self.device)
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
-       
+      
         ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))                           # Propagation of the field to the focal plane
           
         upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))                        # Multiplication to the phase mask and propagation to the detector
@@ -291,12 +300,13 @@ class WFS:
      
         if not self.useNoise:
             normalization_factor = frame_no_noise.sum(1).sum(1)
+           
             return frame_no_noise / normalization_factor[:,None,None]
         
         normalization_factor = frame_no_noise.sum(1).sum(1)
         
         frame_no_noise = frame_no_noise / normalization_factor[:,None,None] * self.Nphotons    # Set the number of photons in the frame
-        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape).to(frame_no_noise.device)
+        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape, dtype =torch.float64).to(frame_no_noise.device)
         normalization_factor = frame_with_noise.sum(1).sum(1)
         
         return frame_with_noise / normalization_factor[:,None,None]
@@ -450,7 +460,7 @@ if __name__ == "__main__":
     plt.close('all')
     ## WFS parameters
     Nres = 50                                                                       # Number of pixels in the aperture of the telescope
-    sampling = 4                                                                   # Zero-padding factor (2 is Shannon)
+    sampling = 3                                                                   # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
     Nphotons = 1e7                                                                  # Number of photons in measurement    
@@ -459,6 +469,7 @@ if __name__ == "__main__":
     Nactuator = 10                                                                  # Number of actuators across the diameter of the DM    
     useNoise  = True                                                                # Add Noise or not
                                                                 
+    maskType = 'Zernike'                                                            # Type of mask Pyramidal or Zernike                                                             
     ## Atmosphere parameters
     r0 = 0.15                                                                       # Fried parameter (m)
     l0 = 1e-10                                                                      # Inner scale (m)
@@ -476,9 +487,9 @@ if __name__ == "__main__":
     device  = 'cuda'
     
     ## intialization of the parameter vector 
-    param = torch.tensor([1.0,0.78],dtype=torch.float64)
+    param = torch.tensor([1,0.78],dtype=torch.float64)
     ## Generate the wfs object
-    wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,device)
+    wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,maskType,device)
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
     
     
@@ -487,9 +498,10 @@ if __name__ == "__main__":
     
     
     [z, z_FullRes] = Zernike(wfs.pupil.cpu(), wfs.pupil_logical, wfs.Nres, Nzernike)
+  
    
     invZ = torch.linalg.pinv(z).to(device)
-    
+   
     z_FullRes =z_FullRes.to(device)
     # ## Build the reconstruction matrix
     wfs.BuildReconstructionMatrix(z_FullRes, wfs.mask)
@@ -520,7 +532,6 @@ if __name__ == "__main__":
     ## run through the small dataset to observe the system in action
     test_frame = wfs.Propagator(outPhaseMap_test)
     estimated_phase = wfs.GetReconstructedPhase(test_frame)
-   
     
     for ii in  range(Nphases):
       
