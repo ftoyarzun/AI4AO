@@ -10,6 +10,8 @@ import pylab as plt
 import aotools as ao
 import numpy as np
 import torch.nn as nn
+import random
+
 def Zernike(pupil, pupil_logical, resolution, j):
     """
      Creates the Zernike polynomial basis
@@ -224,7 +226,7 @@ def PoissonNoise(x):
 
 
 class WFS:
-    def __init__(self, resolution, sampling, diameter, Nphotons, RON, useNoise,param,maskType,device):
+    def __init__(self, resolution, sampling, diameter, photonRange, RONRange, useNoise,param,maskType,device):
         """
         The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
 
@@ -251,8 +253,8 @@ class WFS:
         self.sampling = sampling
         self.Npix = resolution * sampling
         self.D = diameter
-        self.Nphotons = Nphotons
-        self.RON = RON
+        self.photonRange = photonRange
+        self.RONRange = RONRange
         self.useNoise = useNoise  ### changed to a setting parameter
         self.device = device
         self.reference_intensity = None
@@ -273,7 +275,16 @@ class WFS:
             
             self.BuildZernikeMask()
         
-        
+    
+    @property
+    def Nphotons(self):
+        return np.power(10,random.uniform(self.photonRange[0],self.photonRange[1]))
+    
+    
+    @property
+    def RON(self):
+        return random.uniform(self.RONRange[0],self.RONRange[1])
+    
     def Propagator(self, phase):
         """
          Simulates the propagation considering a input phase aberration and a phase mask

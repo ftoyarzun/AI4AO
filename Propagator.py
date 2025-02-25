@@ -4,8 +4,9 @@ Created on Fri Dec  6 17:02:43 2024
 
 @author: franc
 """
-
+import math
 import numpy as np
+np.math = math
 import pylab as plt
 import aotools as ao
 
@@ -243,7 +244,7 @@ class WFS:
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
         self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
         
-        self.BuildZernikeMask(1,0.78)
+        self.BuildZernikeMask(2,0.78)
         
     def Propagator(self, phase):
         """
@@ -385,18 +386,18 @@ class WFS:
 if __name__ == "__main__":
     plt.close('all')
     ## WFS parameters
-    Nres = 50                                                                       # Number of pixels in the aperture of the telescope
-    sampling = 4                                                                    # Zero-padding factor (2 is Shannon)
+    Nres = 100                                                                       # Number of pixels in the aperture of the telescope
+    sampling = 2                                                                    # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
-    Nphotons = 1e7                                                                  # Number of photons in measurement    
-    RON = 0                                                                         # Read-out noise in photons per pixel per frame
+    Nphotons = 1e5                                                                  # Number of photons in measurement    
+    RON = 1                                                                         # Read-out noise in photons per pixel per frame
     Nzernike = 50                                                                   # Number of Zernike modes to reconstruct
     Nactuator = 10                                                                  # Number of actuators across the diameter of the DM    
     useNoise  = True                                                                # Add Noise or not
                                                                 
     ## Atmosphere parameters
-    r0 = 0.15                                                                       # Fried parameter (m)
+    r0 = 0.03                                                                       # Fried parameter (m)
     l0 = 1e-10                                                                      # Inner scale (m)
     L0 = 20                                                                         # Outter scale (m)
     Nphases = 30                                                                    # Number of independent phase screens to simulate
@@ -432,26 +433,33 @@ if __name__ == "__main__":
     
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)  
     test_frame = wfs.Propagator(outPhaseMap_test[:,:,0])
+    test_psf = wfs.GetPSF(outPhaseMap_test[:,:,0])
     
    
     #%% Generate datasets
    
     ## Set initial data for figures
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.suptitle('Full atmospheric turbulence', fontsize=16)
-    img = axes[0].imshow(test_frame)
-    line1, = axes[1].plot(outZe_test[:,0])
-    line2, = axes[1].plot(outZe_test[:,0])
-    axes[1].legend(['Ground truth', 'Linear reconstructor'])
+    img1 = axes[0].imshow(test_psf)
+    img2 = axes[1].imshow(test_frame)
+    line1, = axes[2].plot(outZe_test[:,0])
+    line2, = axes[2].plot(outZe_test[:,0])
+    axes[2].legend(['Ground truth', 'Linear reconstructor'])
     
     ## run through the small dataset to observe the system in action
     for ii in  range(Nphases):
         test_frame = wfs.Propagator(outPhaseMap_test[:,:,ii])
+        test_psf = wfs.GetPSF(outPhaseMap_test[:,:,ii])
         plt.figure(1)
-        plt.subplot(1,2,1)
-        img.set_data(test_frame)
+        
+        plt.subplot(1,3,1)
+        img1.set_data(test_psf)
+        
+        plt.subplot(1,3,2)
+        img2.set_data(test_frame)
 
-        plt.subplot(1,2,2)
+        plt.subplot(1,3,3)
         line1.set_ydata(outZe_test[:,ii])       
         line2.set_ydata(wfs.GetReconstructedPhase(test_frame))
          
@@ -467,12 +475,19 @@ if __name__ == "__main__":
     
     for ii in  range(Nphases):
         test_frame = wfs.Propagator(outPhaseMap_test[:,:,ii])
+        test_psf = wfs.GetPSF(outPhaseMap_test[:,:,ii])
         plt.figure(1)
-        plt.subplot(1,2,1)
-        img.set_data(test_frame)
-        plt.subplot(1,2,2)
-        line1.set_ydata(outZe_test[:,ii])      
+        
+        plt.subplot(1,3,1)
+        img1.set_data(test_psf)
+        
+        plt.subplot(1,3,2)
+        img2.set_data(test_frame)
+
+        plt.subplot(1,3,3)
+        line1.set_ydata(outZe_test[:,ii])       
         line2.set_ydata(wfs.GetReconstructedPhase(test_frame))
+         
         plt.xlabel('Zernie mode index')
         plt.ylabel('Zernike mode Amplitude')
         plt.pause(0.1)

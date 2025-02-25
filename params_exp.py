@@ -14,10 +14,10 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
 { "Nres": 50,                                                                      # Number of pixels in the aperture of the telescope
-"sampling" : 4,                                                                    # Zero-padding factor (2 is Shannon)
+"sampling" : 6,                                                                    # Zero-padding factor (2 is Shannon)
 "D" : 1.0 ,                                                                        # Telescope diameter (m)
-"Nphotons" : 1e7  ,                                                                # Number of photons in measurement    
-"RON" : 0    ,                                                                     # Read-out noise in photons per pixel per frame
+"Nphotons" : [3, 7],                                                               # Log range of number of photons in measurement    
+"RON" : [0, 2]    ,                                                                # Read-out noise in photons per pixel per frame
 "Nzernike" : 50 ,                                                                  # Number of Zernike modes to reconstruct
 "Nactuator" : 10,                                                                  # Number of actuators across the diameter of the DM
 "useNoise" : True,
@@ -32,9 +32,9 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {                                                                   
-"r0" : [-1, -0.5],           # warning : min and max range taken in log10 space
+"r0" : [-1.5, -0.5],           # warning : min and max range taken in log10 space
 "L0" : [20,30.0000],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 100,
+"Nphases" : 64,
 }
 )                             
 
@@ -55,7 +55,7 @@ TrainParams = dict(
 {
 "lro" : 0.01,
 "lrn" :0.01,
-"TrainRunNb" : 500000,
+"TrainRunNb" : 1000,
 "TestRunNb" : 10,
 }
 )
