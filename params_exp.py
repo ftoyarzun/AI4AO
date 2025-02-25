@@ -14,7 +14,7 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
 { "Nres": 50,                                                                      # Number of pixels in the aperture of the telescope
-"sampling" : 7,                                                                    # Zero-padding factor (2 is Shannon)
+"sampling" : 4,                                                                    # Zero-padding factor (2 is Shannon)
 "D" : 1.0 ,                                                                        # Telescope diameter (m)
 "Nphotons" : 1e7  ,                                                                # Number of photons in measurement    
 "RON" : 0    ,                                                                     # Read-out noise in photons per pixel per frame
@@ -32,9 +32,9 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {                                                                   
-"r0" : [-0.8239,-0.8239],           # warning : min and max range taken in log10 space
-"L0" : [20,20.0001],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 31,
+"r0" : [-1, -0.5],           # warning : min and max range taken in log10 space
+"L0" : [20,30.0000],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
+"Nphases" : 100,
 }
 )                             
 
@@ -55,7 +55,7 @@ TrainParams = dict(
 {
 "lro" : 0.01,
 "lrn" :0.01,
-"TrainRunNb" : 100,
+"TrainRunNb" : 500000,
 "TestRunNb" : 10,
 }
 )

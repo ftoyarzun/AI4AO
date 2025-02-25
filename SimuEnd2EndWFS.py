@@ -24,17 +24,17 @@ class SimpleNet (nn.Module) :
             nn.Conv2d(1, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64,track_running_stats = False), nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=5, stride=5),
+            nn.Conv2d(64, 128, kernel_size=5, stride=2),
             nn.BatchNorm2d(128,track_running_stats = False), nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, kernel_size=5, stride=5),
+            nn.Conv2d(128, 256, kernel_size=5, stride=2),
             nn.BatchNorm2d(256,track_running_stats = False), nn.ReLU(),
             nn.MaxPool2d(2),
-           
+            
             nn.Flatten()
         )
-  
-        self.outputlayer = nn.Linear(256*int(((Npix/2-4)/5/2-4)/5/2),Nzernike)
+        
+        self.outputlayer = nn.Linear(1024,Nzernike)
 
        
         
@@ -42,10 +42,13 @@ class SimpleNet (nn.Module) :
         # no complex32 in pytorch
         x = self.encoder(x[:,None,:,:].type(torch.float32))
        
-       
         x= self.outputlayer(x)
         return x
-    
+
+
+class SinActivation(nn.Module):
+    def forward(self, x):
+        return torch.sin(x)    
     
 class OptimizedLinearEstimator (nn.Module) :
     " Learned Linear Estimator with a learned reconstruction matrix and ref intensity"
@@ -145,7 +148,7 @@ class End2EndWFS (nn.Module):
         #self.PhaseEstimator = LinearEstimator(self.WFSmodule.WFS, Nzernike,device)
         
         #self.PhaseEstimator = OptimizedLinearEstimator(0,self.WFSmodule.WFS, Nzernike).to(device)
-        self.PhaseEstimator = SimpleNet(Nzernike,self.WFSmodule.WFS.Npix).to(device)
+        self.PhaseEstimator = SimpleNet(Nzernike,self.WFSmodule.WFS.Nres*2).to(device)
        
         
         
@@ -161,7 +164,7 @@ class End2EndWFS (nn.Module):
          else :
                  self.WFSmodule.WFS.BuildZernikeMask()
          
-         self.WFSmodule.WFS.BuildReferenceIntensity()
+         # self.WFSmodule.WFS.BuildReferenceIntensity()
          
          # Compute the image from the phase
         
@@ -169,7 +172,7 @@ class End2EndWFS (nn.Module):
          
          # Estimate the phase 
          
-         EstimatedPhase = self.PhaseEstimator(Image-self.WFSmodule.WFS.reference_intensity)
+         EstimatedPhase = self.PhaseEstimator(Image) #-self.WFSmodule.WFS.reference_intensity)
          
          return EstimatedPhase
          

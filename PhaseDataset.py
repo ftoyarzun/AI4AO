@@ -8,6 +8,7 @@ Created on Thu Jan  2 14:21:44 2025
 import torch
 from mmengine import Config
 import Propagator as Propagator
+import TorchPropagator as TorchPropagator
 from torch.utils.data import Dataset
 import numpy as np
 import random
@@ -23,7 +24,11 @@ class PhaseDataset(Dataset):
         self.Nphases = Nphases       
         self.device=device       
         self.L0 = L0
-        self.r0 =r0
+        self.r0 = r0
+        self.D = D
+        self.Nactuator = Nactuator
+        self.loopFrequency = loopFrequency
+        self.delayFrames = delayFrames
      
   
         x = np.linspace(-Nres/2, Nres/2, Nres)                                          # Build the mesh
@@ -33,19 +38,14 @@ class PhaseDataset(Dataset):
         self.pupil_logical = np.where(np.reshape(self.pupil,Nres*Nres)>0)
 
         #  ## Compute some example PSDs
-        [self.dF, self.fx, self.fy] = Propagator.GetSpatialFrequencies(D, Nres)
+        [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(D, Nres)
 
     # ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
         [z, z_FullRes] = Propagator.Zernike(self.pupil, self.pupil_logical, Nres, Nzernike)
         
         
-        self.invZ = np.linalg.pinv(z)
-        
-        self.fitting_PSD = Propagator.GetFittingPSD(self.fx, self.fy, self.dF, D, Nactuator, levelOfCorrection)
-        
-        self.temporalErrorPSD = Propagator.GetTemporalErrorPSD(self.fx, self.fy, self.dF, loopFrequency, delayFrames, windSpeedVector)  
-  
-     
+        self.invZ = torch.from_numpy(np.linalg.pinv(z)).to(self.device, dtype=torch.float32)
+        self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
         
     def __len__(self):
         
@@ -57,24 +57,31 @@ class PhaseDataset(Dataset):
         r0 = np.power(10,random.uniform(self.r0[0],self.r0[1]))   # Fried parameter (m)
         
         L0 = random.uniform(self.L0[0],self.L0[1])
+        
+        levelOfCorrection = random.uniform(0, 1)
+
+        windSpeedVector_x = random.uniform(-10, 10)
+        windSpeedVector_y = random.uniform(-10, 10)
+        
+        windSpeedVector = [windSpeedVector_x, windSpeedVector_y]
 
          
-        atmosphere_PSD = Propagator.GetAtmospherePSD(self.fx, self.fy, self.dF, r0, L0, self.pupil, self.pupil_logical)
-        
+        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fx, self.fy, self.dF, r0, L0, self.pupil, self.pupil_logical)      
+        fitting_PSD = TorchPropagator.GetFittingPSD(self.fx, self.fy, self.dF, self.D, self.Nactuator, levelOfCorrection)        
+        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx, self.fy, self.dF, self.loopFrequency, self.delayFrames, windSpeedVector)
         # if atmospheric only
         #[outPhaseMap, outZe] = Propagator.GetMultiplePhaseMapAndZernike(atmosphere_PSD, self.pupil, self.pupil_logical, self.invZ, self.Nphases)  
         
-        [outPhaseMap, outZe] = Propagator.GetMultiplePhaseMapAndZernike(atmosphere_PSD * self.fitting_PSD + self.temporalErrorPSD * atmosphere_PSD, self.pupil, self.pupil_logical, self.invZ, self.Nphases)  
+        [outPhaseMap, outZe] = TorchPropagator.GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD, self.pupil, self.pupil_logical, self.invZ, self.Nphases)  
         
         
-        outPhaseMap = np.moveaxis(outPhaseMap, -1, 0)
-        outZe = np.moveaxis(outZe, -1, 0)
+        # outPhaseMap = np.moveaxis(outPhaseMap, -1, 0)
+        # outZe = np.moveaxis(outZe, -1, 0)
         
         
-        outPhaseMap = torch.from_numpy(outPhaseMap).to(self.device)
+        # outPhaseMap = torch.from_numpy(outPhaseMap).to(self.device, dtype=torch.float32)
+        # outZe = torch.from_numpy(outZe).to(self.device, dtype=torch.float32)
         
-         
-        outZe = torch.from_numpy(outZe).to(self.device)
         
          
         return outPhaseMap, outZe, r0, L0
@@ -91,8 +98,7 @@ if __name__ == "__main__":
     WFSParams = Config.fromfile(paramfile)['WFSParams']
     LoopParams = Config.fromfile(paramfile)['LoopParams']
 
-    dataset = PhaseDataset(WFSParams['D'],WFSParams['Nres'],WFSParams['Nzernike'],
-                           
+    dataset = PhaseDataset(WFSParams['D'],WFSParams['Nres'],WFSParams['Nzernike'],                       
                            AtmosParams['L0'],AtmosParams['r0'],AtmosParams['Nphases'],
                            WFSParams['Nactuator'],LoopParams['levelOfCorrection'],
                            LoopParams['loopFrequency'], LoopParams['delayFrames'], LoopParams['windSpeedVector'],

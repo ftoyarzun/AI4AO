@@ -27,7 +27,7 @@ def Zernike(pupil, pupil_logical, resolution, j):
      Warning : requires the librairy aotools which works only on cpu'
      
     """
-     
+    pupil = pupil.cpu()
     X, Y = torch.where(pupil > 0)
                         
     X = ( X-(resolution + resolution%2-1)/2 ) / resolution
@@ -35,13 +35,13 @@ def Zernike(pupil, pupil_logical, resolution, j):
     R = torch.sqrt(X**2 + Y**2)
     R = R/R.max()
     theta = torch.arctan2(Y, X)
-    out = torch.zeros([torch.sum(pupil),j],dtype =torch.float64)
-    outFullRes = torch.zeros([resolution**2, j],dtype =torch.float64)
+    out = torch.zeros([torch.sum(pupil),j],dtype =torch.float32)
+    outFullRes = torch.zeros([resolution**2, j],dtype =torch.float32)
     
 
     for i in range(1, j+1):
         n, m = ao.zernike.zernIndex(i+1)
-        n_t = torch.tensor(n, dtype=torch.float64)
+        n_t = torch.tensor(n, dtype=torch.float32)
        
         
         if m == 0:
@@ -61,7 +61,7 @@ def Zernike(pupil, pupil_logical, resolution, j):
         
        
        
-        outFullRes[pupil_logical[0], i-1] = Z
+        outFullRes[pupil_logical[0], i-1] = Z.to(outFullRes.dtype)
         
     outFullRes = torch.reshape( outFullRes, [resolution, resolution, j] )
     return out, outFullRes
@@ -82,7 +82,7 @@ def GetSpatialFrequencies(D, resolution):
             - fy (torch array): Spatial frequency components in the y direction
     """
     dF = 1 / (D)
-    fx = torch.linspace(-resolution/2, resolution/2-1, resolution,dtype=torch.float64) * dF
+    fx = torch.linspace(-resolution/2, resolution/2-1, resolution,dtype=torch.float32) * dF
     [fx,fy] = torch.meshgrid(fx,fx)
     return dF, fx, fy
 
@@ -200,7 +200,7 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
      
     sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(PSD)).to(pupil.device)
     
-    randMap = torch.randn(Nphases,resolution,resolution,dtype=torch.float64).to(pupil.device)
+    randMap = torch.randn(Nphases,resolution,resolution,dtype=torch.float32).to(pupil.device)
    
     
     phaseMap = torch.fft.ifft2(sqrt_fftshift_PSD * torch.fft.fft2(randMap))
@@ -208,9 +208,8 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
     
    
     phaseMap = pupil * phaseMap
-    
    
-    Ze = torch.matmul(phaseMap[:,pupil],CM.transpose(0,1))
+    Ze = torch.matmul(phaseMap[:, pupil.bool()], CM.transpose(0, 1))
     
  
    
@@ -248,6 +247,7 @@ class WFS:
 
         """
         self.Nres = resolution
+        self.crop_size = 2 * self.Nres
         self.sampling = sampling
         self.Npix = resolution * sampling
         self.D = diameter
@@ -255,8 +255,9 @@ class WFS:
         self.RON = RON
         self.useNoise = useNoise  ### changed to a setting parameter
         self.device = device
+        self.reference_intensity = None
         
-        x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, dtype=torch.float64).to(device)
+        x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, dtype=torch.float32).to(device)
                                          # Build the mesh
         [x,y] = torch.meshgrid(x,x)                                        
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
@@ -301,15 +302,37 @@ class WFS:
         if not self.useNoise:
             normalization_factor = frame_no_noise.sum(1).sum(1)
            
-            return frame_no_noise / normalization_factor[:,None,None]
+            return self.crop_center(frame_no_noise / normalization_factor[:,None,None])
         
         normalization_factor = frame_no_noise.sum(1).sum(1)
         
         frame_no_noise = frame_no_noise / normalization_factor[:,None,None] * self.Nphotons    # Set the number of photons in the frame
-        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape, dtype =torch.float64).to(frame_no_noise.device)
+        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape, dtype =torch.float32).to(frame_no_noise.device)
         normalization_factor = frame_with_noise.sum(1).sum(1)
         
-        return frame_with_noise / normalization_factor[:,None,None]
+        return self.crop_center(frame_with_noise / normalization_factor[:,None,None])
+    
+    def crop_center(self,img):
+        """
+        Crops the central 2*Nres pixels from an image.
+    
+        Parameters:
+            img (torch.Tensor): Input image tensor of shape (B, C, Npix, Npix)
+            Nres (int): Resolution parameter
+            sampling (int): Sampling factor
+        
+        Returns:
+            torch.Tensor: Cropped image of shape (B, C, 2*Nres, 2*Nres)
+        """
+
+        center = self.Npix // 2  # Center index
+        
+        # Compute cropping boundaries
+        start = center - (self.crop_size // 2)
+        end = center + (self.crop_size // 2)
+    
+        # Crop the image
+        return img[:, start:end, start:end]
     
     def GetPSF(self, phase):
         """
@@ -341,7 +364,7 @@ class WFS:
         phase_mask = torch.exp(1j * mask)
         phase_mask = phase_mask/ torch.sum(abs(phase_mask))
         self.mask = phase_mask
-        self.BuildReferenceIntensity()
+        # self.BuildReferenceIntensity()
         
         
     def BuildZernikeMask(self):
@@ -405,7 +428,7 @@ class WFS:
             None
         """
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float64)).to(self.device)
+        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float32)).to(self.device)
         self.useNoise = True
     
     def BuildReconstructionMatrix(self, modes, mask):
@@ -421,7 +444,7 @@ class WFS:
         self.useNoise = False
         delta = 1e-5
         Nmodes = modes.shape[2]
-        iMat = torch.zeros((self.Npix**2, Nmodes),dtype=torch.float64).to(mask.device)
+        iMat = torch.zeros((self.crop_size**2, Nmodes),dtype=torch.float32).to(mask.device)
         
         for ii in range(Nmodes):
             push = self.Propagator(modes[None,:,:,ii] * delta)
@@ -444,8 +467,7 @@ class WFS:
         Returns:
             torch tensor: Reconstructed phase aberration
         """
-        
-        
+            
         reduced_intensity = intensity - self.reference_intensity
         
        
@@ -487,9 +509,10 @@ if __name__ == "__main__":
     device  = 'cuda'
     
     ## intialization of the parameter vector 
-    param = torch.tensor([1,0.78],dtype=torch.float64)
+    param = torch.tensor([1,0.78],dtype=torch.float32)
     ## Generate the wfs object
     wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,maskType,device)
+    wfs.BuildReferenceIntensity()
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
     
     

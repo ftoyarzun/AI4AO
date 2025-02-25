@@ -13,6 +13,7 @@ from mmengine import Config
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import os
 
 def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
@@ -26,6 +27,8 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     img = axes[0].imshow(End2EndWFS.WFSmodule(phaseGT)[0,:,:].cpu().detach().numpy())
     line1, = axes[1].plot(zernike[0,:].cpu().data.numpy())
     line2, = axes[1].plot(output[0,:].cpu().data.numpy())
+    
+    axes[1].set_ylim(-2, 2)
     
     final_test_loss = 0
     
@@ -53,18 +56,18 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
             
             #plot of an example within the batch
             
-        plt.subplot(1,2,1)
-        img.set_data(End2EndWFS.WFSmodule(phaseGT)[0,:,:].cpu().detach().numpy())
-    
-        plt.subplot(1,2,2)
-        line1.set_ydata(zernike[0,:].cpu().data.numpy())
-        line2.set_ydata(output[0,:].cpu().data.numpy())
-        plt.xlabel('Zernike mode index')
-        plt.ylabel('Zernike mode Amplitude')
-        plt.title(" MSE " + str(loss(output[0,:],zernike[0,:]).item()))
-        plt.pause(0.1)
-        plt.show()
-    
+            plt.subplot(1,2,1)
+            img.set_data(End2EndWFS.WFSmodule(phaseGT)[0,:,:].cpu().detach().numpy())
+        
+            plt.subplot(1,2,2)
+            line1.set_ydata(zernike[0,:].cpu().data.numpy())
+            line2.set_ydata(output[0,:].cpu().data.numpy())
+            plt.xlabel('Zernike mode index')
+            plt.ylabel('Zernike mode Amplitude')
+            plt.title(" MSE " + str(loss(output[0,:],zernike[0,:]).item()))
+            
+            plt.show()
+            plt.pause(1)
             
             
    
@@ -112,7 +115,8 @@ def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, devic
 
         # parameters values should change during the loop
         #print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
-        print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
+        if u % 10 == 0:
+            print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
         
         final_train_loss = l +final_train_loss
         
@@ -171,8 +175,24 @@ if __name__ == "__main__":
     # Training part for parameters optimization
     print("Initialized parameters",Trained_End2EndWFS.WFSmodule.param)
     
+    
+    checkpoint_path = 'checkpoint.pth'
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        Trained_End2EndWFS.load_state_dict(checkpoint['model_state_dict'])
+        optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
+        optimizer_n.load_state_dict(checkpoint['optimizer_n_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        print("Resuming from epoch", start_epoch)
+    else:
+        start_epoch = 0
+        print("Starting from scratch")
+    
+    
+    a = time.time()
     train_loss = train(Trained_End2EndWFS,dataset,loss,TrainRunNb,optimizer_o,optimizer_n,device)
-       
+    b = time.time() - a 
+    
     # Testing part
     test_loss = test(Trained_End2EndWFS,dataset,loss,TestRunNb,device)
     
@@ -183,13 +203,12 @@ if __name__ == "__main__":
     
     # To load a network and have a look on the parameters :
     
-    # Initialisation of the system 
-    Loaded_End2EndWFS = End2EndWFS (WFSParams,device)   
-    print("Initialized parameters",Loaded_End2EndWFS.WFSmodule.param)
-    
-    # Parameter loading from a saved model
-    Loaded_End2EndWFS.load_state_dict(torch.load('example.pth'), strict=False)
-    print("Loaded parameters",Loaded_End2EndWFS.WFSmodule.param)
+    torch.save({
+        'epoch': start_epoch + TrainParams['TrainRunNb'],  # Update the epoch number after training
+        'model_state_dict': Trained_End2EndWFS.state_dict(),
+        'optimizer_o_state_dict': optimizer_o.state_dict(),
+        'optimizer_n_state_dict': optimizer_n.state_dict(),
+    }, checkpoint_path)
     
     
         
