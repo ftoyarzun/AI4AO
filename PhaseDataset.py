@@ -29,6 +29,8 @@ class PhaseDataset(Dataset):
         self.Nactuator = Nactuator
         self.loopFrequency = loopFrequency
         self.delayFrames = delayFrames
+        self.Nzernike = Nzernike
+        self.levelOfCorrection = levelOfCorrection
      
   
         x = np.linspace(-Nres/2, Nres/2, Nres)                                          # Build the mesh
@@ -58,7 +60,7 @@ class PhaseDataset(Dataset):
         
         L0 = random.uniform(self.L0[0],self.L0[1])
         
-        levelOfCorrection = random.uniform(0, 1)
+        levelOfCorrection = random.uniform(self.levelOfCorrection[0], self.levelOfCorrection[1])
 
         windSpeedVector_x = random.uniform(-10, 10)
         windSpeedVector_y = random.uniform(-10, 10)

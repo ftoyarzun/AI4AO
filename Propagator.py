@@ -390,14 +390,14 @@ if __name__ == "__main__":
     sampling = 2                                                                    # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
-    Nphotons = 1e5                                                                  # Number of photons in measurement    
+    Nphotons = 1e10                                                                  # Number of photons in measurement    
     RON = 1                                                                         # Read-out noise in photons per pixel per frame
     Nzernike = 50                                                                   # Number of Zernike modes to reconstruct
     Nactuator = 10                                                                  # Number of actuators across the diameter of the DM    
     useNoise  = True                                                                # Add Noise or not
                                                                 
     ## Atmosphere parameters
-    r0 = 0.03                                                                       # Fried parameter (m)
+    r0 = 0.1                                                                       # Fried parameter (m)
     l0 = 1e-10                                                                      # Inner scale (m)
     L0 = 20                                                                         # Outter scale (m)
     Nphases = 30                                                                    # Number of independent phase screens to simulate
@@ -425,7 +425,7 @@ if __name__ == "__main__":
     ## Compute some example PSDs
     [dF, fx, fy] = GetSpatialFrequencies(D, Nres)
     atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, r0, L0, wfs.pupil, wfs.pupil_logical)
-    fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 1)
+    fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 0.9)
     temporalErrorPSD = GetTemporalErrorPSD(fx, fy, dF, loopFrequency, delayFrames, windSpeedVector)  
     
     
@@ -441,11 +441,17 @@ if __name__ == "__main__":
     ## Set initial data for figures
     fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.suptitle('Full atmospheric turbulence', fontsize=16)
-    img1 = axes[0].imshow(test_psf)
+    img1 = axes[0].imshow(np.sqrt(test_psf))
     img2 = axes[1].imshow(test_frame)
     line1, = axes[2].plot(outZe_test[:,0])
     line2, = axes[2].plot(outZe_test[:,0])
     axes[2].legend(['Ground truth', 'Linear reconstructor'])
+    plt.subplot(1,3,1)
+    plt.title('PSF')
+    plt.subplot(1,3,2)
+    plt.title('WFS image')
+    plt.subplot(1,3,3)
+    plt.title('Reconstruction')
     
     ## run through the small dataset to observe the system in action
     for ii in  range(Nphases):
@@ -454,7 +460,7 @@ if __name__ == "__main__":
         plt.figure(1)
         
         plt.subplot(1,3,1)
-        img1.set_data(test_psf)
+        img1.set_data(np.sqrt(test_psf))
         
         plt.subplot(1,3,2)
         img2.set_data(test_frame)
@@ -469,7 +475,7 @@ if __name__ == "__main__":
         plt.show()
         
     [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)
-    fig.suptitle('Residual turbulence after the AO loop', fontsize=16)
+    fig.suptitle('Residual turbulence after the AO loop 90 % correction', fontsize=16)
     
    
     
@@ -479,7 +485,7 @@ if __name__ == "__main__":
         plt.figure(1)
         
         plt.subplot(1,3,1)
-        img1.set_data(test_psf)
+        img1.set_data(np.sqrt(test_psf))
         
         plt.subplot(1,3,2)
         img2.set_data(test_frame)

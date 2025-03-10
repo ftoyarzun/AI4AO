@@ -8,7 +8,9 @@ Created on Fri Dec  6 17:02:43 2024
 import torch
 import pylab as plt
 import aotools as ao
+import math
 import numpy as np
+np.math = math
 import torch.nn as nn
 import random
 
@@ -260,9 +262,16 @@ class WFS:
         self.reference_intensity = None
         
         x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, dtype=torch.float32).to(device)
-                                         # Build the mesh
-        [x,y] = torch.meshgrid(x,x)                                        
-        self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
+        [self.x,self.y] = torch.meshgrid(x,x)
+        
+        x_mask = torch.linspace(-self.Npix/2, self.Npix/2-1, self.Npix, dtype=torch.float32).to(device)
+        [self.x_mask,self.y_mask] = torch.meshgrid(x_mask,x_mask)
+        
+        self.rho_mask = torch.sqrt(self.x_mask ** 2 + self.y_mask ** 2)
+        self.abs_x_mask = torch.abs(self.x_mask)
+        self.abs_y_mask = torch.abs(self.y_mask)        
+                                        
+        self.pupil = (self.x ** 2 + self.y ** 2) <= ((self.Nres+1)/2)**2
         self.pupil_logical =  torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
         
         self.param = param
@@ -388,18 +397,17 @@ class WFS:
        Returns:
            None
        """
-       x_mask = torch.linspace(-self.Npix/2, self.Npix/2-1, self.Npix).to(self.device)
-       [x_mask,y_mask] = torch.meshgrid(x_mask,x_mask)
-       rho = torch.sqrt(x_mask ** 2 + y_mask ** 2)
+
+       
        
        diameter_in_pixels = self.param[0] * self.sampling
        
        # this line is not differentiable I use a tanh function to model the mask
        
        #zernike_mask = self.param[1] * (rho < diameter_in_pixels / 2.)
-       slope =100
+       slope = self.param[2]
       
-       ring_mask = torch.tanh(slope*( diameter_in_pixels/2. -rho))/2
+       ring_mask = torch.tanh(slope*( diameter_in_pixels/2. -self.rho_mask))/2
        annular = ring_mask+0.5
 
        
@@ -420,12 +428,10 @@ class WFS:
         Returns:
             None
         """
-        x_mask = torch.linspace(-self.Npix/2, self.Npix/2-1, self.Npix).to(self.device)
-        [x_mask,y_mask] = torch.meshgrid(x_mask,x_mask) 
 
-        pyramid_mask = (torch.pi/2 +self.param[1] ) * (torch.abs(x_mask) + torch.abs(y_mask))
+        pyramid_mask = (self.abs_x_mask * self.param[0] + self.abs_y_mask * self.param[1])
         
-        self.SetMask(pyramid_mask+ self.param[0])
+        self.SetMask(pyramid_mask)
     
     
     

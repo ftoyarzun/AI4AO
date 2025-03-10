@@ -19,23 +19,75 @@ class SimpleNet (nn.Module) :
         
         super().__init__()
         
+        # self.encoder = nn.Sequential(
+        #     nn.Conv2d(1, 32, kernel_size=3, padding=1),
+        #     nn.BatchNorm2d(32, track_running_stats=False),
+        #     nn.GELU(),
+        #     nn.MaxPool2d(2),
+
+        #     nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
+        #     nn.BatchNorm2d(64, track_running_stats=False),
+        #     nn.GELU(),
+        #     nn.MaxPool2d(2),
+
+        #     nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2),
+        #     nn.BatchNorm2d(128, track_running_stats=False),
+        #     nn.GELU(),
+        #     nn.MaxPool2d(2),
+            
+        #     nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2),
+        #     nn.BatchNorm2d(256, track_running_stats=False),
+        #     nn.GELU(),
+        #     nn.MaxPool2d(2),
+
+        #     nn.AdaptiveAvgPool2d((1, 1)),  # Removes hardcoded feature size
+        #     nn.Flatten(),
+        #     nn.Dropout(0.3)  # Regularization
+        # )
         
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64,track_running_stats = False), nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=5, stride=2),
-            nn.BatchNorm2d(128,track_running_stats = False), nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, kernel_size=5, stride=2),
-            nn.BatchNorm2d(256,track_running_stats = False), nn.ReLU(),
-            nn.MaxPool2d(2),
-            
-            nn.Flatten()
-        )
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),  
+            nn.BatchNorm2d(32, track_running_stats=False),
+            nn.GELU(),
         
-        self.outputlayer = nn.Linear(1024,Nzernike)
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),  # Extra conv layer
+            nn.BatchNorm2d(32, track_running_stats=False),
+            nn.GELU(),
+            nn.MaxPool2d(2),  # First pooling
+        
+            nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm2d(64, track_running_stats=False),
+            nn.GELU(),
+        
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),  # Extra conv layer
+            nn.BatchNorm2d(64, track_running_stats=False),
+            nn.GELU(),
+            nn.MaxPool2d(2),  # Second pooling
+        
+            nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm2d(128, track_running_stats=False),
+            nn.GELU(),
+        
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),  # Extra conv layer
+            nn.BatchNorm2d(128, track_running_stats=False),
+            nn.GELU(),
+            nn.MaxPool2d(2),  # Third pooling
+        
+            nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm2d(256, track_running_stats=False),
+            nn.GELU(),
+        
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),  # Extra conv layer
+            nn.BatchNorm2d(256, track_running_stats=False),
+            nn.GELU(),
+            nn.MaxPool2d(2),  # Fourth pooling
+        
+            nn.AdaptiveAvgPool2d((1, 1)),  
+            nn.Flatten(),
+            nn.Dropout(0.3)  
+        )
 
+        self.outputlayer = nn.Linear(256, Nzernike)  # 512 comes from final channel size
        
         
     def forward(self, x):
@@ -120,7 +172,7 @@ class WFSmodule (nn.Module) :
         super().__init__()
         
 
-        self.param = nn.Parameter(torch.tensor([ParamsDict['InitParam1'],ParamsDict['InitParam2']]).to(device))
+        self.param = nn.Parameter(torch.tensor(ParamsDict['InitParam']).to(device))
         self.param_name = "toy example parameter vector"
         
         self.WFS = WFS(ParamsDict['Nres'],ParamsDict['sampling'],ParamsDict['D'],ParamsDict['Nphotons'], ParamsDict['RON'],ParamsDict['useNoise'],self.param,ParamsDict['MaskType'],device)
