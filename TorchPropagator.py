@@ -113,7 +113,7 @@ def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
     fm = 5.92/l0/(2*torch.pi); 		# frecuencia de escala interna [1/m]
     f0 = 1/L0; 			          # frecuencia de escala externa [1/m]
     PSD_phi = 0.023*r0**(-5/3) * torch.exp(-(f/fm)**2) / (f**2 + f0**2)**(11/6) * dF**2 * resolution**2;
-    PSD_phi[resolution//2,resolution//2] = 0;
+    PSD_phi[:, resolution//2,resolution//2] = 0;
     return PSD_phi
 
 def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection = 1):
@@ -159,7 +159,7 @@ def transferFunc(Nd,ki,Tp):
     n_cl = f_cl*Hdm*Hcorr*Hdelay;
     return f_cl
 
-def GetTemporalErrorPSD(fx, fy, dF, freq, delayFrames, windSpeedVector):
+def GetTemporalErrorPSD(fx, fy, dF, freq, delayFrames, windSpeedVector_x, windSpeedVector_y):
     """
     Computes the temporal error power spectral density (PSD) given the spatial frequencies and other parameters.
 
@@ -174,8 +174,8 @@ def GetTemporalErrorPSD(fx, fy, dF, freq, delayFrames, windSpeedVector):
     Returns:
         torch array: Temporal error power spectral density
     """
-    fx_temporal = fx * windSpeedVector[0] + 1e-7
-    fy_temporal = fy * windSpeedVector[1] + 1e-7
+    fx_temporal = fx * windSpeedVector_x + 1e-7
+    fy_temporal = fy * windSpeedVector_y + 1e-7
     
     f_temporal = torch.sqrt(fx_temporal**2 + fy_temporal**2)
     
@@ -261,6 +261,9 @@ class WFS:
         self.device = device
         self.reference_intensity = None
         
+        self.Nphotons = 1e7
+        self.RON = 2
+        
         x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, dtype=torch.float32).to(device)
         [self.x,self.y] = torch.meshgrid(x,x)
         
@@ -276,23 +279,17 @@ class WFS:
         
         self.param = param
         
-        if maskType =="Pyramid":
-
-            self.BuildPyramidMask()
-        
-        else :
+        if maskType == "Pyramid":
             
+            self.BuildPyramidMask()
+            
+        elif maskType == "Zernike":
             self.BuildZernikeMask()
         
-    
-    @property
-    def Nphotons(self):
-        return np.power(10,random.uniform(self.photonRange[0],self.photonRange[1]))
-    
-    
-    @property
-    def RON(self):
-        return random.uniform(self.RONRange[0],self.RONRange[1])
+           
+        elif maskType == "Free":
+            pass
+   
     
     def Propagator(self, phase):
         """
@@ -309,6 +306,10 @@ class WFS:
 
         
         pad = self.Nres * (self.sampling - 1)//2
+        # Nphases = phase.shape[0]  # Extract batch size
+        
+        # Nphotons = torch.pow(10, torch.empty(Nphases, 1, 1).uniform_(self.photonRange[0], self.photonRange[1])).to(self.device)
+        # RON = torch.empty(Nphases, 1, 1).uniform_(self.RONRange[0], self.RONRange[1]).to(self.device) 
         
         uin = self.pupil[None, :, :] * torch.exp(1j * phase).to(self.device)
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
@@ -320,17 +321,26 @@ class WFS:
 
      
         if not self.useNoise:
-            normalization_factor = frame_no_noise.sum(1).sum(1)
-           
+            normalization_factor = frame_no_noise.sum(dim=(1,2), keepdim=True)
+            #print(f'frame_no_noise.shape {frame_no_noise.shape}')
+            #print(f'normalization_factor.shape {normalization_factor.shape}')
             return self.crop_center(frame_no_noise / normalization_factor[:,None,None])
+
         
-        normalization_factor = frame_no_noise.sum(1).sum(1)
+        frame_no_noise = frame_no_noise / frame_no_noise.sum(dim=(1,2), keepdim=True) * self.Nphotons
+        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn_like(frame_no_noise)
+
+        normalization_factor = frame_with_noise.sum(dim=(1,2), keepdim=True)
         
-        frame_no_noise = frame_no_noise / normalization_factor[:,None,None] * self.Nphotons    # Set the number of photons in the frame
-        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn(*frame_no_noise.shape, dtype =torch.float32).to(frame_no_noise.device)
-        normalization_factor = frame_with_noise.sum(1).sum(1)
+        #print(f'frame_with_noise.shape {frame_with_noise.shape}')
+        #print(f'normalization_factor.shape {normalization_factor.shape}')
         
-        return self.crop_center(frame_with_noise / normalization_factor[:,None,None])
+        return self.crop_center(frame_with_noise / normalization_factor)
+    
+    def SetPhotonsAndRON(self, Nphotons, RON):
+        self.Nphotons = Nphotons
+        self.RON = RON
+    
     
     def crop_center(self,img):
         """
@@ -345,14 +355,14 @@ class WFS:
             torch.Tensor: Cropped image of shape (B, C, 2*Nres, 2*Nres)
         """
 
-        center = self.Npix // 2  # Center index
+        center = img.shape[-1] // 2  # Center index
         
         # Compute cropping boundaries
         start = center - (self.crop_size // 2)
         end = center + (self.crop_size // 2)
     
         # Crop the image
-        return img[:, start:end, start:end]
+        return img[..., start:end, start:end]
     
     def GetPSF(self, phase):
         """
@@ -368,7 +378,6 @@ class WFS:
         uin_padded = torch.nn.functional(uin, (pad,pad,pad,pad))                # Pad the pupil 
         return torch.abs(torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))))**2     # Propagation of the field to the focal plane
 
-
     
     
     def SetMask(self,mask):
@@ -382,7 +391,7 @@ class WFS:
         """
      
         phase_mask = torch.exp(1j * mask)
-        phase_mask = phase_mask/ torch.sum(abs(phase_mask))
+        phase_mask = phase_mask / torch.sum(torch.abs(phase_mask))
         self.mask = phase_mask
         # self.BuildReferenceIntensity()
         
@@ -463,11 +472,13 @@ class WFS:
         Nmodes = modes.shape[2]
         iMat = torch.zeros((self.crop_size**2, Nmodes),dtype=torch.float32).to(mask.device)
         
+        
         for ii in range(Nmodes):
             push = self.Propagator(modes[None,:,:,ii] * delta)
             pull = self.Propagator(-modes[None,:,:,ii] * delta)
             
             signal = (push - pull) / 2. / delta
+            
             
             iMat[:,ii] = signal.flatten()
             
@@ -487,8 +498,7 @@ class WFS:
             
         reduced_intensity = intensity - self.reference_intensity
         
-       
-        
+  
         temp = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.reconstructionMatrix.T)  
        
         return temp

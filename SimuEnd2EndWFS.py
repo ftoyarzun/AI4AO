@@ -19,32 +19,6 @@ class SimpleNet (nn.Module) :
         
         super().__init__()
         
-        # self.encoder = nn.Sequential(
-        #     nn.Conv2d(1, 32, kernel_size=3, padding=1),
-        #     nn.BatchNorm2d(32, track_running_stats=False),
-        #     nn.GELU(),
-        #     nn.MaxPool2d(2),
-
-        #     nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
-        #     nn.BatchNorm2d(64, track_running_stats=False),
-        #     nn.GELU(),
-        #     nn.MaxPool2d(2),
-
-        #     nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2),
-        #     nn.BatchNorm2d(128, track_running_stats=False),
-        #     nn.GELU(),
-        #     nn.MaxPool2d(2),
-            
-        #     nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2),
-        #     nn.BatchNorm2d(256, track_running_stats=False),
-        #     nn.GELU(),
-        #     nn.MaxPool2d(2),
-
-        #     nn.AdaptiveAvgPool2d((1, 1)),  # Removes hardcoded feature size
-        #     nn.Flatten(),
-        #     nn.Dropout(0.3)  # Regularization
-        # )
-        
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),  
             nn.BatchNorm2d(32, track_running_stats=False),
@@ -98,9 +72,6 @@ class SimpleNet (nn.Module) :
         return x
 
 
-class SinActivation(nn.Module):
-    def forward(self, x):
-        return torch.sin(x)    
     
 class OptimizedLinearEstimator (nn.Module) :
     " Learned Linear Estimator with a learned reconstruction matrix and ref intensity"
@@ -201,6 +172,20 @@ class End2EndWFS (nn.Module):
         
         #self.PhaseEstimator = OptimizedLinearEstimator(0,self.WFSmodule.WFS, Nzernike).to(device)
         self.PhaseEstimator = SimpleNet(Nzernike,self.WFSmodule.WFS.Nres*2).to(device)
+        
+        if self.maskType == "Free":
+            self.maskGenerator = MaskGenerator().to(device)
+            
+            self.N = ParamsDict['Nres'] * ParamsDict['sampling']  # Resolution
+            
+            # Generate a grid of frequency coordinates
+            u = torch.linspace(-1, 1, self.N)  # Normalized frequency range
+            v = torch.linspace(-1, 1, self.N)
+            U, V = torch.meshgrid(u, v, indexing="xy")  # Create the full grid
+            
+            # Flatten and stack into (N^2, 2) shape
+            self.uv_coords = torch.stack([U.flatten(), V.flatten()], dim=1).to(device)
+            self.mask = self.maskGenerator(self.uv_coords)
        
         
         
@@ -213,9 +198,15 @@ class End2EndWFS (nn.Module):
              
              self.WFSmodule.WFS.BuildPyramidMask()
              
-         else :
-                 self.WFSmodule.WFS.BuildZernikeMask()
+         elif self.maskType == "Zernike":
+             self.WFSmodule.WFS.BuildZernikeMask()
          
+            
+         elif self.maskType == "Free":
+             self.mask = self.maskGenerator(self.uv_coords).view(self.N, self.N)
+             self.WFSmodule.WFS.SetMask(self.mask)
+             
+             
          # self.WFSmodule.WFS.BuildReferenceIntensity()
          
          # Compute the image from the phase
@@ -227,7 +218,30 @@ class End2EndWFS (nn.Module):
          EstimatedPhase = self.PhaseEstimator(Image) #-self.WFSmodule.WFS.reference_intensity)
          
          return EstimatedPhase
-         
+
+
+class MaskGenerator(nn.Module):
+    def __init__(self, hidden_size=128):
+        super().__init__()
+        
+        self.net = nn.Sequential(
+            nn.Linear(2, hidden_size),  # Input: (u, v)
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1),  # Output: Mask value
+        )
+
+        # Apply custom weight initialization
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.1)  # Normal distribution
+            nn.init.zeros_(module.bias)  # Set bias to zero
+
+    def forward(self, uv_coords):
+        return self.net(uv_coords)         
          
          
 if __name__ == "__main__":
