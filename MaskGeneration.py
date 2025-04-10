@@ -11,35 +11,97 @@ import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-import os
 
 import imageio.v2 as imageio
 
 
 class MaskGenerator(nn.Module):
-    def __init__(self, hidden_size=128):
+    def __init__(self, hidden_size=128, isPhaseMask = True):
         super().__init__()
         
+        self.isPhaseMask = isPhaseMask
+        
         self.net = nn.Sequential(
-            nn.Linear(2, hidden_size),  
+            nn.Linear(2, hidden_size),  # Input: (u, v)
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1),  
+            nn.Linear(hidden_size, 1),  # Output: Mask value
         )
 
         # Apply custom weight initialization
         self.apply(self._init_weights)
+        
+        # If it is a transmision mask constrain to 0-1
+        self.transmisionSigmoid = nn.Sigmoid()
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.5)  # Normal distribution
-            nn.init.zeros_(module.bias)  # Set bias to zero
+            nn.init.normal_(module.weight, mean=0.0, std=0.1)  # Normal distribution
+            nn.init.constant_(module.bias, 0.1)  # Set bias to zero
 
     def forward(self, uv_coords):
-        return self.net(uv_coords)
+        
+        x = self.net(uv_coords) 
+        if self.isPhaseMask:
+            return x
+    
+        x = self.transmisionSigmoid(x)
+        return x
 
-def train (maskGenerator, uv_coords, mask, loss, TrainRunNb, optimizer, device = 'cuda'):
+
+class MaskVisualizator:
+    def __init__(self, E2E_WFS):
+        self.E2E_WFS = E2E_WFS
+        
+        
+    def SetCanvas(self):
+        if self.E2E_WFS.maskType == "FreePhase":
+            self.fig, self.ax = plt.subplots()
+            self.img = self.ax.imshow(self.E2E_WFS.phaseMask.cpu().detach().numpy())
+            self.fig.colorbar(self.img)
+            
+       
+        
+        elif self.E2E_WFS.maskType == "FreeTransmision":
+            self.fig, self.ax = plt.subplots()
+            self.img = self.ax.imshow(self.E2E_WFS.transmisionMask.cpu().detach().numpy())
+            self.fig.colorbar(self.img)
+            
+            
+        elif self.E2E_WFS.maskType == "FreePhaseTransmision":
+            self.fig, self.ax = plt.subplots(1, 2)
+            self.img1 = self.ax[0].imshow(self.E2E_WFS.phaseMask.cpu().detach().numpy())
+            self.fig.colorbar(self.img1)
+            self.img2 = self.ax[1].imshow(self.E2E_WFS.transmisionMask.cpu().detach().numpy())
+            self.fig.colorbar(self.img2)
+            
+        else:
+            pass
+            
+    
+    def show(self):
+        if self.E2E_WFS.maskType == "FreePhase":
+            self.img.set_data(self.E2E_WFS.phaseMask.cpu().detach().numpy())
+            self.img.set_clim(vmin=np.min(self.img.get_array()), vmax=np.max(self.img.get_array()))
+
+ 
+        elif self.E2E_WFS.maskType == "FreeTransmision":
+            self.img.set_data(self.E2E_WFS.transmisionMask.cpu().detach().numpy())
+            self.img.set_clim(vmin=np.min(self.img.get_array()), vmax=np.max(self.img.get_array()))
+            
+            
+        elif self.E2E_WFS.maskType == "FreePhaseTransmision":
+            self.img1.set_data(self.E2E_WFS.phaseMask.cpu().detach().numpy())
+            self.img1.set_clim(vmin=np.min(self.img1.get_array()), vmax=np.max(self.img1.get_array()))
+            
+            self.img2.set_data(self.E2E_WFS.transmisionMask.cpu().detach().numpy())
+            self.img2.set_clim(vmin=np.min(self.img2.get_array()), vmax=np.max(self.img2.get_array()))
+        
+        plt.pause(0.1)
+
+
+def trainMask (maskGenerator, uv_coords, mask, loss, TrainRunNb, optimizer, device = 'cuda'):
     
     final_train_loss = 0
     
@@ -60,24 +122,11 @@ def train (maskGenerator, uv_coords, mask, loss, TrainRunNb, optimizer, device =
 
         output = maskGenerator(uv_coords).view(N, N)  
         
-   
-        # take a batch of images to estimage a batch of zernike parameters
-     
         l = loss(output,mask.to(output.dtype))
-   
-          
+    
         l. backward()
         
-        #Comment one of these line to stop optimization on either part
-        
         optimizer.step()
-
-        
-        # with torch.no_grad():  # Clip the parameter values after optimization step
-        
-        #     for param in End2EndWFS.WFSmodule.WFS.param:
-        #         param.clamp_(0.001, 1000)
-        
         
 
         # parameters values should change during the loop
@@ -141,7 +190,7 @@ if __name__ == "__main__":
 
     
     a = time.time()
-    train_loss = train(maskGenerator, uv_coords, pyr_mask,loss,5000,optimizer,device)
+    train_loss = trainMask(maskGenerator, uv_coords, pyr_mask,loss,5000,optimizer,device)
     b = time.time() - a 
     
     torch.save({

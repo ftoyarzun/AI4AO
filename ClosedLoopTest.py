@@ -38,10 +38,10 @@ if __name__ == "__main__":
 
     
     # Initialisation of the system 
-    gain = 0.2
+    gain = 0.4
     start_after_iteration = 0
     
-    z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
+    z_FullRes = dataset.z_FullRes.view(-1, dataset.Nzernike).transpose(0, 1)
     #dataset.LoadTestMovingWavefront()
     phaseGT,zernike,photons,ron,r0s,wind,fractionalr0 = dataset.GetMovingWavefront()
     
@@ -49,10 +49,11 @@ if __name__ == "__main__":
     
     Trained_End2EndWFS = End2EndWFS (WFSParams,device, "SimpleNet")
     Trained_End2EndWFS.eval()
-    checkpoint_path = 'PyramidOHP209.pth'
+    checkpoint_path = 'PhaseTransmisionTest2.pth'
     checkpointManager = CheckpointManager(Trained_End2EndWFS, WFSParams, TrainParams, checkpoint_path)
     checkpointManager.load_network(should_load_optimizer = False)
-    #checkpointManager.load_free_mask(should_load_optimizer = False)
+    checkpointManager.load_free_phaseMask(should_load_optimizer = False)
+    checkpointManager.load_free_transmisionMask(should_load_optimizer = False)
     
     Trained_AO_Loop = AOLoop(Trained_End2EndWFS, z_FullRes, gain, phaseGT, zernike, photons, ron, start_after_iteration = start_after_iteration)
     
@@ -93,9 +94,7 @@ if __name__ == "__main__":
         plt.subplots_adjust(left=0.02, right=0.98, wspace=0.1)
         # plt.subplots_adjust(left = 0.1, top = 0.9, right = 0.9, bottom = 0.1, hspace = 0.5, wspace = 0.5)
 
-        
-        
-        print(f'Photons = {photons[sample_to_look,:,:].item()}, RON = {ron[sample_to_look,:,:].item()}')
+
         
         for i in range(500):
             # Get new WFS images after applying the correction
@@ -105,7 +104,7 @@ if __name__ == "__main__":
             Pyramid_AO_Loop_mod0.step(phaseGT)
             Pyramid_AO_Loop_mod5.step(phaseGT)
             
-            if i % 10 == 0:
+            if i % 5 == 0:
                 plt.subplot(1,6,1)
                 plt.title(f'Input phase r0 = {r0s[sample_to_look,:].item():.3f}')
                 img1.set_data(phaseGT[sample_to_look,:,:].cpu().detach().numpy())

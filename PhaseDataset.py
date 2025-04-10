@@ -70,7 +70,7 @@ class PhaseDataset(Dataset):
     # ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
         [z, z_FullRes] = Propagator.Zernike(self.pupil, self.pupil_logical, self.Nres, self.Nzernike)
         
-        self.z_FullRes = torch.from_numpy(z_FullRes)
+        self.z_FullRes = torch.from_numpy(z_FullRes).to(device=device, dtype = torch.float32)
         self.z = torch.from_numpy(z)
         
         #self.invZ = torch.from_numpy(np.linalg.pinv(z)).to(self.device, dtype=torch.float32).transpose(0, 1)
@@ -199,8 +199,6 @@ class PhaseDataset(Dataset):
         
         
         
-        
-    @profile
     def GetMovingWavefront(self, generateClosedLoop = False):
 
         if self.movingCount == 0:

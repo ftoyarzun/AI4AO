@@ -22,7 +22,7 @@ WFSParams = dict(
 "Nactuator" : 10,                                                                  # Number of actuators across the diameter of the DM
 "useNoise" : True,
 "InitParam" : [0.78*2, 0.78*2],
-"MaskType" : 'Pyramid'
+"MaskType" : 'FreePhaseTransmision'
 },
 
 )  
@@ -31,10 +31,10 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {                                                                   
-"r0" : [0.04, 0.15],           
+"r0" : [0.05, 0.2],           
 "L0" : [20,30.0000],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 64,
-"Layers" : 3
+"Nphases" : 32,
+"Layers" : 5
 }
 )                             
 
@@ -53,9 +53,9 @@ LoopParams = dict(
 ## Train parameters
 TrainParams = dict(
 {
-"lro" : 0.001,
-"lrn" : 0.001,
-"TrainRunNb" : 5000,
+"lro" : 0.0001,
+"lrn" : 0.0001,
+"TrainRunNb" : 3000,
 "TestRunNb" : 10,
 }
 )

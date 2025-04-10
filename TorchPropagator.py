@@ -307,26 +307,22 @@ class WFS:
             torch tensor: Sensor measurement NphasesxNresxNres
             
          """
-         
-         # TODO : modify it to make it work with a batch of phase
 
         
-        pad = self.Nres * (self.sampling - 1)//2
-        # Nphases = phase.shape[0]  # Extract batch size
-        
-        # Nphotons = torch.pow(10, torch.empty(Nphases, 1, 1).uniform_(self.photonRange[0], self.photonRange[1])).to(self.device)
-        # RON = torch.empty(Nphases, 1, 1).uniform_(self.RONRange[0], self.RONRange[1]).to(self.device) 
-        
-        uin = self.pupil[None, :, :] * torch.exp(1j * phase).to(self.device)
+        pad = self.Nres * (self.sampling - 1)//2            
+
+        uin = self.pupil[None, :, :] * torch.exp(1j * phase) / torch.sqrt(self.pupil.sum())
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
+        
+        
       
-        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))                           # Propagation of the field to the focal plane
+        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[-2,-1]))                           # Propagation of the field to the focal plane
         
         
         
         if self.maskType != "Pyramid" or self.modulation == 0:
-            upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))                        # Multiplication to the phase mask and propagation to the detector
-            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[1,2]))**2                    # Return the noisy image, normalized the the number of counts
+            upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[-2,-1]))**2                    # Return the noisy image, normalized the the number of counts
 
         else:
             nSteps = round(6.28*self.modulation / 4) * 4
@@ -336,24 +332,22 @@ class WFS:
                 modulation_phase = 2 * torch.pi * i / nSteps
                 modulation_amplitude_in_pixels = self.modulation * self.sampling
                 pyr_mask_step = torch.pi/4 * (torch.abs(self.x_mask - modulation_amplitude_in_pixels * np.cos(modulation_phase)) + torch.abs(self.y_mask - modulation_amplitude_in_pixels * np.sin(modulation_phase)))
-                self.SetMask(pyr_mask_step)
-                upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))
-                frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[1,2]))**2
+                self.SetMask(phaseMask = pyr_mask_step)
+                upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))
+                frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[-2,-1]))**2 / nSteps
+     
+ 
      
         if not self.useNoise:
-            normalization_factor = frame_no_noise.sum(dim=(1,2), keepdim=True)
-            #print(f'frame_no_noise.shape {frame_no_noise.shape}')
-            #print(f'normalization_factor.shape {normalization_factor.shape}')
-            return self.crop_center(frame_no_noise / normalization_factor[:,None,None])
+            normalization_factor = frame_no_noise.sum(dim=(-2,-1), keepdim=True)
+            return self.crop_center(frame_no_noise / normalization_factor)
 
-        
-        frame_no_noise = frame_no_noise / frame_no_noise.sum(dim=(1,2), keepdim=True) * self.Nphotons
-        frame_with_noise = PoissonNoise(frame_no_noise) + self.RON * torch.randn_like(frame_no_noise)
 
-        normalization_factor = frame_with_noise.sum(dim=(1,2), keepdim=True)
+
+        frame_with_noise = PoissonNoise(frame_no_noise * self.Nphotons) + self.RON * torch.randn_like(frame_no_noise)
+
+        normalization_factor = frame_with_noise.sum(dim=(-2,-1), keepdim=True)
         
-        #print(f'frame_with_noise.shape {frame_with_noise.shape}')
-        #print(f'normalization_factor.shape {normalization_factor.shape}')
         
         return self.crop_center(frame_with_noise / normalization_factor)
     
@@ -400,20 +394,26 @@ class WFS:
 
     
     
-    def SetMask(self,mask):
+    def SetMask(self,phaseMask = None, transmisionMask = None):
         """
         Sets the phase mask by converting the input mask to a complex exponential and normalizing it.
     
         Args:
-            mask (torch tensor): Input phase mask (real-valued)
+            phaseMask (torch tensor): Input phase mask (real-valued)
+            transmisionMask (torch tensor): Input transmision mask (real-valued)
         Returns:
             None
         """
-     
-        phase_mask = torch.exp(1j * mask)
-        phase_mask = phase_mask / torch.sum(torch.abs(phase_mask))
-        self.mask = phase_mask
-        # self.BuildReferenceIntensity()
+        
+        self.mask = torch.ones(1, self.Npix, self.Npix, device = self.device, dtype = torch.complex64)  / self.Npix ** 2
+        
+        if phaseMask is not None:
+            self.mask *= torch.exp(1j * phaseMask)
+
+        if transmisionMask is not None:  
+            self.mask *= transmisionMask
+
+        
         
         
     def BuildZernikeMask(self):
@@ -474,11 +474,11 @@ class WFS:
             None
         """
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.zeros((self.Nres, self.Nres),dtype=torch.float32)).to(self.device)
+        self.reference_intensity = self.Propagator(torch.zeros((self.Nres, self.Nres),dtype=torch.float32, device = self.device))
         self.reference_intensity= self.reference_intensity.squeeze() 
         self.useNoise = True
     
-    def BuildReconstructionMatrix(self, modes, mask):
+    def BuildReconstructionMatrix(self, modes):
         """
         Builds the reconstruction matrix by computing the signals for each mode using finite differences.
     
@@ -490,18 +490,23 @@ class WFS:
         """
         self.useNoise = False
         delta = 1e-5
-        Nmodes = modes.shape[0]
-        iMat = torch.zeros((self.crop_size**2, Nmodes),dtype=torch.float32).to(mask.device)
+        Nmodes = modes.shape[0]        
         
+        # for ii in range(Nmodes):
+        #     push = self.Propagator(modes[ii] * delta)
+        #     pull = self.Propagator(-modes[ii] * delta)
+            
+        #     signal = (push - pull) / 2. / delta
+            
+            
+        #     iMat[:,ii] = signal.flatten()
         
-        for ii in range(Nmodes):
-            push = self.Propagator(modes[ii] * delta)
-            pull = self.Propagator(-modes[ii] * delta)
-            
-            signal = (push - pull) / 2. / delta
-            
-            
-            iMat[:,ii] = signal.flatten()
+        push = self.Propagator(modes * delta)
+        pull = self.Propagator(-modes * delta)
+        
+        signal = (push - pull) / 2. / delta
+        
+        iMat = signal.flatten(start_dim = -2)
             
         
         self.useNoise = True
@@ -522,7 +527,7 @@ class WFS:
         # print(f"self.reference_intensity.shape = {self.reference_intensity.shape}")
         # print(f"intensity.shape = {intensity.shape}")
   
-        temp = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.reconstructionMatrix.T)  
+        temp = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.reconstructionMatrix)  
        
         return temp
 

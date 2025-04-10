@@ -6,8 +6,9 @@ Created on Thu Jan  2 16:45:31 2025
 @author: ptrouve
 """
 
-from TorchPropagator import WFS, Zernike
-
+from TorchPropagator import WFS
+from PhaseEstimators import LinearEstimator, SimpleNet, ViT_PyTorch
+from MaskGeneration import MaskGenerator
 import torch.nn as nn
 import torch
 from mmengine import Config
@@ -16,155 +17,6 @@ import os
 from line_profiler import profile
 
 
-class SimpleNet(nn.Module):
-    def __init__(self, Nzernike):
-        super().__init__()
-
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=5, padding=2),
-            nn.GELU(),
-            nn.Conv2d(32, 32, kernel_size=5, padding=2, stride = 2),
-            nn.GELU(),
-            
-            nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
-            nn.GELU(),
-            nn.Conv2d(64, 64, kernel_size=5, padding=2, stride = 2),
-            nn.GELU(), 
-
-            nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2), 
-            nn.GELU(),
-            nn.Conv2d(128, 128, kernel_size=5, padding=2, stride = 2),
-            nn.GELU(), 
-
-            nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2), 
-            nn.GELU(),
-            nn.Conv2d(256, 256, kernel_size=5, padding=2, stride = 2),
-            nn.GELU(),   
-
-            nn.AdaptiveAvgPool2d((1, 1)),  
-            nn.Flatten(),
-            nn.Dropout(0.1)  
-        )
-
-        self.outputlayer = nn.Linear(256, Nzernike)
-
-    def forward(self, x):
-        x = x.unsqueeze(1).type(torch.float32)
-        x = self.encoder(x)
-        x = self.outputlayer(x)
-        return x
-
-
-class PatchEmbedding(nn.Module):
-  def __init__(self, embed_dim, img_size, patch_size, dropout, in_channels = 1):
-      super().__init__()
-      
-      num_patches = (img_size // patch_size) ** 2
-      
-      self.patcher = nn.Sequential(
-          # We use conv for doing the patching
-          nn.Conv2d(
-              in_channels=in_channels,
-              out_channels=embed_dim,
-              # if kernel_size = stride -> no overlap
-              kernel_size=patch_size,
-              stride=patch_size
-          ),
-          # Linear projection of Flattened Patches. We keep the batch and the channels (b,c,h,w)
-          nn.Flatten(2))
-      self.cls_token = nn.Parameter(torch.randn(size=(1, 1, embed_dim)), requires_grad=True)
-      self.position_embeddings = nn.Parameter(torch.randn(size=(1, num_patches+1, embed_dim)), requires_grad=True)
-      self.dropout = nn.Dropout(p=dropout)
-
-  def forward(self, x):
-      # Create a copy of the cls token for each of the elements of the BATCH
-      cls_token = self.cls_token.expand(x.shape[0], -1, -1)
-      # Create the patches
-      x = self.patcher(x).permute(0, 2, 1)
-      # Unify the position with the patches
-      x = torch.cat([cls_token, x], dim=1)
-      # Patch + Position Embedding
-      x = self.position_embeddings + x
-      x = self.dropout(x)
-      return x
-  
-    
-class ViT_PyTorch(nn.Module):
-    def __init__(self, embed_dim, img_size, patch_size, dropout, num_heads, num_encoders, expansion, Nzernike):
-        super().__init__()
-        
-        self.inst_norm = nn.InstanceNorm2d(1)
-        
-        self.embeddings_block = PatchEmbedding(embed_dim, img_size, patch_size, dropout)
-        
-        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, dropout=dropout, dim_feedforward=int(embed_dim*expansion), activation="gelu", batch_first=True, norm_first=True)
-        self.encoder_blocks = nn.TransformerEncoder(encoder_layer, num_layers=num_encoders)
-
-        self.mlp_head = nn.Sequential(
-            nn.LayerNorm(normalized_shape=embed_dim),
-            nn.Linear(in_features=embed_dim, out_features=Nzernike)
-        )
-
-    def forward(self, x):
-        x = x.unsqueeze(1).type(torch.float32)
-        x = self.inst_norm(x)
-        x = self.embeddings_block(x)
-        x = self.encoder_blocks(x)
-        x = self.mlp_head(x[:, 0, :])  # Apply MLP on the CLS token only
-        return x
-
-
-
-class OptimizedLinearEstimator (nn.Module) :
-    " Learned Linear Estimator with a learned reconstruction matrix and ref intensity"
-    "They are initalized using the propagator code from the starting point"
-    
-    def __init__(self,init=0,WFS=None,Nzernike=0) :
-        
-        super().__init__()
-        
-        # Initialization with the  reconstruction matrix at starting point
-        if init == 1 :
-            
-            print("Initalization of the reconstruction matrix")
-            [z, z_FullRes] = Zernike(WFS.pupil.cpu(), WFS.pupil_logical, WFS.Nres, Nzernike)     
-            z_FullRes = z_FullRes
-            WFS.BuildReconstructionMatrix(z_FullRes, WFS.mask)
-            self.WFS = WFS
-            self.param = nn.Parameter(WFS.reconstructionMatrix)
-            self.param_name = "Reconstruction matrix as a parameter"
-        # Reconstruction matrix initalized at 0
-        else :
-            number_of_pixels = WFS.Npix**2
-            self.param = nn.Parameter(torch.zeros((Nzernike,number_of_pixels),dtype = torch.float64))
-            
-            
-    def forward(self, image):
-        
-         ## (Learned) Matrix multiplication
-         
-        
-         reduced_intensity= image
-         
-         EstimatedZernike = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.param.T) 
-         
-         return EstimatedZernike
-     
-class LinearEstimator (nn.Module) :
-    
-    def __init__(self, WFS) :
-        
-        super().__init__()
-        
-        self.WFS = WFS       
-        
-    def forward(self, image):
-        
-         ## Build the reconstruction matrix for each forward (because it depends on the optimized parameters)
-        # self.WFS.BuildReconstructionMatrix(self.z_FullRes, self.WFS.mask)
-        
-        return self.WFS.GetReconstructedPhase(image)
-         
     
      
 class WFSmodule (nn.Module) :
@@ -216,22 +68,35 @@ class End2EndWFS (nn.Module):
                                               Nzernike = Nzernike).to(device)
         
         
-        if self.maskType == "Free":
-            self.maskGenerator = MaskGenerator().to(device)
-            
+        if self.maskType != "Pyramid" or self.maskType != "Zernike":
             self.N = ParamsDict['Nres'] * ParamsDict['sampling']  # Resolution
             
             # Generate a grid of frequency coordinates
-            u = torch.linspace(-1, 1, self.N).to(device)  # Normalized frequency range
+            u = torch.linspace(-1, 1, self.N, device = device)  # Normalized frequency range
             U, V = torch.meshgrid(u, u, indexing="xy")  # Create the full grid
             
             self.circ_mask = (torch.sqrt(U ** 2 + V ** 2) < 1).flatten()
             
             # Flatten and stack into (N^2, 2) shape
             self.uv_coords = torch.stack([U.flatten(), V.flatten()], dim=1).to(device)
-            self.mask = self.maskGenerator(self.uv_coords)
+        
+        
+        if self.maskType == "FreePhase":
+            self.phaseMaskGenerator = MaskGenerator(isPhaseMask = True).to(device)
+            self.phaseMask = self.phaseMaskGenerator(self.uv_coords).view(self.N, self.N)
        
-         
+        
+        elif self.maskType == "FreeTransmision":
+            self.transmisionMaskGenerator = MaskGenerator(isPhaseMask = False).to(device)
+            self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
+            
+        elif self.maskType == "FreePhaseTransmision":
+            self.phaseMaskGenerator = MaskGenerator(isPhaseMask = True).to(device)
+            self.phaseMask = self.phaseMaskGenerator(self.uv_coords).view(self.N, self.N)
+            self.transmisionMaskGenerator = MaskGenerator(isPhaseMask = False).to(device)
+            self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
+
+        
     def forward(self, x):
         # input : x (tensor) : input phase
         # output : estimated phase
@@ -245,13 +110,20 @@ class End2EndWFS (nn.Module):
              self.WFSmodule.WFS.BuildZernikeMask()
          
             
-         elif self.maskType == "Free":
-             self.mask = self.maskGenerator(self.uv_coords)
-             self.mask = self.remove_tip_tilt(self.mask).view(self.N, self.N)
-             self.WFSmodule.WFS.SetMask(self.mask)
+         elif self.maskType == "FreePhase":
+             self.phaseMask = self.phaseMaskGenerator(self.uv_coords)
+             self.phaseMask = self.remove_tip_tilt(self.phaseMask).view(self.N, self.N)
+             self.WFSmodule.WFS.SetMask(phaseMask = self.phaseMask)
              
+         elif self.maskType == "FreeTransmision":  
+             self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
+             self.WFSmodule.WFS.SetMask(transmisionMask = self.transmisionMask)
              
-         # self.WFSmodule.WFS.BuildReferenceIntensity()
+         elif self.maskType == "FreePhaseTransmision":
+             self.phaseMask = self.phaseMaskGenerator(self.uv_coords)
+             self.phaseMask = self.remove_tip_tilt(self.phaseMask).view(self.N, self.N)
+             self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
+             self.WFSmodule.WFS.SetMask(phaseMask = self.phaseMask, transmisionMask = self.transmisionMask)
          
          # Compute the image from the phase
         
@@ -289,7 +161,7 @@ class AOLoop:
             self.End2EndWFS.WFSmodule.WFS.modulation = modulation
             self.End2EndWFS.WFSmodule.WFS.BuildPyramidMask()
             Nres = self.End2EndWFS.WFSmodule.WFS.Nres
-            self.End2EndWFS.WFSmodule.WFS.BuildReconstructionMatrix(self.z_FullRes.view(-1,Nres,Nres), self.End2EndWFS.WFSmodule.WFS.mask)        
+            self.End2EndWFS.WFSmodule.WFS.BuildReconstructionMatrix(self.z_FullRes.view(-1,Nres,Nres))        
             self.End2EndWFS.WFSmodule.WFS.BuildReferenceIntensity()
         
         
@@ -329,29 +201,7 @@ class AOLoop:
         self.z_reconstructed = self.z_reconstructed * 0
         self.z_estimated = self.z_estimated * 0
 
-
-class MaskGenerator(nn.Module):
-    def __init__(self, hidden_size=128):
-        super().__init__()
         
-        self.net = nn.Sequential(
-            nn.Linear(2, hidden_size),  # Input: (u, v)
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1),  # Output: Mask value
-        )
-
-        # Apply custom weight initialization
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.1)  # Normal distribution
-            nn.init.constant_(module.bias, 0.1)  # Set bias to zero
-
-    def forward(self, uv_coords):
-        return self.net(uv_coords)     
     
 
 class CheckpointManager:
@@ -372,11 +222,18 @@ class CheckpointManager:
         
         self.load_network(self.checkpoint_path)
         
-        if self.WFSParams['MaskType'] == "Free":
-            self.load_free_mask(self.checkpoint_path)
-            return
+        if self.WFSParams['MaskType'] == "FreePhase":
+            self.load_free_phaseMask(self.checkpoint_path)
+
+        elif self.WFSParams['MaskType'] == "FreeTransmision":
+            self.load_free_transmisionMask(self.checkpoint_path)
         
-        self.load_parametric_mask(self.checkpoint_path)
+        elif self.WFSParams['MaskType'] == "FreePhaseTransmision":
+            self.load_free_phaseMask(self.checkpoint_path)
+            self.load_free_transmisionMask(self.checkpoint_path)
+            
+        else:
+            self.load_parametric_mask(self.checkpoint_path)
 
 
 
@@ -396,7 +253,7 @@ class CheckpointManager:
             for param_group in self.optimizer_n.param_groups:
                 param_group['lr'] = self.TrainParams["lrn"]
 
-    def load_free_mask(self, mask_path = None, should_load_optimizer = True):
+    def load_free_phaseMask(self, mask_path = None, should_load_optimizer = True):
         if mask_path is None:
             mask_path = self.checkpoint_path
         
@@ -405,11 +262,30 @@ class CheckpointManager:
             return
         
         checkpoint = torch.load(mask_path)
-        self.model.maskGenerator.load_state_dict(checkpoint['Mask_state_dict'])
+        self.model.phaseMaskGenerator.load_state_dict(checkpoint['Phase_Mask_state_dict'])
         if should_load_optimizer:
             self.optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
             for param_group in self.optimizer_o.param_groups:
                 param_group['lr'] = self.TrainParams["lro"]
+            
+            
+    def load_free_transmisionMask(self, mask_path = None, should_load_optimizer = True):
+        if mask_path is None:
+            mask_path = self.checkpoint_path
+        
+        if not os.path.exists(mask_path):
+            print(f'The path {mask_path} does not exist')
+            return
+        
+        checkpoint = torch.load(mask_path)
+        self.model.transmisionMaskGenerator.load_state_dict(checkpoint['Transmision_Mask_state_dict'])
+        if should_load_optimizer:
+            self.optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
+            for param_group in self.optimizer_o.param_groups:
+                param_group['lr'] = self.TrainParams["lro"]
+            
+            
+               
             
     def load_parametric_mask(self, mask_path = None, should_load_optimizer = True):
         if mask_path is None:
@@ -457,11 +333,22 @@ class CheckpointManager:
         dict_to_save['optimizer_n_state_dict'] = self.optimizer_n.state_dict()
         
         
-        if self.WFSParams['MaskType'] != "Free":
-            dict_to_save['Mask_state_dict'] = self.model.WFSmodule.state_dict()
-        else:
-            dict_to_save['Mask_state_dict'] = self.model.maskGenerator.state_dict()
+        if self.WFSParams['MaskType'] == "FreePhase":
+            dict_to_save['Phase_Mask_state_dict'] = self.model.phaseMaskGenerator.state_dict()
+
+        elif self.WFSParams['MaskType'] == "FreeTransmision":
+            dict_to_save['Transmision_Mask_state_dict'] = self.model.transmisionMaskGenerator.state_dict()
+
+        
+        elif self.WFSParams['MaskType'] == "FreePhaseTransmision":
+            dict_to_save['Phase_Mask_state_dict'] = self.model.phaseMaskGenerator.state_dict()
+            dict_to_save['Transmision_Mask_state_dict'] = self.model.transmisionMaskGenerator.state_dict()
+
             
+        else:
+            dict_to_save['Mask_state_dict'] = self.model.WFSmodule.state_dict()
+        
+
         torch.save(dict_to_save, save_path)
 
      

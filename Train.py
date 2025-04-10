@@ -9,66 +9,21 @@ import torch
 
 from PhaseDataset import PhaseDataset, PermanentPhaseDataset
 from SimuEnd2EndWFS import End2EndWFS, CheckpointManager
+from LossFunctions import Custom_Loss_Function, Physics_loss, ResidualPhaseLoss
+from MaskGeneration import MaskVisualizator
 from mmengine import Config
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-import os
 from TorchPropagator import Zernike
 import copy
 from collections import defaultdict
 
 import imageio.v2 as imageio
 
-import torch.nn as nn
-
 from line_profiler import profile
     
-class Custom_Loss_Function(nn.Module):
-    def __init__(self, epsilon = 1e-2, degree = 2, NZernike = 209, device = 'cuda'):
-        super().__init__()
-        self.epsilon = epsilon
-        self.degree = degree
-        self.NZernike = NZernike
 
-        self.linspace = torch.sqrt((torch.linspace(1, NZernike, NZernike, device=device)))
-        
-    def forward(self, y_pred, y_true, r0):
-        diff = (y_pred - y_true) * self.linspace
-        return torch.mean(torch.abs(diff)[:self.NZernike] ** self.degree * r0 ** (5/3))
-
-
-
-class Physics_loss(nn.Module):
-    def __init__(self, z_fullRes, phase_template, degree = 2, device = 'cuda'):
-        super().__init__()
-        self.z_fullRes = z_fullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
-        self.phase_shape = phase_template.shape
-        self.degree = degree
-    
-    def forward(self, WFSModule, I_WFS, y_pred, r0):
-        
-        I_pred = self.ComputeForwardImage(WFSModule, y_pred)
-        return torch.mean(torch.abs(I_pred - I_WFS) ** self.degree * r0 ** (5/3)) * 1e6
-        
-    def ComputeForwardImage(self, WFSModule, y_pred):
-        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view(*self.phase_shape)
-        
-        return WFSModule(reconstructed_phase)
-
-
-class ResidualPhaseLoss(nn.Module):
-    def __init__(self, z_fullRes, pupil, device = 'cuda'):
-        super().__init__()
-        self.z_fullRes = z_fullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
-        self.pupil = pupil
-    
-    def forward(self, y_pred, phase, r0):
-        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view_as(phase)
-        residual_phase = phase - reconstructed_phase
-        return torch.mean(torch.var(residual_phase[..., self.pupil.bool()], dim = -1) * r0 ** (5/3))
-        
-     
     
 def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
@@ -86,12 +41,10 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
     Nzernike = dataset.Nzernike
     
-    [z, z_FullRes] = Zernike(wfs.pupil, wfs.pupil_logical, wfs.Nres, Nzernike)
+    z_FullRes = dataset.z_FullRes.permute(2,0,1).to(device = device)
     
-    z_FullRes = z_FullRes.permute(2,0,1)
-    
-    wfs_Zernike.BuildReconstructionMatrix(z_FullRes, wfs_Zernike.mask)   
-    wfs_Pyramid.BuildReconstructionMatrix(z_FullRes, wfs_Pyramid.mask)
+    wfs_Zernike.BuildReconstructionMatrix(z_FullRes)   
+    wfs_Pyramid.BuildReconstructionMatrix(z_FullRes)
             
     wfs_Zernike.BuildReferenceIntensity()
     wfs_Pyramid.BuildReferenceIntensity()
@@ -198,8 +151,9 @@ def train_closed_loop(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimi
     param_tracker = []
     
     # fig, ax = plt.subplots()
-    # img = ax.imshow(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
+    # img = ax.imshow(End2EndWFS.phaseMask.cpu().detach().numpy())
     # fig.colorbar(img)
+    maskVisualizator.SetCanvas()
     
     z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
 
@@ -243,9 +197,9 @@ def train_closed_loop(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimi
             convergence_ratio = 1 - (1 - gain) ** (i + 1)
 
             # iter_loss = loss(z_reconstructed, phaseGT * convergence_ratio, r0s)
-            iter_loss1 = loss[1](z_estimated, zernike * convergence_ratio, r0s)
+            # iter_loss1 = loss[1](z_estimated, zernike * convergence_ratio, r0s)
             # iter_loss0 = loss[1](z_output, Ze * gain, r0s) * 1
-            # iter_loss0 = loss[2](z_estimated, phaseGT * convergence_ratio, r0s) * 2
+            iter_loss1 = loss[2](z_estimated, phaseGT * convergence_ratio, r0s) * 2
             # iter_loss0 = loss[0](End2EndWFS.WFSmodule, End2EndWFS.Image, z_estimated, r0s) * 1
             # total_loss += (iter_loss0 + iter_loss1) / num_iterations
             total_loss = iter_loss1
@@ -262,7 +216,7 @@ def train_closed_loop(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimi
         
         
         total_loss.backward()
-        # optimizer_o.step()
+        optimizer_o.step()
         optimizer_n.step()
         
         t2 = time.perf_counter()
@@ -275,11 +229,12 @@ def train_closed_loop(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimi
             loss_tracker.append(total_loss.item())
             # param_tracker.append(End2EndWFS.WFSmodule.WFS.param.tolist())
 
-            # img.set_data(End2EndWFS.mask.cpu().detach().numpy())
+            # img.set_data(End2EndWFS.phaseMask.cpu().detach().numpy())
             # img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
-            # fig.canvas.draw()
-            #t1 = time.perf_counter()
+            # # fig.canvas.draw()
+            # #t1 = time.perf_counter()
             # plt.pause(0.1)
+            maskVisualizator.show()
             
 
 
@@ -302,18 +257,17 @@ if __name__ == "__main__":
 
     # Dataset creation
     dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
-    
+    z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
     
 
-    
     # Initialisation of the system 
     Trained_End2EndWFS = End2EndWFS (WFSParams,device, "SimpleNet")
     
     
     # Setting the loss function
-    loss_test = Custom_Loss_Function(NZernike=WFSParams['Nzernike'])
-    loss_residual = ResidualPhaseLoss(dataset.z_FullRes, dataset.pupil)
-    loss_physics = Physics_loss(dataset.z_FullRes, dataset[0][0])
+    loss_test = Custom_Loss_Function(NZernike = WFSParams["Nzernike"])
+    loss_residual = ResidualPhaseLoss(z_FullRes, dataset.pupil)
+    loss_physics = Physics_loss(z_FullRes, dataset[0][0])
     loss = [loss_physics, loss_test, loss_residual]
     
    
@@ -330,25 +284,38 @@ if __name__ == "__main__":
     # Setting the optimizer (here Adam)
     
     # To optimize the optical and the processing parameters
-    if WFSParams['MaskType'] != "Free":
+    if WFSParams['MaskType'] == "Pyramid" or WFSParams['MaskType'] == "Zernike":
         optimizer_o = torch.optim.AdamW([Trained_End2EndWFS.WFSmodule.WFS.param],lro)
-    else:
-        optimizer_o = torch.optim.AdamW(Trained_End2EndWFS.maskGenerator.parameters(),lro)
-
+    elif WFSParams['MaskType'] == "FreePhase":
+        optimizer_o = torch.optim.AdamW([
+                                        {'params': Trained_End2EndWFS.phaseMaskGenerator.parameters(), 'lr': lro, 'fused': True}
+                                        ])
+    elif WFSParams['MaskType'] == "FreeTransmision":
+        optimizer_o = torch.optim.AdamW([
+                                        {'params': Trained_End2EndWFS.transmisionMaskGenerator.parameters(), 'lr': lro, 'fused': True}
+                                        ])
+    elif WFSParams['MaskType'] == "FreePhaseTransmision":
+        optimizer_o = torch.optim.AdamW([
+                                        {'params': Trained_End2EndWFS.phaseMaskGenerator.parameters(), 'lr': lro},
+                                        {'params': Trained_End2EndWFS.transmisionMaskGenerator.parameters(), 'lr': lro, 'fused': True}
+                                        ])
+    
     optimizer_n = torch.optim.AdamW(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn, fused = True)
  
-    checkpoint_path = 'SpeedTest.pth'
+    checkpoint_path = 'PhaseTransmisionTest2.pth'
     checkpointManager = CheckpointManager(Trained_End2EndWFS, WFSParams, TrainParams, checkpoint_path, optimizer_o, optimizer_n)
     
-    # checkpointManager.load()
-    checkpointManager.load_network()
-    # checkpointManager.load_free_mask('CNNTest4.pth', False)
+    checkpointManager.load()
+    # checkpointManager.load_network()
+    # checkpointManager.load_free_phaseMask('PhaseTransmisionTest2.pth')
     # checkpointManager.load_model()
 
    
     # Training part for parameters optimization
     print("Initialized parameters",Trained_End2EndWFS.WFSmodule.param)
 
+    
+    maskVisualizator = MaskVisualizator(Trained_End2EndWFS)
     
     
     a = time.time()
@@ -359,8 +326,8 @@ if __name__ == "__main__":
                                                      TrainRunNb,
                                                      optimizer_o,
                                                      optimizer_n,
-                                                     gain=1, 
-                                                     num_iterations=1,
+                                                     gain=0.5, 
+                                                     num_iterations=30,
                                                      device=device)
     
     
@@ -375,7 +342,7 @@ if __name__ == "__main__":
     
     var_loss = ResidualPhaseLoss(dataset.z_FullRes, dataset.pupil)
     
-    # test_loss = test(Trained_End2EndWFS,dataset,loss_test,TestRunNb,device)
+    test_loss = test(Trained_End2EndWFS,dataset,loss_test,TestRunNb,device)
     
     
     
