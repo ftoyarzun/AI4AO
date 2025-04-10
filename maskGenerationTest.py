@@ -108,6 +108,8 @@ if __name__ == "__main__":
     paramfile = 'params_exp.py'  # file of experimental parameters
 
     gif_path = 'test_mask_animation.gif'
+    
+    mask_path = 'Pyramid_mask.pth'
     # Config extraction
    
     N = 200
@@ -124,6 +126,7 @@ if __name__ == "__main__":
     
     pyr_mask = (np.pi / 4 * (torch.abs(U) + torch.abs(V)) * N/2).to(device)
     zernike_mask = np.pi/2 * (torch.sqrt(U**2 + V**2) < 10/N).to(device)
+    random_mask = torch.randn_like(zernike_mask)
     
     uv_coords = torch.stack([U.flatten(), V.flatten()], dim=1).to(device)
 
@@ -138,6 +141,11 @@ if __name__ == "__main__":
 
     
     a = time.time()
-    train_loss = train(maskGenerator, uv_coords, zernike_mask,loss,5000,optimizer,device)
+    train_loss = train(maskGenerator, uv_coords, pyr_mask,loss,5000,optimizer,device)
     b = time.time() - a 
+    
+    torch.save({
+        'Mask_state_dict': maskGenerator.state_dict(),
+        'optimizer_o_state_dict': optimizer.state_dict()
+        }, mask_path)
     

@@ -14,15 +14,15 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
 { "Nres": 50,                                                                      # Number of pixels in the aperture of the telescope
-"sampling" : 4,                                                                    # Zero-padding factor (2 is Shannon)
+"sampling" : 2,                                                                    # Zero-padding factor (2 is Shannon)
 "D" : 1.5 ,                                                                        # Telescope diameter (m)
-"Nphotons" : [3, 7],                                                               # Log range of number of photons in measurement    
-"RON" : [0, 3]     ,                                                                # Read-out noise in photons per pixel per frame
+"Nphotons" : [4, 6],                                                               # Log range of number of photons in measurement    
+"RON" : [1, 2]     ,                                                                # Read-out noise in photons per pixel per frame
 "Nzernike" : 50 ,                                                                  # Number of Zernike modes to reconstruct
 "Nactuator" : 10,                                                                  # Number of actuators across the diameter of the DM
 "useNoise" : True,
-"InitParam" : [0.78, 0.78],
-"MaskType" : 'Free'
+"InitParam" : [0.78*2, 0.78*2],
+"MaskType" : 'Pyramid'
 },
 
 )  
@@ -31,9 +31,10 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {                                                                   
-"r0" : [0.06, 0.12],           # warning : min and max range taken in log10 space
+"r0" : [0.04, 0.15],           
 "L0" : [20,30.0000],                                                                    # Inner scale (m)                                                                       # Outter scale (m)
-"Nphases" : 16,
+"Nphases" : 64,
+"Layers" : 3
 }
 )                             
 
@@ -42,10 +43,10 @@ AtmosParams = dict(
 ## Loop parameters
 LoopParams = dict(
 {
-"loopFrequency" : 1000,
+"loopFrequency" : 500,
 "delayFrames" : 1,
-"windSpeedVector" : [5,10],
-"levelOfCorrection" : [0., 1.0],
+"windSpeedVector" : [-10,10],
+"levelOfCorrection" : [0., 1.],
 }
 )
 
@@ -53,8 +54,8 @@ LoopParams = dict(
 TrainParams = dict(
 {
 "lro" : 0.001,
-"lrn" :0.001,
-"TrainRunNb" : 1000,
+"lrn" : 0.001,
+"TrainRunNb" : 5000,
 "TestRunNb" : 10,
 }
 )

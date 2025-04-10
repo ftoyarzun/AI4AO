@@ -8,7 +8,7 @@ Created on Thu Jan  2 16:24:10 2025
 import torch
 
 from PhaseDataset import PhaseDataset, PermanentPhaseDataset
-from SimuEnd2EndWFS import End2EndWFS
+from SimuEnd2EndWFS import End2EndWFS, CheckpointManager
 from mmengine import Config
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,25 +16,60 @@ import time
 import os
 from TorchPropagator import Zernike
 import copy
+from collections import defaultdict
 
 import imageio.v2 as imageio
 
 import torch.nn as nn
+
+from line_profiler import profile
     
 class Custom_Loss_Function(nn.Module):
-    def __init__(self, epsilon = 1e-2, degree = 2, NZernike = 50, device = 'cuda'):
+    def __init__(self, epsilon = 1e-2, degree = 2, NZernike = 209, device = 'cuda'):
         super().__init__()
         self.epsilon = epsilon
         self.degree = degree
+        self.NZernike = NZernike
 
         self.linspace = torch.sqrt((torch.linspace(1, NZernike, NZernike, device=device)))
         
     def forward(self, y_pred, y_true, r0):
         diff = (y_pred - y_true) * self.linspace
-        return torch.mean(torch.abs(diff) ** self.degree * r0)
+        return torch.mean(torch.abs(diff)[:self.NZernike] ** self.degree * r0 ** (5/3))
 
 
 
+class Physics_loss(nn.Module):
+    def __init__(self, z_fullRes, phase_template, degree = 2, device = 'cuda'):
+        super().__init__()
+        self.z_fullRes = z_fullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
+        self.phase_shape = phase_template.shape
+        self.degree = degree
+    
+    def forward(self, WFSModule, I_WFS, y_pred, r0):
+        
+        I_pred = self.ComputeForwardImage(WFSModule, y_pred)
+        return torch.mean(torch.abs(I_pred - I_WFS) ** self.degree * r0 ** (5/3)) * 1e6
+        
+    def ComputeForwardImage(self, WFSModule, y_pred):
+        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view(*self.phase_shape)
+        
+        return WFSModule(reconstructed_phase)
+
+
+class ResidualPhaseLoss(nn.Module):
+    def __init__(self, z_fullRes, pupil, device = 'cuda'):
+        super().__init__()
+        self.z_fullRes = z_fullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
+        self.pupil = pupil
+    
+    def forward(self, y_pred, phase, r0):
+        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view_as(phase)
+        residual_phase = phase - reconstructed_phase
+        return torch.mean(torch.var(residual_phase[..., self.pupil.bool()], dim = -1) * r0 ** (5/3))
+        
+     
+    
 def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
 
@@ -53,8 +88,10 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     
     [z, z_FullRes] = Zernike(wfs.pupil, wfs.pupil_logical, wfs.Nres, Nzernike)
     
-    wfs_Zernike.BuildReconstructionMatrix(z_FullRes, wfs.mask)   
-    wfs_Pyramid.BuildReconstructionMatrix(z_FullRes, wfs.mask)
+    z_FullRes = z_FullRes.permute(2,0,1)
+    
+    wfs_Zernike.BuildReconstructionMatrix(z_FullRes, wfs_Zernike.mask)   
+    wfs_Pyramid.BuildReconstructionMatrix(z_FullRes, wfs_Pyramid.mask)
             
     wfs_Zernike.BuildReferenceIntensity()
     wfs_Pyramid.BuildReferenceIntensity()
@@ -85,6 +122,7 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     final_test_loss = 0
     
     End2EndWFS.eval()
+    # End2EndWFS.train()
     
     with torch.no_grad():
         
@@ -100,9 +138,9 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
         estimated_phase_wfs_Pyramid = wfs_Pyramid.GetReconstructedPhase(test_frame_wfs_Pyramid)
         
 
-        loss_NN = loss(output,zernike.to(output.dtype), r0s)
-        loss_Zernike = loss(estimated_phase_wfs_Zernike,zernike.to(estimated_phase_wfs_Zernike.dtype), r0s)
-        loss_Pyramid = loss(estimated_phase_wfs_Pyramid,zernike.to(estimated_phase_wfs_Pyramid.dtype), r0s)
+        loss_NN = loss(output,zernike, r0s)
+        loss_Zernike = loss(estimated_phase_wfs_Zernike,zernike, r0s)
+        loss_Pyramid = loss(estimated_phase_wfs_Pyramid,zernike, r0s)
         
         
         final_test_loss = loss_NN +final_test_loss
@@ -151,223 +189,98 @@ def test (End2EndWFS, dataset, loss, TestRunNb, device = 'cuda'):
     return final_test_loss /TestRunNb
 
 
-def log_scale_zernike(zernike):
-    # return torch.sign(zernike) * torch.log(torch.abs(zernike))
-    
-    # Get the length of the Zernike modes
-    length = zernike.shape[-1]
-    
-    # Create a linspace from 1 to the length
-    linspace = torch.linspace(1, length, length, device=zernike.device)  # Make sure the device matches
-    
-    # Scale the Zernike modes with the linspace
-    
-    return zernike * torch.sqrt(linspace)
 
 
 
-
-def train (End2EndWFS, dataset, loss, TrainRunNb, optimizer_o,optimizer_n, device = 'cuda'):
-    
-    final_train_loss = 0
-    
-    loss_tracker = []
-    param_tracker = []
-    
-    fig,ax = plt.subplots() 
-    img = ax.imshow(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N,End2EndWFS.N).cpu().detach().numpy())
-    fig.colorbar(img)
-    
-    # writer = imageio.get_writer(gif_path, mode="i", fps = 10)
-    
-    End2EndWFS.train()
-    
-    for u in range(0,TrainRunNb) :
-        
-
-        
-        optimizer_n.zero_grad()
-        optimizer_o.zero_grad()
-        
-        phaseGT,zernike,photons,ron,r0s = dataset[0]
-        
-        End2EndWFS.WFSmodule.WFS.SetPhotonsAndRON(photons,ron)
-        
-        output = End2EndWFS(phaseGT)  
-        
-   
-        # take a batch of images to estimage a batch of zernike parameters
-     
-        l = loss(output,zernike.to(output.dtype),r0s)
-   
-          
-        l. backward()
-        
-        #Comment one of these line to stop optimization on either part
-        
-        optimizer_o.step()
-        optimizer_n.step()
-        
-        # with torch.no_grad():  # Clip the parameter values after optimization step
-        
-        #     for param in End2EndWFS.WFSmodule.WFS.param:
-        #         param.clamp_(0.001, 1000)
-        
-        
-
-        # parameters values should change during the loop
-        #print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
-        if u % 100 == 0:
-            #print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
-            print(f" Run n°  {u}, train loss : {l.item():.5f} param_opt {Trained_End2EndWFS.WFSmodule.WFS.param.tolist()}")
-            loss_tracker.append(l.item())
-            param_tracker.append(Trained_End2EndWFS.WFSmodule.WFS.param.tolist())
-            img.set_data(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N,End2EndWFS.N).cpu().detach().numpy())
-            img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
-            
-            fig.canvas.draw()
-            # image = np.array(fig.canvas.buffer_rgba())
-            # writer.append_data(image)
-            
-            plt.pause(0.1)
-        
-        final_train_loss = l +final_train_loss
-        # writer.close()
-    return loss_tracker, np.array(param_tracker)
-
-
-
-def train_closed_loop_static(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimizer_n, gain=0.3, num_iterations=5, device='cuda'):
+def train_closed_loop(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimizer_n, gain=0.3, num_iterations=5, device='cuda'):
 
     loss_tracker = []
     param_tracker = []
     
-    fig, ax = plt.subplots()
-    img = ax.imshow(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
-    fig.colorbar(img)
+    # fig, ax = plt.subplots()
+    # img = ax.imshow(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
+    # fig.colorbar(img)
     
-    z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, 50).transpose(0, 1)
+    z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, dataset.Nzernike).transpose(0, 1)
 
     End2EndWFS.train()
 
-    for u in range(TrainRunNb):
-        #print(u)
-        optimizer_n.zero_grad()
-        optimizer_o.zero_grad()
-
+    for u in range(TrainRunNb // num_iterations):
+        t1 = time.perf_counter()
         # Get dataset sample
-        phaseGT, zernike, photons, ron, r0s = dataset[0]
-        End2EndWFS.WFSmodule.WFS.SetPhotonsAndRON(photons, ron)
-
-        # **Closed-loop iterative correction**
-        z_estimated = torch.zeros_like(zernike)  # Start with zero correction
-        residual_phase = phaseGT.clone()  # Start with the original phase
-
-        total_loss = 0
-        for i in range(num_iterations):
-            # Get new WFS images after applying the correction
-            
-
-            # Predict Zernike coefficients and update estimate
-            z_output = End2EndWFS(residual_phase)
-            z_estimated = z_estimated + gain * z_output  # Apply correction with gain
-
-            # Convert Zernike coefficients to full-resolution wavefront
-            z_reconstructed = torch.matmul(z_estimated, z_FullRes).view_as(phaseGT)
-
-            # Compute residual phase after correction
-            residual_phase = phaseGT - z_reconstructed
-
-            # Compute loss for this iteration
-            iter_loss = loss(z_estimated, zernike.to(z_estimated.dtype), r0s)
-            total_loss += iter_loss
-
-        # **Backpropagation**
-        total_loss.backward()
-        optimizer_o.step()
-        optimizer_n.step()
-
-        # **Track loss and parameters**
-        if u % 100 == 0:
-            print(f"Run {u}, Train Loss: {total_loss.item():.5f}, Params: {End2EndWFS.WFSmodule.WFS.param.tolist()}")
-            loss_tracker.append(total_loss.item())
-            param_tracker.append(End2EndWFS.WFSmodule.WFS.param.tolist())
-
-            img.set_data(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
-            img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
-            fig.canvas.draw()
-            plt.pause(0.1)
-
-
-
-    return loss_tracker, np.array(param_tracker)
-
-
-def train_closed_loop_dynamic(End2EndWFS, dataset, loss, TrainRunNb, optimizer_o, optimizer_n, gain=0.3, num_iterations=5, device='cuda'):
-
-    loss_tracker = []
-    param_tracker = []
-    
-    fig, ax = plt.subplots()
-    img = ax.imshow(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
-    fig.colorbar(img)
-    
-    z_FullRes = dataset.z_FullRes.to(device, dtype=torch.float32).view(-1, 50).transpose(0, 1)
-
-    End2EndWFS.train()
-
-    for u in range(TrainRunNb):
-        #print(u)
-        optimizer_n.zero_grad()
-        optimizer_o.zero_grad()
-
-        # Get dataset sample
+        
         dataset.ResetMovingWavefront()
-        phaseGT,zernike,photons,ron,r0s,_,_ = dataset.GetMovingWavefront(3, 0.001)
+        phaseGT,zernike,photons,ron,r0s,_,_ = dataset.GetMovingWavefront(generateClosedLoop = (num_iterations == 1))
         End2EndWFS.WFSmodule.WFS.SetPhotonsAndRON(photons, ron)
+        
+        
 
         # **Closed-loop iterative correction**
-        z_estimated = torch.zeros_like(zernike)  # Start with zero correction
-        
+        z_estimated = torch.zeros_like(zernike)  # Start with zero correction        
         z_reconstructed = torch.zeros_like(phaseGT)
-        residual_phase = torch.zeros_like(phaseGT)  # Start with the original phase
 
         total_loss = 0
         for i in range(num_iterations):
             # Get new WFS images after applying the correction
-            phaseGT,zernike,_,_,_,_,_ = dataset.GetMovingWavefront(3, 0.001)
+            if i > 0:
+                phaseGT,zernike,_,_,_,_,_ = dataset.GetMovingWavefront(generateClosedLoop = (num_iterations == 1))
             residual_phase = phaseGT - z_reconstructed
+
+            Ze = torch.matmul(residual_phase.flatten(1,2), dataset.invZ)
             # Predict Zernike coefficients and update estimate
+           
             z_output = End2EndWFS(residual_phase)
+            
             z_estimated = z_estimated + gain * z_output  # Apply correction with gain
 
-            # Convert Zernike coefficients to full-resolution wavefront
-            z_reconstructed = torch.matmul(z_estimated, z_FullRes).view_as(phaseGT)
-
-            # Compute residual phase after correction
             
-
+            # Convert Zernike coefficients to full-resolution wavefront
+            if num_iterations > 1:
+                z_reconstructed = torch.matmul(z_estimated, z_FullRes).view_as(phaseGT)
+            
             # Compute loss for this iteration
-            if i > num_iterations - 4:
-                iter_loss = loss(z_estimated, zernike.to(z_estimated.dtype), r0s)
-                total_loss += iter_loss
 
+            convergence_ratio = 1 - (1 - gain) ** (i + 1)
+
+            # iter_loss = loss(z_reconstructed, phaseGT * convergence_ratio, r0s)
+            iter_loss1 = loss[1](z_estimated, zernike * convergence_ratio, r0s)
+            # iter_loss0 = loss[1](z_output, Ze * gain, r0s) * 1
+            # iter_loss0 = loss[2](z_estimated, phaseGT * convergence_ratio, r0s) * 2
+            # iter_loss0 = loss[0](End2EndWFS.WFSmodule, End2EndWFS.Image, z_estimated, r0s) * 1
+            # total_loss += (iter_loss0 + iter_loss1) / num_iterations
+            total_loss = iter_loss1
+            
+            
+            
         # **Backpropagation**
+        optimizer_n.state = defaultdict(dict)
+        optimizer_o.state = defaultdict(dict)
+        
+        
+        optimizer_n.zero_grad(set_to_none = True)
+        optimizer_o.zero_grad(set_to_none = True)
+        
+        
         total_loss.backward()
-        optimizer_o.step()
+        # optimizer_o.step()
         optimizer_n.step()
-
+        
+        t2 = time.perf_counter()
         # **Track loss and parameters**
         if u % 10 == 0:
-            print(f"Run {u}, Train Loss: {total_loss.item():.5f}, Params: {End2EndWFS.WFSmodule.WFS.param.tolist()}")
+            #t2 = time.perf_counter()
+            print(f'Iteration frequency = {1/(t2 - t1)}')
+            # print(f"Run {u}, Train Loss Image: {iter_loss0.item():.10f}, Train Loss Zernike: {iter_loss1.item():.10f}, Params: {End2EndWFS.WFSmodule.WFS.param.tolist()}")
+            print(f"Run {u}, Train Loss Zernike: {iter_loss1.item():.10f}")
             loss_tracker.append(total_loss.item())
-            param_tracker.append(End2EndWFS.WFSmodule.WFS.param.tolist())
+            # param_tracker.append(End2EndWFS.WFSmodule.WFS.param.tolist())
 
-            img.set_data(End2EndWFS.maskGenerator(End2EndWFS.uv_coords).view(End2EndWFS.N, End2EndWFS.N).cpu().detach().numpy())
-            img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
-            fig.canvas.draw()
-            plt.pause(0.1)
-
+            # img.set_data(End2EndWFS.mask.cpu().detach().numpy())
+            # img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
+            # fig.canvas.draw()
+            #t1 = time.perf_counter()
+            # plt.pause(0.1)
+            
 
 
     return loss_tracker, np.array(param_tracker)
@@ -388,19 +301,20 @@ if __name__ == "__main__":
     TrainParams = Config.fromfile(paramfile)['TrainParams']
 
     # Dataset creation
-    dataset = PhaseDataset(WFSParams['D'],WFSParams['Nres'],WFSParams['Nzernike'],                       
-                           AtmosParams['L0'],AtmosParams['r0'],AtmosParams['Nphases'],
-                           WFSParams['Nactuator'],LoopParams['levelOfCorrection'],
-                           LoopParams['loopFrequency'], LoopParams['delayFrames'], LoopParams['windSpeedVector'],
-                           WFSParams['Nphotons'], WFSParams['RON'], device)
+    dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
+    
+    
+
+    
+    # Initialisation of the system 
+    Trained_End2EndWFS = End2EndWFS (WFSParams,device, "SimpleNet")
     
     
     # Setting the loss function
-    loss = Custom_Loss_Function()
-    
-    # Initialisation of the system 
-    Trained_End2EndWFS = End2EndWFS (WFSParams,device)
-    
+    loss_test = Custom_Loss_Function(NZernike=WFSParams['Nzernike'])
+    loss_residual = ResidualPhaseLoss(dataset.z_FullRes, dataset.pupil)
+    loss_physics = Physics_loss(dataset.z_FullRes, dataset[0][0])
+    loss = [loss_physics, loss_test, loss_residual]
     
    
     
@@ -420,47 +334,52 @@ if __name__ == "__main__":
         optimizer_o = torch.optim.AdamW([Trained_End2EndWFS.WFSmodule.WFS.param],lro)
     else:
         optimizer_o = torch.optim.AdamW(Trained_End2EndWFS.maskGenerator.parameters(),lro)
-   
-    
-   
-    optimizer_n = torch.optim.AdamW(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn)
+
+    optimizer_n = torch.optim.AdamW(Trained_End2EndWFS.PhaseEstimator.parameters(),lrn, fused = True)
  
+    checkpoint_path = 'SpeedTest.pth'
+    checkpointManager = CheckpointManager(Trained_End2EndWFS, WFSParams, TrainParams, checkpoint_path, optimizer_o, optimizer_n)
+    
+    # checkpointManager.load()
+    checkpointManager.load_network()
+    # checkpointManager.load_free_mask('CNNTest4.pth', False)
+    # checkpointManager.load_model()
+
    
     # Training part for parameters optimization
     print("Initialized parameters",Trained_End2EndWFS.WFSmodule.param)
-    
-    
-    checkpoint_path = 'FreeTest4.pth'
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        Trained_End2EndWFS.load_state_dict(checkpoint['model_state_dict'])
-        optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
-        optimizer_n.load_state_dict(checkpoint['optimizer_n_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        print("Resuming from epoch", start_epoch)
-    else:
-        start_epoch = 0
-        print("Starting from scratch")
+
     
     
     a = time.time()
-    train_loss, train_parameters = train_closed_loop_dynamic(Trained_End2EndWFS,dataset,loss,TrainRunNb,optimizer_o,optimizer_n, 0.7, 10, device)
-    # train_loss, train_parameters = train_closed_loop_static(Trained_End2EndWFS,dataset,loss,TrainRunNb,optimizer_o,optimizer_n, 1., 7, device)
-    # train_loss, train_parameters = train(Trained_End2EndWFS,dataset,loss,TrainRunNb,optimizer_o,optimizer_n,device)
+    
+    train_loss, train_parameters = train_closed_loop(Trained_End2EndWFS,
+                                                     dataset,
+                                                     loss,
+                                                     TrainRunNb,
+                                                     optimizer_o,
+                                                     optimizer_n,
+                                                     gain=1, 
+                                                     num_iterations=1,
+                                                     device=device)
+    
+    
     b = time.time() - a 
+    
+    # Save network and parameters
+    checkpointManager.save()
+    
     
     # Testing part
     permanentPhaseDataset = PermanentPhaseDataset()
-    test_loss = test(Trained_End2EndWFS,permanentPhaseDataset,loss,TestRunNb,device)
     
-    # Save network and parameters
+    var_loss = ResidualPhaseLoss(dataset.z_FullRes, dataset.pupil)
     
-    torch.save({
-        'epoch': start_epoch + TrainParams['TrainRunNb'],  # Update the epoch number after training
-        'model_state_dict': Trained_End2EndWFS.state_dict(),
-        'optimizer_o_state_dict': optimizer_o.state_dict(),
-        'optimizer_n_state_dict': optimizer_n.state_dict(),
-    }, checkpoint_path)
+    # test_loss = test(Trained_End2EndWFS,dataset,loss_test,TestRunNb,device)
+    
+    
+    
+    
     
     
     plt.subplots(1, 3, figsize=(20, 5))

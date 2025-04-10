@@ -14,6 +14,9 @@ np.math = math
 import torch.nn as nn
 import random
 
+
+from line_profiler import profile
+
 def Zernike(pupil, pupil_logical, resolution, j):
     """
      Creates the Zernike polynomial basis
@@ -71,7 +74,7 @@ def Zernike(pupil, pupil_logical, resolution, j):
     return out, outFullRes
 
 
-def GetSpatialFrequencies(D, resolution):
+def GetSpatialFrequencies(D, resolution, device = "cpu"):
     """
     Computes the spatial frequencies for a given diameter and resolution.
 
@@ -86,12 +89,13 @@ def GetSpatialFrequencies(D, resolution):
             - fy (torch array): Spatial frequency components in the y direction
     """
     dF = 1 / (D)
-    fx = torch.linspace(-resolution/2, resolution/2-1, resolution,dtype=torch.float32) * dF
+    fx = torch.linspace(-resolution/2, resolution/2-1, resolution,dtype=torch.float32, device = device) * dF
     [fx,fy] = torch.meshgrid(fx,fx)
     return dF, fx, fy
 
 
-def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
+# def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
+def GetAtmospherePSD(fsqr, dF, r0, L0):
     """
     Computes the atmospheric power spectral density (PSD) for phase aberrations based on the spatial frequencies.
 
@@ -107,13 +111,13 @@ def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
     Returns:
         torch array: Atmospheric power spectral density (PSD) for phase aberrations
     """
-    resolution = fx.shape[0]
+    resolution = fsqr.shape[-1]
     l0 = 1e-10 # Default value for the inner scale   ##PTP warning ?
-    f = torch.sqrt(fx**2 + fy**2)
+    # fsqr = fx**2 + fy**2
     fm = 5.92/l0/(2*torch.pi); 		# frecuencia de escala interna [1/m]
     f0 = 1/L0; 			          # frecuencia de escala externa [1/m]
-    PSD_phi = 0.023*r0**(-5/3) * torch.exp(-(f/fm)**2) / (f**2 + f0**2)**(11/6) * dF**2 * resolution**2;
-    PSD_phi[:, resolution//2,resolution//2] = 0;
+    PSD_phi = 0.023*r0**(-5/3) / (fsqr + f0**2)**(11/6) * dF**2 * resolution**2 * torch.exp(-fsqr/fm**2);
+    PSD_phi[..., resolution//2,resolution//2] = 0;
     return PSD_phi
 
 def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection = 1):
@@ -260,6 +264,8 @@ class WFS:
         self.useNoise = useNoise  ### changed to a setting parameter
         self.device = device
         self.reference_intensity = None
+        self.modulation = 0
+        self.maskType = maskType
         
         self.Nphotons = 1e7
         self.RON = 2
@@ -315,10 +321,24 @@ class WFS:
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
       
         ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))                           # Propagation of the field to the focal plane
-          
-        upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))                        # Multiplication to the phase mask and propagation to the detector
-        frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[1,2]))**2                    # Return the noisy image, normalized the the number of counts
+        
+        
+        
+        if self.maskType != "Pyramid" or self.modulation == 0:
+            upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[1,2]))**2                    # Return the noisy image, normalized the the number of counts
 
+        else:
+            nSteps = round(6.28*self.modulation / 4) * 4
+            frame_no_noise = torch.abs(torch.zeros_like(ufocal))
+            
+            for i in range(nSteps):
+                modulation_phase = 2 * torch.pi * i / nSteps
+                modulation_amplitude_in_pixels = self.modulation * self.sampling
+                pyr_mask_step = torch.pi/4 * (torch.abs(self.x_mask - modulation_amplitude_in_pixels * np.cos(modulation_phase)) + torch.abs(self.y_mask - modulation_amplitude_in_pixels * np.sin(modulation_phase)))
+                self.SetMask(pyr_mask_step)
+                upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask[None, :, :] ))
+                frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[1,2]))**2
      
         if not self.useNoise:
             normalization_factor = frame_no_noise.sum(dim=(1,2), keepdim=True)
@@ -454,7 +474,8 @@ class WFS:
             None
         """
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.zeros((1,1,1),dtype=torch.float32)).to(self.device)
+        self.reference_intensity = self.Propagator(torch.zeros((self.Nres, self.Nres),dtype=torch.float32)).to(self.device)
+        self.reference_intensity= self.reference_intensity.squeeze() 
         self.useNoise = True
     
     def BuildReconstructionMatrix(self, modes, mask):
@@ -469,13 +490,13 @@ class WFS:
         """
         self.useNoise = False
         delta = 1e-5
-        Nmodes = modes.shape[2]
+        Nmodes = modes.shape[0]
         iMat = torch.zeros((self.crop_size**2, Nmodes),dtype=torch.float32).to(mask.device)
         
         
         for ii in range(Nmodes):
-            push = self.Propagator(modes[None,:,:,ii] * delta)
-            pull = self.Propagator(-modes[None,:,:,ii] * delta)
+            push = self.Propagator(modes[ii] * delta)
+            pull = self.Propagator(-modes[ii] * delta)
             
             signal = (push - pull) / 2. / delta
             
@@ -498,6 +519,8 @@ class WFS:
             
         reduced_intensity = intensity - self.reference_intensity
         
+        # print(f"self.reference_intensity.shape = {self.reference_intensity.shape}")
+        # print(f"intensity.shape = {intensity.shape}")
   
         temp = torch.matmul(reduced_intensity.flatten(start_dim = -2), self.reconstructionMatrix.T)  
        
@@ -509,16 +532,16 @@ if __name__ == "__main__":
     plt.close('all')
     ## WFS parameters
     Nres = 50                                                                       # Number of pixels in the aperture of the telescope
-    sampling = 3                                                                   # Zero-padding factor (2 is Shannon)
+    sampling = 4                                                                   # Zero-padding factor (2 is Shannon)
     Npix = Nres * sampling                                                          # Total number of pixels
     D = 1                                                                           # Telescope diameter (m)
     Nphotons = 1e7                                                                  # Number of photons in measurement    
     RON = 0                                                                         # Read-out noise in photons per pixel per frame
     Nzernike = 50                                                                   # Number of Zernike modes to reconstruct
     Nactuator = 10                                                                  # Number of actuators across the diameter of the DM    
-    useNoise  = True                                                                # Add Noise or not
+    useNoise  = False                                                                # Add Noise or not
                                                                 
-    maskType = 'Zernike'                                                            # Type of mask Pyramidal or Zernike                                                             
+    maskType = 'Pyramid'                                                            # Type of mask Pyramidal or Zernike                                                             
     ## Atmosphere parameters
     r0 = 0.15                                                                       # Fried parameter (m)
     l0 = 1e-10                                                                      # Inner scale (m)
@@ -536,9 +559,10 @@ if __name__ == "__main__":
     device  = 'cuda'
     
     ## intialization of the parameter vector 
-    param = torch.tensor([1,0.78],dtype=torch.float32)
+    param = torch.tensor([0.78,0.78],dtype=torch.float32)
     ## Generate the wfs object
     wfs = WFS(Nres, sampling, D, Nphotons, RON,useNoise,param,maskType,device)
+    wfs.modulation = 5
     wfs.BuildReferenceIntensity()
     ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
     
@@ -561,7 +585,7 @@ if __name__ == "__main__":
     [dF, fx, fy] = GetSpatialFrequencies(D, Nres)
     atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, r0, L0, wfs.pupil, wfs.pupil_logical)
     fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 1)
-    temporalErrorPSD = GetTemporalErrorPSD(fx, fy, dF, loopFrequency, delayFrames, windSpeedVector)  
+    #temporalErrorPSD = GetTemporalErrorPSD(fx, fy, dF, loopFrequency, delayFrames, windSpeedVector)  
     
     
     # #%% This section is just to test how the images look like, what would be the perfect estimation and what is the phase estimation using a linear reconstructor 
@@ -591,13 +615,13 @@ if __name__ == "__main__":
 
         plt.subplot(1,2,2)
         line1.set_ydata(outZe_test[ii,:].cpu().detach().numpy())
-        line2.set_ydata(estimated_phase[ii,:].cpu().detach().numpy())
+        line2.set_ydata(estimated_phase.squeeze()[ii,:].cpu().detach().numpy())
         plt.xlabel('Zernike mode index')
         plt.ylabel('Zernike mode Amplitude')
         plt.pause(0.1)
         plt.show()
         
-    [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)
+    [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(atmosphere_PSD * fitting_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases)
     fig.suptitle('Residual turbulence after the AO loop', fontsize=16)
     
     test_frame = wfs.Propagator(outPhaseMap_test)
