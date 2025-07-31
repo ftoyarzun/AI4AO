@@ -14,6 +14,10 @@ np.math = math
 import torch.nn as nn
 import random
 
+from torch.fft import fft2, fftshift, ifft2, ifftshift
+
+from Constants import double_transmision_masks
+
 
 from line_profiler import profile
 
@@ -72,6 +76,45 @@ def Zernike(pupil, pupil_logical, resolution, j):
         
     outFullRes = torch.reshape( outFullRes, [resolution, resolution, j] )
     return out, outFullRes
+
+def ZernikeFullView(resolution, modes):
+    x = torch.linspace(-1, 1, resolution)
+    X, Y = torch.meshgrid(x,x, indexing = "xy")
+
+
+    R = torch.sqrt(X**2 + Y**2)
+    pupil = R < 1
+
+    theta = torch.arctan2(Y, X)
+    outFullRes = torch.zeros([len(modes), resolution, resolution],dtype = torch.float32)
+    
+    index = 0
+
+    for i in modes:
+        n, m = ao.zernike.zernIndex(i+1)
+        n_t = torch.tensor(n, dtype=torch.float32)
+       
+        
+        if m == 0:
+            Z = torch.sqrt(n_t+1) * ao.zernike.zernikeRadialFunc(n, 0, R)
+        else:
+            if m > 0: # j is even
+                Z = torch.sqrt(2*(n_t+1)) * ao.zernike.zernikeRadialFunc(n, m, R) * torch.cos(m * theta)
+            else:   #i is odd
+                m = abs(m)
+                Z = torch.sqrt(2*(n_t+1)) * ao.zernike.zernikeRadialFunc(n, m, R) * torch.sin(m * theta)
+        
+        Z *= pupil
+        Z -= Z[pupil].mean()
+        Z *= (1/torch.std(Z[pupil]))
+
+ 
+       
+        outFullRes[index, :, :] = Z.to(outFullRes.dtype)
+        index += 1
+        
+
+    return outFullRes
 
 
 def GetSpatialFrequencies(D, resolution, device = "cpu"):
@@ -232,7 +275,7 @@ def PoissonNoise(x):
 
 
 class WFS:
-    def __init__(self, resolution, sampling, diameter, photonRange, RONRange, useNoise,param,maskType,device):
+    def __init__(self, ParamsDict, device):
         """
         The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
 
@@ -254,18 +297,19 @@ class WFS:
         None.
 
         """
-        self.Nres = resolution
-        self.crop_size = 2 * self.Nres
-        self.sampling = sampling
-        self.Npix = resolution * sampling
-        self.D = diameter
-        self.photonRange = photonRange
-        self.RONRange = RONRange
-        self.useNoise = useNoise  ### changed to a setting parameter
+
+        self.Nres = ParamsDict['Nres']
+        self.sampling = ParamsDict['sampling']
+        self.Npix = int(self.Nres * self.sampling)
+        self.crop_size = self.Npix#2 * self.Nres
+        self.D = ParamsDict['D']
+        self.useNoise = ParamsDict['useNoise']
         self.device = device
         self.reference_intensity = None
         self.modulation = 0
-        self.maskType = maskType
+        self.maskType = ParamsDict['MaskType']
+        self.param = ParamsDict['InitParam']
+        self.beamSplitProportionForWFSDetector = ParamsDict['beamSplitProportionForWFSDetector']
         
         self.Nphotons = 1e7
         self.RON = 2
@@ -283,17 +327,17 @@ class WFS:
         self.pupil = (self.x ** 2 + self.y ** 2) <= ((self.Nres+1)/2)**2
         self.pupil_logical =  torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
         
-        self.param = param
         
-        if maskType == "Pyramid":
+        
+        if self.maskType == "Pyramid":
             
             self.BuildPyramidMask()
             
-        elif maskType == "Zernike":
+        elif self.maskType == "Zernike":
             self.BuildZernikeMask()
         
            
-        elif maskType == "Free":
+        elif self.maskType == "Free":
             pass
    
     
@@ -309,7 +353,7 @@ class WFS:
          """
 
         
-        pad = self.Nres * (self.sampling - 1)//2            
+        pad = int(self.Nres * (self.sampling - 1))//2            
 
         uin = self.pupil[None, :, :] * torch.exp(1j * phase) / torch.sqrt(self.pupil.sum())
         uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
@@ -318,45 +362,180 @@ class WFS:
       
         ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[-2,-1]))                           # Propagation of the field to the focal plane
         
-        
-        
-        if self.maskType != "Pyramid" or self.modulation == 0:
-            upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
-            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[-2,-1]))**2                    # Return the noisy image, normalized the the number of counts
-
-        else:
+        # if self.modulation != 0:
+        #     nSteps = round(6.28*self.modulation / 4) * 4
+        #     frame_no_noise = torch.abs(torch.zeros_like(ufocal))
+            
+        #     for i in range(nSteps):
+        #         modulation_phase = 2 * torch.pi * i / nSteps
+        #         modulation_amplitude_in_pixels = self.modulation * self.sampling
+        #         pyr_mask_step = torch.pi/4 * (torch.abs(self.x_mask - modulation_amplitude_in_pixels * np.cos(modulation_phase)) + torch.abs(self.y_mask - modulation_amplitude_in_pixels * np.sin(modulation_phase)))
+        #         self.SetMask(phaseMask = pyr_mask_step)
+        #         upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))
+        #         frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[-2,-1]))**2 / nSteps
+     
+        if self.modulation != 0:
             nSteps = round(6.28*self.modulation / 4) * 4
             frame_no_noise = torch.abs(torch.zeros_like(ufocal))
+            self.psf_no_noise = torch.abs(torch.zeros_like(ufocal))
             
             for i in range(nSteps):
                 modulation_phase = 2 * torch.pi * i / nSteps
-                modulation_amplitude_in_pixels = self.modulation * self.sampling
-                pyr_mask_step = torch.pi/4 * (torch.abs(self.x_mask - modulation_amplitude_in_pixels * np.cos(modulation_phase)) + torch.abs(self.y_mask - modulation_amplitude_in_pixels * np.sin(modulation_phase)))
-                self.SetMask(phaseMask = pyr_mask_step)
-                upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))
+                tip_tilt_mirror_phase = torch.exp(1j * 2 * torch.pi * self.modulation / self.Npix * self.sampling * (self.x_mask * np.cos(modulation_phase) + self.y_mask * np.sin(modulation_phase)))
+                ufocal_step = torch.fft.fft2(torch.fft.fftshift(uin_padded * tip_tilt_mirror_phase,[-2,-1]))
+                upupil_step = torch.fft.fft2(ufocal_step * torch.fft.fftshift(self.mask))
                 frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[-2,-1]))**2 / nSteps
-     
- 
+                self.psf_no_noise += torch.abs(torch.fft.fftshift(ufocal_step,[-2,-1]))**2 / nSteps
+        
+        elif self.maskType in double_transmision_masks:
+            upupil = torch.fft.fft2(ufocal.unsqueeze(1) * torch.fft.fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[-2,-1]))**2
+            frame_no_noise = self.crop_center(frame_no_noise, self.Nres)
+            top_left     = frame_no_noise[:, 0]  # [10, 70, 70]
+            top_right    = frame_no_noise[:, 1]
+            bottom_left  = frame_no_noise[:, 2]
+            bottom_right = frame_no_noise[:, 3]
+            
+            # Concatenate horizontally and vertically to make 140x140
+            top_row    = torch.cat([top_left, top_right], dim=2)    # [10, 70, 140]
+            bottom_row = torch.cat([bottom_left, bottom_right], dim=2)  # [10, 70, 140]
+            
+            # Now concatenate vertically
+            frame_no_noise = torch.cat([top_row, bottom_row], dim=1)         # [10, 140, 140]
+            
+        
+        else:
+            upupil = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(torch.fft.fftshift(upupil,[-2,-1]))**2                    # Return the noisy image, normalized the the number of counts
+
+        focal_plane_image = torch.abs(torch.fft.fftshift(ufocal,[-2,-1]))**2
+        focal_plane_image /= focal_plane_image.sum(dim=(-2,-1), keepdim=True)
      
         if not self.useNoise:
-            normalization_factor = frame_no_noise.sum(dim=(-2,-1), keepdim=True)
-            return self.crop_center(frame_no_noise / normalization_factor)
+            normalization_factor_wfs = frame_no_noise.sum(dim=(-2,-1), keepdim=True)
+            self.ufocal = focal_plane_image
+            return self.crop_center(frame_no_noise / normalization_factor_wfs, self.crop_size)
 
 
-
-        frame_with_noise = PoissonNoise(frame_no_noise * self.Nphotons) + self.RON * torch.randn_like(frame_no_noise)
-
-        normalization_factor = frame_with_noise.sum(dim=(-2,-1), keepdim=True)
+        
+        frame_with_noise = PoissonNoise(frame_no_noise * self.Nphotons * self.beamSplitProportionForWFSDetector) + self.RON * torch.randn_like(frame_no_noise)
+        normalization_factor_wfs = frame_with_noise.sum(dim=(-2,-1), keepdim=True)
         
         
-        return self.crop_center(frame_with_noise / normalization_factor)
+        if self.beamSplitProportionForWFSDetector != 1.:
+            focal_plane_image_with_noise = PoissonNoise(focal_plane_image * self.Nphotons * (1.-self.beamSplitProportionForWFSDetector) ) + 4 * torch.randn_like(focal_plane_image)
+            
+            focal_plane_image_with_noise /= focal_plane_image_with_noise.sum(dim=(-2,-1), keepdim=True)
+            self.ufocal = focal_plane_image_with_noise
+        else:
+            self.ufocal = focal_plane_image
+        
+        
+        
+        return self.crop_center(frame_with_noise / normalization_factor_wfs, self.crop_size)
+    
+    
+    def Propagator2(self, phase):
+        """
+         Simulates the propagation considering a input phase aberration and a phase mask
+
+         Args:
+            phase (torch tensor): Input phase aberration dim (NphasesxNresxNres)
+         Returns:
+            torch tensor: Sensor measurement NphasesxNresxNres
+            
+         """
+
+        
+        pad = int(self.Nres * (self.sampling - 1))//2            
+
+        uin = self.pupil.unsqueeze(0) * torch.exp(1j * phase) / torch.sqrt(self.pupil.sum())
+        uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
+        
+        uin_padded = uin_padded.unsqueeze(1)
+        
+      
+        ufocal = fft2(fftshift(uin_padded,[-2,-1]))                           # Propagation of the field to the focal plane
+        
+        # if self.modulation != 0:
+        #     nSteps = round(6.28*self.modulation / 4) * 4
+        #     frame_no_noise = torch.abs(torch.zeros_like(ufocal))
+            
+        #     for i in range(nSteps):
+        #         modulation_phase = 2 * torch.pi * i / nSteps
+        #         modulation_amplitude_in_pixels = self.modulation * self.sampling
+        #         pyr_mask_step = torch.pi/4 * (torch.abs(self.x_mask - modulation_amplitude_in_pixels * np.cos(modulation_phase)) + torch.abs(self.y_mask - modulation_amplitude_in_pixels * np.sin(modulation_phase)))
+        #         self.SetMask(phaseMask = pyr_mask_step)
+        #         upupil_step = torch.fft.fft2(ufocal * torch.fft.fftshift(self.mask))
+        #         frame_no_noise += torch.abs(torch.fft.fftshift(upupil_step,[-2,-1]))**2 / nSteps
+     
+        if self.modulation != 0:
+            nSteps = round(6.28*self.modulation / 4) * 4
+            frame_no_noise = torch.abs(torch.zeros_like(ufocal))
+            self.psf_no_noise = torch.abs(torch.zeros_like(ufocal))
+            
+            for i in range(nSteps):
+                modulation_phase = 2 * torch.pi * i / nSteps
+                tip_tilt_mirror_phase = torch.exp(1j * 2 * torch.pi * self.modulation / self.Npix * self.sampling * (self.x_mask * np.cos(modulation_phase) + self.y_mask * np.sin(modulation_phase)))
+                ufocal_step = fft2(fftshift(uin_padded * tip_tilt_mirror_phase,[-2,-1]))
+                upupil_step = ifftshift(ifft2(ufocal_step * torch.fft.fftshift(self.mask)))
+                frame_no_noise += torch.abs(fftshift(upupil_step,[-2,-1]))**2 / nSteps
+
+        
+        elif self.maskType in double_transmision_masks:
+            upupil = ifft2(ufocal * fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(fftshift(upupil,[-2,-1]))**2
+            frame_no_noise = self.crop_center(frame_no_noise, self.Nres)
+            top_left     = frame_no_noise[:, 0]  # [10, 70, 70]
+            top_right    = frame_no_noise[:, 1]
+            bottom_left  = frame_no_noise[:, 2]
+            bottom_right = frame_no_noise[:, 3]
+            
+            # Concatenate horizontally and vertically to make 140x140
+            top_row    = torch.cat([top_left, top_right], dim=2)    # [10, 70, 140]
+            bottom_row = torch.cat([bottom_left, bottom_right], dim=2)  # [10, 70, 140]
+            
+            # Now concatenate vertically
+            frame_no_noise = torch.cat([top_row, bottom_row], dim=1)         # [10, 140, 140]
+            
+        
+        else:
+            upupil = ifft2(ufocal * fftshift(self.mask))                        # Multiplication to the phase mask and propagation to the detector
+            frame_no_noise = torch.abs(fftshift(upupil,[-2,-1]))**2                    # Return the noisy image, normalized the the number of counts
+
+        focal_plane_image = torch.abs(fftshift(ufocal,[-2,-1]))**2
+        focal_plane_image /= focal_plane_image.sum(dim=(-2,-1), keepdim=True)
+     
+        if not self.useNoise:
+            normalization_factor_wfs = frame_no_noise.sum(dim=(-2,-1), keepdim=True)
+            self.ufocal = focal_plane_image
+            return self.crop_center(frame_no_noise / normalization_factor_wfs, self.crop_size)
+
+
+        
+        frame_with_noise = PoissonNoise(frame_no_noise * self.Nphotons * self.beamSplitProportionForWFSDetector) + self.RON * torch.randn_like(frame_no_noise)
+        normalization_factor_wfs = frame_with_noise.sum(dim=(-2,-1), keepdim=True)
+        
+        
+        if self.beamSplitProportionForWFSDetector != 1.:
+            focal_plane_image_with_noise = PoissonNoise(focal_plane_image * self.Nphotons * (1.-self.beamSplitProportionForWFSDetector) ) + 4 * torch.randn_like(focal_plane_image)
+            
+            focal_plane_image_with_noise /= focal_plane_image_with_noise.sum(dim=(-2,-1), keepdim=True)
+            self.ufocal = focal_plane_image_with_noise
+        else:
+            self.ufocal = focal_plane_image
+        
+        
+        
+        return self.crop_center(frame_with_noise / normalization_factor_wfs, self.crop_size)
+    
     
     def SetPhotonsAndRON(self, Nphotons, RON):
         self.Nphotons = Nphotons
         self.RON = RON
     
     
-    def crop_center(self,img):
+    def crop_center(self, img, crop_size):
         """
         Crops the central 2*Nres pixels from an image.
     
@@ -372,8 +551,8 @@ class WFS:
         center = img.shape[-1] // 2  # Center index
         
         # Compute cropping boundaries
-        start = center - (self.crop_size // 2)
-        end = center + (self.crop_size // 2)
+        start = center - (crop_size // 2)
+        end = center + (crop_size // 2)
     
         # Crop the image
         return img[..., start:end, start:end]
@@ -387,10 +566,15 @@ class WFS:
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
-        uin = self.pupil[None, :, :] * torch.exp(1j * phase)
-        pad = self.Nres * (self.sampling - 1)//2
-        uin_padded = torch.nn.functional(uin, (pad,pad,pad,pad))                # Pad the pupil 
-        return torch.abs(torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(uin_padded,[1,2]))))**2     # Propagation of the field to the focal plane
+        pad = int(self.Nres * (self.sampling - 1))//2              
+
+        uin = self.pupil[None, :, :] * torch.exp(1j * phase) / torch.sqrt(self.pupil.sum())
+        uin_padded = torch.nn.functional.pad(uin,(pad,pad,pad,pad))       # Pad the pupil 
+        
+        
+      
+        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded,[-2,-1]))               # Pad the pupil 
+        return torch.abs(torch.fft.fftshift(ufocal))**2     # Propagation of the field to the focal plane
 
     
     
@@ -404,8 +588,12 @@ class WFS:
         Returns:
             None
         """
+        if phaseMask is not None:
+            self.mask = torch.ones_like(phaseMask, dtype=torch.cfloat)  / self.Npix ** 2
+
+        elif transmisionMask is not None:  
+            self.mask = torch.ones_like(transmisionMask)  / self.Npix ** 2
         
-        self.mask = torch.ones(1, self.Npix, self.Npix, device = self.device, dtype = torch.complex64)  / self.Npix ** 2
         
         if phaseMask is not None:
             self.mask *= torch.exp(1j * phaseMask)
@@ -473,12 +661,13 @@ class WFS:
         Returns:
             None
         """
+        tempUseNoise = self.useNoise
         self.useNoise = False
-        self.reference_intensity = self.Propagator(torch.zeros((self.Nres, self.Nres),dtype=torch.float32, device = self.device))
+        self.reference_intensity = self.Propagator(torch.zeros((1, self.Nres, self.Nres), dtype=torch.float32, device = self.device))
         self.reference_intensity= self.reference_intensity.squeeze() 
-        self.useNoise = True
+        self.useNoise = tempUseNoise
     
-    def BuildReconstructionMatrix(self, modes):
+    def BuildReconstructionMatrix(self, modes, batch_size=30, phaseOffset = 0):
         """
         Builds the reconstruction matrix by computing the signals for each mode using finite differences.
     
@@ -488,29 +677,57 @@ class WFS:
         Returns:
             None
         """
+        tempUseNoise = self.useNoise
         self.useNoise = False
         delta = 1e-5
-        Nmodes = modes.shape[0]        
         
-        # for ii in range(Nmodes):
-        #     push = self.Propagator(modes[ii] * delta)
-        #     pull = self.Propagator(-modes[ii] * delta)
+        Nmodes = modes.shape[0]
+        iMat_parts = []
+        
+        for i in range(0, Nmodes, batch_size):
+            modes_batch = modes[i:i + batch_size]  # (Npix^2, batch_size)
             
-        #     signal = (push - pull) / 2. / delta
+            # reshape to (1, Npix, Npix, batch_size) if needed by Propagator
+            push = self.Propagator(modes_batch * delta + phaseOffset)
+            pull = self.Propagator(-modes_batch * delta + phaseOffset)
             
+            signal = (push - pull) / (2. * delta)
+            signal_flat = signal.flatten(start_dim=-2)  # shape: (batch_size, Npix^2)
+    
+            iMat_parts.append(signal_flat)
+
+        self.iMat = torch.cat(iMat_parts, dim=0)  # shape: (Nmodes, Npix^2)
             
-        #     iMat[:,ii] = signal.flatten()
+        self.useNoise = tempUseNoise
+        self.reconstructionMatrix = torch.linalg.pinv(self.iMat)
         
-        push = self.Propagator(modes * delta)
-        pull = self.Propagator(-modes * delta)
         
-        signal = (push - pull) / 2. / delta
+    # def BuildReconstructionMatrix(self, modes):
+    #     """
+    #     Builds the reconstruction matrix by computing the signals for each mode using finite differences.
+    
+    #     Args:
+    #         modes (torch tensor): Modes (3D array with shape (Npix, Npix, Nmodes)) representing different phase aberrations
+    #         mask (torch tensor): Phase mask used in the propagation (not directly used in this function)
+    #     Returns:
+    #         None
+    #     """
+    #     tempUseNoise = self.useNoise
+    #     self.useNoise = False
+    #     delta = 1e-5
         
-        iMat = signal.flatten(start_dim = -2)
+        
+        
+    #     push = self.Propagator(modes * delta)
+    #     pull = self.Propagator(-modes * delta)
+        
+    #     signal = (push - pull) / 2. / delta
+        
+    #     self.iMat = signal.flatten(start_dim = -2)
             
         
-        self.useNoise = True
-        self.reconstructionMatrix = torch.linalg.pinv(iMat)
+    #     self.useNoise = tempUseNoise
+    #     self.reconstructionMatrix = torch.linalg.pinv(self.iMat)
         
     def GetReconstructedPhase(self, intensity):
         """

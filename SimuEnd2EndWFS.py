@@ -7,175 +7,197 @@ Created on Thu Jan  2 16:45:31 2025
 """
 
 from TorchPropagator import WFS
-from PhaseEstimators import LinearEstimator, SimpleNet, ViT_PyTorch
-from MaskGeneration import MaskGenerator
+from PhaseEstimators import LinearEstimator, SimpleNet, ViT_PyTorch, DataFusion, Papyrus, VGGNet, PapyrusPhase, UNetWithMLP
+from MaskGeneration import MaskManager
 import torch.nn as nn
 import torch
 from mmengine import Config
 import os
+from Constants import mask_types_list, param_needed_mask_list
+import torch.nn.functional as F
 
 from line_profiler import profile
 
 
     
      
-class WFSmodule (nn.Module) :
+# class WFSmodule (nn.Module) :
     
-    def __init__(self, ParamsDict,device) :
+#     def __init__(self, ParamsDict,device) :
         
+#         super().__init__()
+#         self.param = nn.Parameter(torch.tensor(ParamsDict['InitParam']).to(device))
+#         self.param_name = "toy example parameter vector"       
+#         self.WFS = WFS(ParamsDict, self.param, device)
+#     def forward(self, phase):
+
+#         return self.WFS.Propagator(phase)     
+        
+    
+class End2EndWFS(nn.Module):
+    def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
+        self.device = device
+        self.maskType = wfsParams['MaskType']
+        self.Nzernike = wfsParams['Nzernike']
+        self.N = wfsParams['Nres'] * wfsParams['sampling']
+        self.Nres = wfsParams['Nres']
+        self.WFS = WFS(wfsParams, device)
+        self.ReconstructionType = wfsParams['Reconstruction']
+        #self.phaseEstimator = ParamsDict['Reconstruction']
+
+        # Phase Estimator Selection
+        self.PhaseEstimator = self._build_phase_estimator(wfsParams, atmosParams, device)
+
+        # Initialize Mask Manager
+        self.maskManager = MaskManager(wfsParams, device, self.WFS)
+        self.maskManager.update_masks()
         
 
-        self.param = nn.Parameter(torch.tensor(ParamsDict['InitParam']).to(device))
-        self.param_name = "toy example parameter vector"
+    def _build_phase_estimator(self, wfsParams, atmosParams, device):
+        if wfsParams['Reconstruction'] == "Linear":
+            return LinearEstimator(self.WFS)
+        elif wfsParams['Reconstruction'] == "SimpleNet":
+            return SimpleNet(wfsParams, atmosParams, device).to(self.device)
+        elif wfsParams['Reconstruction'] == "DataFusion":
+            return DataFusion(wfsParams, atmosParams, device).to(self.device)
+        elif wfsParams['Reconstruction'] == "Papyrus":
+            return Papyrus(wfsParams, atmosParams, device).to(self.device)
+        elif wfsParams['Reconstruction'] == "PapyrusPhase":
+            return PapyrusPhase(self.WFS.pupil, device).to(self.device)
+        elif wfsParams['Reconstruction'] == "VGGNet":
+            return VGGNet(wfsParams).to(self.device)
+        elif wfsParams['Reconstruction'] == "UNet":
+            return UNetWithMLP(1, mlp_output_size = wfsParams["Nzernike"]).to(self.device)
+        elif wfsParams['Reconstruction'] == "Transformer":
+            return ViT_PyTorch(
+                embed_dim=256,
+                img_size=80,
+                patch_size=8,
+                dropout=0.2,
+                num_heads=4,
+                num_encoders=4,
+                expansion=2,
+                Nzernike=self.Nzernike,
+            ).to(self.device)
         
-        self.WFS = WFS(ParamsDict['Nres'],ParamsDict['sampling'],ParamsDict['D'],ParamsDict['Nphotons'], ParamsDict['RON'],ParamsDict['useNoise'],self.param,ParamsDict['MaskType'],device)
-        
-        
-    def forward(self, phase):
-        
-        
-        return self.WFS.Propagator(phase)     
+        else:
+            raise ValueError(f"Unknown phase estimator: {wfsParams['Reconstruction']}")
 
 
-    
-class End2EndWFS (nn.Module):
-    
-    
-    def __init__(self, ParamsDict,device, phaseEstimator = "SimpleNet"):
-        
-        super().__init__()
-     
-        self.WFSmodule = WFSmodule(ParamsDict,device)
-        self.phaseEstimator = phaseEstimator
-        # Choice of phase estimator (Linear or learned optimized)
-        Nzernike = ParamsDict['Nzernike']
-        self.maskType = ParamsDict['MaskType']
-        # change here the processing for phase estimation
-        
-        if phaseEstimator == "Linear":
-            self.PhaseEstimator = LinearEstimator(self.WFSmodule.WFS)
-        elif phaseEstimator == "SimpleNet":
-            self.PhaseEstimator = SimpleNet(Nzernike).to(device)
-        elif phaseEstimator == "Transformer":
-            self.PhaseEstimator = ViT_PyTorch(embed_dim = 256,
-                                              img_size = 100,
-                                              patch_size = 10,
-                                              dropout = 0.2,
-                                              num_heads = 4,
-                                              num_encoders = 4,
-                                              expansion = 2,
-                                              Nzernike = Nzernike).to(device)
-        
-        
-        if self.maskType != "Pyramid" or self.maskType != "Zernike":
-            self.N = ParamsDict['Nres'] * ParamsDict['sampling']  # Resolution
-            
-            # Generate a grid of frequency coordinates
-            u = torch.linspace(-1, 1, self.N, device = device)  # Normalized frequency range
-            U, V = torch.meshgrid(u, u, indexing="xy")  # Create the full grid
-            
-            self.circ_mask = (torch.sqrt(U ** 2 + V ** 2) < 1).flatten()
-            
-            # Flatten and stack into (N^2, 2) shape
-            self.uv_coords = torch.stack([U.flatten(), V.flatten()], dim=1).to(device)
-        
-        
-        if self.maskType == "FreePhase":
-            self.phaseMaskGenerator = MaskGenerator(isPhaseMask = True).to(device)
-            self.phaseMask = self.phaseMaskGenerator(self.uv_coords).view(self.N, self.N)
-       
-        
-        elif self.maskType == "FreeTransmision":
-            self.transmisionMaskGenerator = MaskGenerator(isPhaseMask = False).to(device)
-            self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
-            
-        elif self.maskType == "FreePhaseTransmision":
-            self.phaseMaskGenerator = MaskGenerator(isPhaseMask = True).to(device)
-            self.phaseMask = self.phaseMaskGenerator(self.uv_coords).view(self.N, self.N)
-            self.transmisionMaskGenerator = MaskGenerator(isPhaseMask = False).to(device)
-            self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
-
-        
+    @profile
     def forward(self, x):
-        # input : x (tensor) : input phase
-        # output : estimated phase
+        linearEstimation = 0
+        self.maskManager.update_masks()
+        self.Image = self.WFS.Propagator(x)
+        self.focalPlaneImage = self.WFS.ufocal
+        input_to_network = self.Image
         
-        # Reload the ZernikeMask according to current parameter
-         if self.maskType == "Pyramid":
-             
-             self.WFSmodule.WFS.BuildPyramidMask()
-             
-         elif self.maskType == "Zernike":
-             self.WFSmodule.WFS.BuildZernikeMask()
+        if self.ReconstructionType == "DataFusion":
+            input_to_network = torch.cat((input_to_network.unsqueeze(1), self.focalPlaneImage.unsqueeze(1)), dim = 1)
+        if self.ReconstructionType == "Papyrus":
+            input_to_network = self.bin_image(self.MergePupils(),2)
+        if self.ReconstructionType == "Transformer":
+            input_to_network = self.bin_image(self.MergePupils(),2)
+        if self.ReconstructionType == "PapyrusPhase":
+            input_to_network = self.bin_image(self.MergePupils(),2)
+        if self.ReconstructionType == "UNet":
+            input_to_network = self.bin_image(self.MergePupils(),2)    
+    
+        EstimatedPhase = self.PhaseEstimator(input_to_network)
+        return EstimatedPhase
          
-            
-         elif self.maskType == "FreePhase":
-             self.phaseMask = self.phaseMaskGenerator(self.uv_coords)
-             self.phaseMask = self.remove_tip_tilt(self.phaseMask).view(self.N, self.N)
-             self.WFSmodule.WFS.SetMask(phaseMask = self.phaseMask)
-             
-         elif self.maskType == "FreeTransmision":  
-             self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
-             self.WFSmodule.WFS.SetMask(transmisionMask = self.transmisionMask)
-             
-         elif self.maskType == "FreePhaseTransmision":
-             self.phaseMask = self.phaseMaskGenerator(self.uv_coords)
-             self.phaseMask = self.remove_tip_tilt(self.phaseMask).view(self.N, self.N)
-             self.transmisionMask = self.transmisionMaskGenerator(self.uv_coords).view(self.N, self.N)
-             self.WFSmodule.WFS.SetMask(phaseMask = self.phaseMask, transmisionMask = self.transmisionMask)
-         
-         # Compute the image from the phase
-        
-         self.Image = self.WFSmodule(x)       
-         
-         # Estimate the phase 
-         
-         EstimatedPhase = self.PhaseEstimator(self.Image)
-         
-         return EstimatedPhase
-     
 
-    def remove_tip_tilt(self, mask):
-        """ Removes only the tip & tilt (ignores bias/constant offset). """
+
+    def GetPupils(self, images = None):
+        
+        if images is None:
+            images = self.Image
+        
+        images = images - self.WFS.reference_intensity.detach()
+        
+        Ncrop = self.Nres + 2
+
+        centers = self.maskManager.GetPupilCenter()
+
+        out = torch.zeros((images.shape[0], 4, Ncrop, Ncrop), device = self.device)
+        
+        for i, center in enumerate(centers):
+            out[:, i] = images[..., center[0] - Ncrop//2: center[0] + Ncrop//2, center[1] - Ncrop//2: center[1] + Ncrop//2]
+
+        return out
     
-        # Solve least squares
-        coeffs = torch.linalg.lstsq(self.uv_coords[self.circ_mask], mask[self.circ_mask]).solution  # coeffs.shape = [2, 1]
+    def MergePupils(self, pupils = None):
+        
+        if pupils is None:
+            pupils = self.GetPupils()
+        
+        Ncrop = pupils.shape[-1]
+        
+        out = torch.zeros((pupils.shape[0], Ncrop * 2, Ncrop * 2), device = self.device)
+        
+        
+        
+        out[..., Ncrop:, Ncrop:] = pupils[:, 0]
+        out[..., :Ncrop, Ncrop:] = pupils[:, 1]
+        out[..., :Ncrop, :Ncrop] = pupils[:, 2]
+        out[..., Ncrop:, :Ncrop] = pupils[:, 3]
+        
+        return out
     
-        # Compute the tilt plane using only (u, v) terms
-        tilt_plane = self.uv_coords @ coeffs  # Result: [N, 1]
+    def GetPhaseVariance(self, phase):
+        return torch.var(phase[..., self.WFS.pupil.bool()], dim = -1, keepdim=True).unsqueeze(-1)
     
-        # Remove tip & tilt
-        mask_corrected = mask - tilt_plane
-        return mask_corrected   
-     
+    
+    def bin_image(self, image: torch.Tensor, bin_size: int) -> torch.Tensor:
+        """
+        Bins a 2D image (or batch of images) by summing over bin_size x bin_size regions.
+    
+        Args:
+            image (torch.Tensor): shape (B, C, H, W)
+            bin_size (int): binning factor
+    
+        Returns:
+            torch.Tensor: binned image of shape (B, C, H//bin_size, W//bin_size)
+        """
+        B, H, W = image.shape
+        image = image.unsqueeze(1)  # Add channel dimension: (B, 1, H, W)
+    
+        # Create uniform binning kernel
+        kernel = torch.ones((1, 1, bin_size, bin_size), device=image.device)
+    
+        # Apply convolution with stride = bin_size
+        binned = F.conv2d(image, kernel, stride=bin_size)
+
+    
+        return binned.squeeze(1)  # Remove channel dimension -> (B, H//bin, W//bin)
         
 class AOLoop:
-    def __init__(self, End2EndWFS, z_FullRes, gain, phaseTemplate, outputTemplate, photons, ron, start_after_iteration = 0, modulation = 0):
+    def __init__(self, ParamsDict, End2EndWFS, z_FullRes, gain, phaseTemplate, outputTemplate, photons, ron, start_after_iteration = 0, modulation = 0):
         
         self.End2EndWFS = End2EndWFS
         self.z_FullRes = z_FullRes
         
-        if self.End2EndWFS.WFSmodule.WFS.maskType == "Pyramid" and self.End2EndWFS.phaseEstimator == "Linear":
-            self.End2EndWFS.WFSmodule.WFS.param = [0.78, 0.78]
-            self.End2EndWFS.WFSmodule.WFS.modulation = modulation
-            self.End2EndWFS.WFSmodule.WFS.BuildPyramidMask()
-            Nres = self.End2EndWFS.WFSmodule.WFS.Nres
-            self.End2EndWFS.WFSmodule.WFS.BuildReconstructionMatrix(self.z_FullRes.view(-1,Nres,Nres))        
-            self.End2EndWFS.WFSmodule.WFS.BuildReferenceIntensity()
+        if ParamsDict["Reconstruction"] == "Linear":
+            self.End2EndWFS.WFS.param = [torch.pi/2, torch.pi/2]
+            self.End2EndWFS.WFS.modulation = modulation
+            self.End2EndWFS.WFS.BuildPyramidMask()
+            Nres = self.End2EndWFS.WFS.Nres
+            self.End2EndWFS.WFS.BuildReconstructionMatrix(self.z_FullRes.view(-1,Nres,Nres))        
+            self.End2EndWFS.WFS.BuildReferenceIntensity()
         
         
         self.gain = gain
         self.z_estimated = torch.zeros_like(outputTemplate)  # Start with zero correction        
         self.z_reconstructed = torch.zeros_like(phaseTemplate)
         self.residual_phase = torch.zeros_like(phaseTemplate)  # Start with the original phase    
-        self.pupil = self.End2EndWFS.WFSmodule.WFS.pupil
+        self.pupil = self.End2EndWFS.WFS.pupil
         self.residual_variance = torch.var(phaseTemplate[:, self.pupil.bool()], dim=-1).unsqueeze(-1)
         self.start_after_iteration = start_after_iteration
         
         self.End2EndWFS(phaseTemplate)
-        self.images = self.End2EndWFS.WFSmodule(phaseTemplate)
-        self.End2EndWFS.WFSmodule.WFS.SetPhotonsAndRON(photons, ron)
+        self.images = self.End2EndWFS.Image
+        self.End2EndWFS.WFS.SetPhotonsAndRON(photons, ron)
         self.iteration = 0
 
         
@@ -187,11 +209,11 @@ class AOLoop:
         self.iteration += 1
         self.residual_phase = phase - self.z_reconstructed
         self.residual_variance = torch.cat((self.residual_variance, torch.var(self.residual_phase[:, self.pupil.bool()], dim = -1).unsqueeze(-1)), dim = 1)
-        self.images = self.End2EndWFS.WFSmodule(self.residual_phase)
+        z_output = self.End2EndWFS(self.residual_phase)
+        self.images = self.End2EndWFS.Image
         
         if self.iteration > self.start_after_iteration:
-            z_output = self.End2EndWFS.PhaseEstimator(self.images)
-            self.z_estimated = 1 * self.z_estimated + self.gain * z_output
+            self.z_estimated = 0.999 * self.z_estimated + self.gain * z_output
             self.z_reconstructed = torch.matmul(self.z_estimated, self.z_FullRes).view_as(self.z_reconstructed)
             
 
@@ -207,34 +229,33 @@ class AOLoop:
 class CheckpointManager:
     def __init__(self, model, WFSParams, TrainParams, checkpoint_path, optimizer_o = None, optimizer_n = None):
         self.model = model
+        self.maskManager = model.maskManager
         self.optimizer_o = optimizer_o
         self.optimizer_n = optimizer_n
         self.WFSParams = WFSParams
         self.TrainParams = TrainParams
         self.checkpoint_path = checkpoint_path
 
-    def load(self):
+    def load(self, should_load_optimizer = True):
         """Load checkpoint from the given path"""
         
         if not os.path.exists(self.checkpoint_path):
             print("Starting from scratch")
             return
         
-        self.load_network(self.checkpoint_path)
+        self.load_network(self.checkpoint_path, should_load_optimizer)
         
-        if self.WFSParams['MaskType'] == "FreePhase":
-            self.load_free_phaseMask(self.checkpoint_path)
+        if self.WFSParams['MaskType'] in ["FreePhase", "FreePhaseTransmision", "ModalMask"]:
+            self.load_free_phaseMask(self.checkpoint_path, should_load_optimizer)
 
-        elif self.WFSParams['MaskType'] == "FreeTransmision":
-            self.load_free_transmisionMask(self.checkpoint_path)
+        if self.WFSParams['MaskType'] in ["FreeTransmision", "FreePhaseTransmision"]:
+            self.load_free_transmisionMask(self.checkpoint_path, should_load_optimizer)
         
-        elif self.WFSParams['MaskType'] == "FreePhaseTransmision":
-            self.load_free_phaseMask(self.checkpoint_path)
-            self.load_free_transmisionMask(self.checkpoint_path)
-            
-        else:
-            self.load_parametric_mask(self.checkpoint_path)
+        if self.WFSParams['MaskType'] in param_needed_mask_list:
+            self.load_parametric_mask(self.checkpoint_path, should_load_optimizer)
 
+        if self.WFSParams['MaskType'] not in mask_types_list:
+            raise ValueError(f"Unsupported mask type: {self.WFSParams['MaskType']}")
 
 
     def load_network(self, network_path = None, should_load_optimizer = True):
@@ -262,7 +283,7 @@ class CheckpointManager:
             return
         
         checkpoint = torch.load(mask_path)
-        self.model.phaseMaskGenerator.load_state_dict(checkpoint['Phase_Mask_state_dict'])
+        self.maskManager.phaseMaskGenerator.load_state_dict(checkpoint['Phase_Mask_state_dict'])
         if should_load_optimizer:
             self.optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
             for param_group in self.optimizer_o.param_groups:
@@ -278,7 +299,7 @@ class CheckpointManager:
             return
         
         checkpoint = torch.load(mask_path)
-        self.model.transmisionMaskGenerator.load_state_dict(checkpoint['Transmision_Mask_state_dict'])
+        self.maskManager.transmisionMaskGenerator.load_state_dict(checkpoint['Transmision_Mask_state_dict'])
         if should_load_optimizer:
             self.optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
             for param_group in self.optimizer_o.param_groups:
@@ -296,7 +317,7 @@ class CheckpointManager:
             return
         
         checkpoint = torch.load(mask_path)
-        self.model.WFSmodule.load_state_dict(checkpoint['Mask_state_dict'])
+        self.maskManager.load_state_dict(checkpoint['Mask_state_dict'])
         if should_load_optimizer:
             self.optimizer_o.load_state_dict(checkpoint['optimizer_o_state_dict'])
             for param_group in self.optimizer_o.param_groups:
@@ -333,21 +354,20 @@ class CheckpointManager:
         dict_to_save['optimizer_n_state_dict'] = self.optimizer_n.state_dict()
         
         
-        if self.WFSParams['MaskType'] == "FreePhase":
-            dict_to_save['Phase_Mask_state_dict'] = self.model.phaseMaskGenerator.state_dict()
+        if self.WFSParams['MaskType'] in ["FreePhase", "FreePhaseTransmision"]:
+            dict_to_save['Phase_Mask_state_dict'] = self.maskManager.phaseMaskGenerator.state_dict()
 
-        elif self.WFSParams['MaskType'] == "FreeTransmision":
-            dict_to_save['Transmision_Mask_state_dict'] = self.model.transmisionMaskGenerator.state_dict()
+        if self.WFSParams['MaskType'] in ["FreeTransmision", "FreePhaseTransmision"]:
+            dict_to_save['Transmision_Mask_state_dict'] = self.maskManager.transmisionMaskGenerator.state_dict()
 
+        if self.WFSParams['MaskType'] == "ModalMask":
+            dict_to_save['Phase_Mask_state_dict'] = self.maskManager.phaseMaskGenerator.state_dict()
+    
+        if self.WFSParams['MaskType'] in param_needed_mask_list:
+            dict_to_save['Mask_state_dict'] = self.maskManager.state_dict()
         
-        elif self.WFSParams['MaskType'] == "FreePhaseTransmision":
-            dict_to_save['Phase_Mask_state_dict'] = self.model.phaseMaskGenerator.state_dict()
-            dict_to_save['Transmision_Mask_state_dict'] = self.model.transmisionMaskGenerator.state_dict()
-
-            
-        else:
-            dict_to_save['Mask_state_dict'] = self.model.WFSmodule.state_dict()
-        
+        if self.WFSParams['MaskType'] not in mask_types_list:
+            raise ValueError(f"Unsupported mask type: {self.WFSParams['MaskType']}")
 
         torch.save(dict_to_save, save_path)
 
