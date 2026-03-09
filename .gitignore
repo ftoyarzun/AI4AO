@@ -19,7 +19,6 @@ Images/
 Data/
 
 # Jupyter notebooks
-*.ipynb
 *.ipynb_checkpoints/
 
 # TensorRT / Torch checkpoints (ignore by default)
