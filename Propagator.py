@@ -8,7 +8,6 @@ import math
 import numpy as np
 np.math = math
 import pylab as plt
-import aotools as ao
 
 
 def Zernike(pupil, pupil_logical, resolution, j):
@@ -24,6 +23,64 @@ def Zernike(pupil, pupil_logical, resolution, j):
         out (numpy array): 2D Matrix in which each column corresponds to a zernike mode
         outFullRes (numpy array): 3D Matrix in which each 2D slice corresponds to a zernike mode
      """
+    def zernIndex(j):
+        """
+        ADAPTED FROM AOTOOLS PACKAGE:https://github.com/AOtools/aotools
+
+        Find the [n,m] list giving the radial order n and azimuthal order
+        of the Zernike polynomial of Noll index j.
+
+        Parameters:
+            j (int): The Noll index for Zernike polynomials
+
+        Returns:
+            list: n, m values
+        """
+        n = int((-1.+np.sqrt(8*(j-1)+1))/2.)
+        p = (j-(n*(n+1))/2.)
+        k = n % 2
+        m = int((p+k)/2.)*2 - k
+
+        if m != 0:
+            if j % 2 == 0:
+                s = 1
+            else:
+                s = -1
+            m *= s
+
+        return [n, m]
+    
+    def zernikeRadialFunc(n, m, r):
+        """
+        ADAPTED FROM AOTOOLS PACKAGE:https://github.com/AOtools/aotools
+        Function to calculate the Zernike radial function
+
+        Parameters:
+            n (int): Zernike radial order
+            m (int): Zernike azimuthal order
+            r (ndarray): 2-d array of radii from the centre the array
+
+        Returns:
+            ndarray: The Zernike radial function
+        """
+        try:
+            factorial = np.math.factorial
+        except:
+            import scipy
+
+            factorial = scipy.special.factorial
+
+        R = np.zeros(r.shape)
+        # Can cast the below to "int", n,m are always *both* either even or odd
+        for i in range(0, int((n - m) / 2) + 1):
+
+            R += np.array(r**(n - 2 * i) * (((-1)**(i)) *
+                                            factorial(n - i)) /
+                          (factorial(i) *
+                              factorial(int(0.5 * (n + m) - i)) *
+                              factorial(int(0.5 * (n - m) - i))),
+                          dtype='float')
+        return R
     X, Y = np.where(pupil > 0)
                         
     X = ( X-(resolution + resolution%2-1)/2 ) / resolution
@@ -36,15 +93,15 @@ def Zernike(pupil, pupil_logical, resolution, j):
     
 
     for i in range(1, j+1):
-        n, m = ao.zernike.zernIndex(i+1)
+        n, m = zernIndex(i+1)
         if m == 0:
-            Z = np.sqrt(n+1) * ao.zernike.zernikeRadialFunc(n, 0, R)
+            Z = np.sqrt(n+1) * zernikeRadialFunc(n, 0, R)
         else:
             if m > 0: # j is even
-                Z = np.sqrt(2*(n+1)) * ao.zernike.zernikeRadialFunc(n, m, R) * np.cos(m * theta)
+                Z = np.sqrt(2*(n+1)) * zernikeRadialFunc(n, m, R) * np.cos(m * theta)
             else:   #i is odd
                 m = abs(m)
-                Z = np.sqrt(2*(n+1)) * ao.zernike.zernikeRadialFunc(n, m, R) * np.sin(m * theta)
+                Z = np.sqrt(2*(n+1)) * zernikeRadialFunc(n, m, R) * np.sin(m * theta)
         
         Z -= Z.mean()
         Z *= (1/np.std(Z))
@@ -55,6 +112,9 @@ def Zernike(pupil, pupil_logical, resolution, j):
         outFullRes[pupil_logical, i-1] = Z
      
     outFullRes = np.reshape( outFullRes, [resolution, resolution, j] )
+
+    
+
     return out, outFullRes
 
 

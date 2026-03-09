@@ -17,8 +17,6 @@ import os
 import time
 from scipy.io import loadmat
 
-from line_profiler import profile
-
 
 class PhaseDataset(Dataset):
     """
@@ -83,6 +81,7 @@ class PhaseDataset(Dataset):
         self.r0Range = AtmosParams['r0']
         self.Nphases = AtmosParams['Nphases']
         self.nLayersRange = AtmosParams["Layers"]
+        self.f_slope = AtmosParams["f_slope"]
                                
                                
         self.levelOfCorrectionRange = LoopParams['levelOfCorrection']
@@ -103,6 +102,7 @@ class PhaseDataset(Dataset):
         [x,y] = np.meshgrid(x,x) 
                                        
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
+        self.pupilSum = self.pupil.sum()
         self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
 
         #  ## Compute some example PSDs
@@ -125,33 +125,51 @@ class PhaseDataset(Dataset):
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
         
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
-            M2C = torch.from_numpy(loadmat('../M2C_KL_OOPAO_synthetic_IF')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
-            papyrus_dm = torch.from_numpy(np.load("../papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            M2C = torch.from_numpy(loadmat('M2C_KL_OOPAO_synthetic_IF')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
+            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
-            papyrus_modal_dm = torch.flip(papyrus_modal_dm, dims=[0,1])
+
             
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
             
         elif WFSParams['ModalBasis'] == "Papyrus_Zernike":
-            Z2C = torch.from_numpy(np.load("../Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nzernike]
-            papyrus_dm = torch.from_numpy(np.load("../papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nzernike]
+            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ Z2C).view(80,80,-1)[1:-1, 1:-1, :]
-            papyrus_modal_dm = torch.flip(papyrus_modal_dm, dims=[0,1])
+
             
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
             
         elif WFSParams['ModalBasis'] == "Papyrus_Zonal":
-            papyrus_dm = torch.from_numpy(np.load("../papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_dm = papyrus_dm.view(80,80,-1)[1:-1, 1:-1, :]
-            papyrus_dm = torch.flip(papyrus_dm, dims=[0,1])
-            
+
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
+        
+        elif WFSParams['ModalBasis'] == "Oziriis_KL":
+            oziriis_modal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nzernike]
+            oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
+
+            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
+            self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
+            self.z = self.z_FullRes[self.pupil.bool()]
+
+        elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
+            oziriis_zonal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nzernike]
+            oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
+
+            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
+            self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
+            self.z = self.z_FullRes[self.pupil.bool()]
+
+        else:
+            raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
             
         
         #self.invZ = torch.from_numpy(np.linalg.pinv(z)).to(self.device, dtype=torch.float32).transpose(0, 1)
@@ -163,7 +181,7 @@ class PhaseDataset(Dataset):
         self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device)
-        self.nLayers = torch.randint(*self.nLayersRange, (1,), device = self.device)
+        self.nLayers = np.random.randint(*self.nLayersRange)
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
@@ -296,7 +314,7 @@ class PhaseDataset(Dataset):
         print("Test dataset saved successfully.")
         
         
-    @profile    
+    @torch.no_grad() 
     def GetMovingWavefront(self, generateClosedLoop = False):
         """
         Generate a moving (time-evolving) wavefront phase map.
@@ -335,7 +353,7 @@ class PhaseDataset(Dataset):
         
         phaseMap = self.CompressAtmosphere() 
         
-        phaseMap = phaseMap - self.pupil.unsqueeze(0) * phaseMap[...,self.pupil.bool()].mean(-1).unsqueeze(1).unsqueeze(1)
+        phaseMap = self.RemovePiston(phaseMap)
         
         # Compute Zernike decomposition
         Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
@@ -344,6 +362,11 @@ class PhaseDataset(Dataset):
          
         return phaseMap, Ze, self.Nphotons, self.RON, self.r0_moving, torch.stack((self.windSpeedVector_x,self.windSpeedVector_y)), self.fractionalr0
     
+    def RemovePiston(self, phaseMap):
+        mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
+        
+        masked_mean = (phaseMap * mask).sum(dim=(-2, -1), keepdim=True) / self.pupilSum
+        return phaseMap - masked_mean * mask
     
     def CompressAtmosphere(self):
         """
@@ -367,14 +390,13 @@ class PhaseDataset(Dataset):
         self.movingWavefrontGenerator = None
         self.movingCount = 0
         
-    @profile    
     def DrawRandomParameters(self):
         """
         Draw new random parameters for generating moving wavefronts.
         Updates r0, L0, correction level, photon/RON noise, fractional layer weights,
         and wind speed vectors for each atmospheric layer.
         """
-        self.nLayers = torch.randint(*self.nLayersRange, (1,), device = self.device)
+        self.nLayers = np.random.randint(*self.nLayersRange)
         
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.r0Range)
         self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.L0Range)
@@ -402,7 +424,7 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Atmospheric PSD with optional closed-loop correction applied.
         """
-        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, self.dF_moving, self.r0_moving, self.L0)  # Shape: (Nphases, H, W)
+        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, self.dF_moving, self.r0_moving, self.L0, self.f_slope)  # Shape: (Nphases, H, W)
         total_PSD = atmosphere_PSD# * fitting_PSD
         if not generateClosedLoop:
             return total_PSD

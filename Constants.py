@@ -13,11 +13,20 @@ mask_types_list = ["FreePhase",
                    "ModalMask",
                    "FullyFreePhase",
                    "BiOEdge",
+                   "IBiOEdge",
                    "FullyFreeTransmision",
-                   "Papyrus"
+                   "Papyrus",
+                   "DoublePyramid",
+                   "DoubleZernike"
                    ]
 
 param_needed_mask_list = ["Pyramid", "Zernike", "FullyFreePhase", "BiOEdge", "Papyrus"]
 
 double_transmision_masks = ["BiOEdge", 
                             "FullyFreeTransmision"]
+
+reconstruction_types_list = ["Linear", "SimpleNet", "DataFusion", "Papyrus", "PapyrusPhase", "VGGNet", "UNet", "Transformer", 'Papyrus2ndstage']
+
+basis_list = ["Zernike", "Papyrus_KL", "Papyrus_Zernike", "Papyrus_Zonal", "Oziriis_KL", "Oziriis_Zonal"]
+
+
