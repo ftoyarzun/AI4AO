@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large datasets / results
+*.npy
+*.npz
+*.mat
+Images/
+Data/
+
+# Jupyter notebooks
+*.ipynb
+*.ipynb_checkpoints/
+
+# TensorRT / Torch checkpoints (ignore by default)
+*.trt
+*.onnx
+
+# Logs / profiling
+*.log
+*.lprof
+*.json
+
+# Keep selected PyTorch models (edit these if you want)
+# Example: keep only "Free_Train.pth" and "Papyrus.pth"
+!Free_Train.pth
+!Free_Train2.pth
+!Papyrus.pth
+!Papyrus_Zonal.pth
+# add any others you want to keep
+
+# Ignore all other .pth files
+*.pth
