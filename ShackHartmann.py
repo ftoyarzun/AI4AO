@@ -1,0 +1,490 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue  Mar 17 15:58 2026
+@author: Matias Marambio-Jimenez
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from TorchPropagator import PoissonNoise
+
+class ShackHartmann(nn.Module):
+    """Shack-Hartmann wavefront sensor class based on OOPAO implementation."""
+    def __init__(self, WFSParams, device=None):
+        super().__init__()
+        self.device = device
+
+        # Telescope and detector parameters
+        self.Nres = WFSParams["Nres"]
+        self.D = WFSParams["D"]  # telescope diameter in meters
+        self.useNoise = WFSParams["useNoise"]
+        self.beamSplitProportionForWFSDetector = WFSParams["beamSplitProportionForWFSDetector"]
+        # Shack-Hartmann parameters
+        self.nSubap = WFSParams["nSubap"]
+        self.lightRatio = WFSParams["lightRatio"]
+        self.binning_factor = WFSParams["binning_factor"]
+        self.shannon_sampling = WFSParams["shannon_sampling"]
+        self.n_pixel_per_subap = WFSParams["n_pixel_per_subap"]
+        self.half_pixel_shift = WFSParams["half_pixel_shift", False]
+
+        if self.binning_factor < 1 or int(self.binning_factor) != self.binning_factor:
+            raise ValueError(
+                "binning_factor must be a positive integer"
+                )
+        self.binning_factor = int(self.binning_factor)
+        if self.binning_factor != 1:
+            raise NotImplementedError(
+                "Binning has not been implemented yet."
+            )
+
+        if self.Nres % self.nSubap != 0:
+            raise ValueError(
+                f"Nres ({self.Nres}) must be divisible by nSubap ({self.nSubap})"
+                )
+        
+        self.n_pix_subap_init = self.Nres // self.nSubap
+
+        if self.n_pixel_per_subap is None:
+            self.n_pix_subap = self.n_pix_subap_init
+        elif self.n_pixel_per_subap % 2 != 0:
+            raise ValueError("n_pixel_per_subap must be an even integer")
+        else:
+            self.n_pix_subap = int(self.n_pixel_per_subap)
+
+        self.zero_padding = 2
+
+        # Spot formation grid sizes
+        self.n_pix_lenslet_init = self.n_pix_subap_init * self.zero_padding
+        self.n_pix_lenslet = self.n_pix_subap * self.zero_padding
+        
+        self.center_init = self.n_pix_lenslet_init // 2
+        self.center = self.n_pix_lenslet // 2
+
+        # Detector size after binning:
+        self.detector_pitch = self.n_pix_subap // self.binning_factor
+        if self.n_pix_subap % self.binning_factor != 0:
+            raise ValueError(
+                f"n_pixel_per_subap ({self.n_pix_subap}) must be divisible by binning_factor ({self.binning_factor})"
+                )
+        self.detector_size = self.nSubap * self.detector_pitch
+
+        # Noise defaults
+        self.Nphotons = 1e7
+        self.RON = 2.
+        self.focalplaneRON = 4.
+
+        # build pupil
+        x = torch.linspace(-self.Nres / 2, self.Nres / 2, self.Nres, dtype=torch.float32, device=self.device)
+        self.x, self.y = torch.meshgrid(x, x, indexing="ij")
+        self.pupil = ((self.x**2 + self.y**2) <= ((self.Nres + 1) / 2)**2).to(torch.float32)
+        self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
+
+        # precompute lenslet indexing over the pupil
+        self._build_lenslet_geometry()
+
+        # build subaperture flux cube and valid lenslet mask from the pupil
+        self._initialize_flux_from_pupil()
+        self._set_valid_subapertures()
+
+        # optional phasor
+        self._build_phasor()
+
+        # buffers updated during propagation
+        self.frame_no_noise = None
+        self.frame_with_noise = None
+        self.maps_intensity = None
+        self.psf_no_noise = None
+        self.psf_with_noise = None
+
+    def _build_lenslet_geometry(self):
+        self.index_x = []
+        self.index_y = []
+        self.lenslet_slices = []
+
+        for i in range(self.nSubap):
+            x0 = i * self.n_pix_subap_init
+            x1 = (i + 1) * self.n_pix_subap_init
+            for j in range(self.nSubap):
+                y0 = j * self.n_pix_subap_init
+                y1 = (j + 1) * self.n_pix_subap_init
+                self.index_x.append(i)
+                self.index_y.append(j)
+                self.lenslet_slices.append((slice(x0, x1), slice(y0, y1)))
+        self.index_x = torch.tensor(self.index_x, device=self.device, dtype=torch.long)
+        self.index_y = torch.tensor(self.index_y, device=self.device, dtype=torch.long)  
+
+    def _initialize_flux_from_pupil(self):
+        """
+        OOPAO-like initialize_flux using the telescope flux map.
+        """
+        n_lenslets = self.nSubap ** 2
+        cube_flux = torch.zeros((n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
+                                 device=self.device, dtype=torch.float32)
+        k = 0
+        x_insert_0 = self.center_init - self.n_pix_lenslet_init // 2
+        x_insert_1 = self.center_init + self.n_pix_lenslet_init // 2
+        y_insert_0 = self.center_init - self.n_pix_lenslet_init // 2
+        y_insert_1 = self.center_init + self.n_pix_lenslet_init // 2
+
+        for xs, ys in self.lenslet_slices:
+            sub_flux = self.pupil[xs, ys]
+            cube_flux[k, x_insert_0:x_insert_1, y_insert_0:y_insert_1] = sub_flux
+            k += 1
+
+        self.cube_flux = cube_flux
+        self.photon_per_subaperture = cube_flux.sum(dim=(1, 2))
+
+    def _set_valid_subapertures(self):
+        """
+        OOPAO-like valid lenslet selection based on relative flux threshold.
+        """
+        max_flux = torch.max(self.photon_per_subaperture)
+        if max_flux <= 0:
+            valid_id = torch.zeros_like(self.photon_per_subaperture, dtype=torch.bool)
+        else:
+            valid_id = self.photon_per_subaperture >= self.lightRatio * max_flux
+        self.valid_subapertures_id = valid_id
+        self.valid_subapertures = valid_id.view(self.nSubap, self.nSubap)
+        self.nValidSubap = int(valid_id.sum().item())
+        valid_2d_idx = torch.nonzero(self.valid_subapertures, as_tuple=False)
+        if valid_2d_idx.numel() == 0:
+            self.validLenslets_x = torch.empty(0, dtype=torch.long, device=self.device)
+            self.validLenslets_y = torch.empty(0, dtype=torch.long, device=self.device)
+        else:
+            self.validLenslets_x = valid_2d_idx[:, 0]
+            self.validLenslets_y = valid_2d_idx[:, 1]
+        
+    def _build_phasor(self):
+        """
+        OOPAO-like phasor used to center spots within each lenslet stamp.
+        """
+        coords = torch.linspace(0, self.n_pix_lenslet_init - 1, self.n_pix_lenslet_init, dtype=torch.float32, device=self.device)
+        xx, yy = torch.meshgrid(coords, coords, indexing="ij")
+        half_shift = 1.0 if self.half_pixel_shift else 0.0
+        phase_term = (
+            -1j * np.pi * (self.n_pix_lenslet_init + 1 + half_shift) / self.n_pix_lenslet_init * (xx + yy)
+            )
+        self.phasor = torch.exp(phase_term).to(torch.complex64)
+
+    def _get_lenslet_em_field(self, phase):
+        """
+        Build one zero-padded complex EM field per lenslet.
+        Input:
+            phase: (B, Nres, Nres)
+        Output:
+            em_field: (B, nSubap^2, n_pix_lenslet_init, n_pix_lenslet_init)
+        """
+        if phase.dim() != 3:
+            raise ValueError("phase must have a batch dimensio. shape (B, Nres, Nres).")
+        B = phase.shape[0]
+        n_lenslets = self.nSubap ** 2
+        uin = self.pupil.unsqueeze(0) * torch.exp(1j * phase)
+        uin = uin / torch.sqrt(self.pupil.sum())
+
+        em_field = torch.zeros(
+            (B, n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init), 
+            dtype=torch.complex64, device=self.device
+        )
+
+        x_insert_0 = self.center_init - self.n_pix_subap_init // 2
+        x_insert_1 = self.center_init + self.n_pix_subap_init // 2
+        y_insert_0 = self.center_init - self.n_pix_subap_init // 2
+        y_insert_1 = self.center_init + self.n_pix_subap_init // 2
+
+        for k, (xs, ys) in enumerate(self.lenslet_slices):
+            sub_field = uin[:, xs, ys]
+            em_field[:, k, x_insert_0:x_insert_1, y_insert_0:y_insert_1] = sub_field
+            em_field *= self.phasor.unsqueeze(0).unsqueeze(0)
+        return em_field
+    def _bin_intensity(self, intensity, factor):
+        """
+        Sum-binning over the last 2 dimentions
+        """
+
+        if factor == 1:
+            return intensity
+        B, L, H, W = intensity.shape
+        if H % factor != 0 or W % factor != 0:
+            raise ValueError(
+                f"Cannot bin intensity of shape ({H}, {W}) by factor {factor}."
+            )
+        intensity = intensity.view(B, L, H // factor, factor, W //factor, factor)
+        intensity = intensity.sum(dim=(3, 5))
+        return intensity
+    
+    def _crop_or_pad_to_size(self, stamps, target_size):
+        """
+        Center crop or symmetric zero-pad each lenslet stamp to target_size.
+        """
+        B, L, H, W = stamps.shape
+
+        if H != W:
+            raise ValueError("Lenslet stamps must be square.")
+        if H == target_size:
+            return stamps
+        if H > target_size:
+            start = (H - target_size) // 2
+            end = start + target_size
+            return stamps[:, :, start:end, start:end]
+        pad_total = target_size - H
+        pad_before = pad_total // 2
+        pad_after = pad_total - pad_before
+        return F.pad(stamps, (pad_before, pad_after, pad_before, pad_after))
+    
+    def _assemble_detector_frame(self, stamps):
+        """
+        Assemble all lenslet stamps into the SHWFS detector frame.
+        Input:
+            stamps: (B, nSubap^2, detector_pitch, detector_pitch)
+        Output:
+            frame: (B, detector_size, detector_size)
+        """
+        B, L, H, W = stamps.shape
+        if L != self.nSubap **2:
+            raise ValueError("Unexpected number of lenslet stamps.")
+        if H != self.detector_pitch or W != self.detector_pitch:
+            raise ValueError("Unexpected lenslet stamp size for detector assembly.")
+        frame = torch.zeros(
+            (B, self.detector_size, self.detector_size),
+            dtype=stamps.dtype,
+            device=self.device
+        )
+        k = 0
+        for i in range(self.nSubap):
+            x0 = i * self.detector_pitch
+            x1 = (i + 1) * self.detector_pitch
+            for j in range(self.nSubap):
+                y0 = j * self.detector_pitch
+                y1 = (j + 1) * self.detector_pitch
+                frame[:, x0:x1, y0:y1] = stamps[:, k]
+                k += 1
+        return frame
+
+
+    def _sum_bin_last2(self, x, factor):
+        """
+        Sum-bin the last two dimensions by an integer factor.
+
+        Input:
+            x: (B, L, H, W) or (B, H, W)
+        """
+        if factor == 1:
+            return x
+
+        if x.dim() == 4:
+            B, L, H, W = x.shape
+            if H % factor != 0 or W % factor != 0:
+                raise ValueError(f"Cannot bin shape {(H, W)} by factor {factor}.")
+            x = x.view(B, L, H // factor, factor, W // factor, factor).sum(dim=(3, 5))
+            return x
+
+        if x.dim() == 3:
+            B, H, W = x.shape
+            if H % factor != 0 or W % factor != 0:
+                raise ValueError(f"Cannot bin shape {(H, W)} by factor {factor}.")
+            x = x.view(B, H // factor, factor, W // factor, factor).sum(dim=(2, 4))
+            return x
+
+        raise ValueError("Input must have 3 or 4 dimensions.")
+
+
+    def add_stamp_raw_data(self, ind_x, ind_y, stamps, detector_shape=None):
+        """
+        Parameters
+        ----------
+        ind_x, ind_y : torch.Tensor
+            Shape (nStamp,), lenslet indices on the SH grid.
+        stamps : torch.Tensor
+            Shape (B, nStamp, sy, sx)
+        detector_shape : tuple or None
+            Optional (Ny, Nx). If None, uses the standard SH detector size.
+
+        Returns
+        -------
+        raw_data : torch.Tensor
+            Shape (B, Ny, Nx)
+        """
+        if stamps.dim() != 4:
+            raise ValueError("stamps must have shape (B, nStamp, sy, sx).")
+
+        B, nStamp, sy, sx = stamps.shape
+        device = stamps.device
+        dtype = stamps.dtype
+
+        if not torch.is_tensor(ind_x):
+            ind_x = torch.as_tensor(ind_x, device=device, dtype=torch.long)
+        else:
+            ind_x = ind_x.to(device=device, dtype=torch.long)
+
+        if not torch.is_tensor(ind_y):
+            ind_y = torch.as_tensor(ind_y, device=device, dtype=torch.long)
+        else:
+            ind_y = ind_y.to(device=device, dtype=torch.long)
+
+        if ind_x.numel() != nStamp or ind_y.numel() != nStamp:
+            raise ValueError("ind_x and ind_y must have shape (nStamp,) matching stamps.")
+
+        pitch = self.n_pix_subap // self.binning_factor
+
+        if detector_shape is None:
+            Ny = self.nSubap * pitch
+            Nx = self.nSubap * pitch
+        else:
+            Ny, Nx = detector_shape
+
+        cx = ind_x * pitch + pitch // 2
+        cy = ind_y * pitch + pitch // 2
+        x0 = cx - sy // 2
+        y0 = cy - sx // 2
+        dx = torch.arange(sy, device=device, dtype=torch.long)
+        dy = torch.arange(sx, device=device, dtype=torch.long)
+        gx = x0[:, None, None] + dx[None, :, None] # (nStamp, sy, 1)
+        gy = y0[:, None, None] + dy[None, None, :] # (nStamp, 1, sx)
+        gx = gx.expand(nStamp, sy, sx)             # (nStamp, sy, sx)
+        gy = gy.expand(nStamp, sy, sx)             # (nStamp, sy, sx)
+        valid = (gx >= 0) & (gx < Ny) & (gy >= 0) & (gy < Nx)
+        flat_idx = (gx * Nx + gy).reshape(nStamp, sy * sx)
+        flat_idx = flat_idx.clamp(0, Ny * Nx - 1)
+        src = stamps.reshape(B, nStamp, sy * sx)
+        src = src * valid.reshape(1, nStamp, sy * sx).to(dtype)
+        raw_data_stamps_flat = torch.zeros((B, nStamp, Ny * Nx),
+                                            dtype=dtype,  device=device)
+        index = flat_idx.unsqueeze(0).expand(B, -1, -1)
+        raw_data_stamps_flat.scatter_add_(dim=2, index=index, src=src)
+        raw_data_stamps = raw_data_stamps_flat.view(B, nStamp, Ny, Nx)
+        raw_data = raw_data_stamps.sum(dim=1)
+        return raw_data
+
+    def split_raw_data(self, input_frame=None, valid_only=False):
+        """
+        The detector frame is split into nSubap x nSubap tiles of size
+        (n_pix_subap // binning_factor), and each tile is embedded in the center
+        of an analysis window of size (n_pix_subap, n_pix_subap).
+        """
+        if input_frame is None:
+            input_frame = self.frame_no_noise
+
+        if input_frame.dim() == 2:
+            input_frame = input_frame.unsqueeze(0)
+
+        B = input_frame.shape[0]
+        det_pitch = self.n_pix_subap // self.binning_factor
+        center = self.n_pix_subap // 2
+
+        maps_intensity = torch.zeros(
+            (B, self.nSubap ** 2, self.n_pix_subap, self.n_pix_subap),
+            dtype=input_frame.dtype, device=input_frame.device,
+        )
+
+        xw0 = center - det_pitch // 2
+        xw1 = center + det_pitch // 2
+        yw0 = center - det_pitch // 2
+        yw1 = center + det_pitch // 2
+
+        k = 0
+        row_chunks = torch.chunk(input_frame, self.nSubap, dim=-2)
+        for i in range(self.nSubap):
+            col_chunks = torch.chunk(row_chunks[i], self.nSubap, dim=-1)
+            for j in range(self.nSubap):
+                maps_intensity[:, k, xw0:xw1, yw0:yw1] = col_chunks[j]
+                k += 1
+
+        if valid_only:
+            maps_intensity = maps_intensity[:, self.valid_subapertures_1d]
+
+        return maps_intensity
+
+    @torch.no_grad()
+    def Propagator(self, phase):
+        """
+        Diffractive Shack-Hartmann WFS propagation.
+        Steps:
+        1) build full FFT spot stamps per lenslet,
+        2) optionally resample/bin the full stamps,
+        3) add each stamp to the global detector with overlap,
+        4) re-window the detector into subaperture analysis cubes.
+        """
+        if phase.dim() == 2:
+            phase = phase.unsqueeze(0)
+        if phase.shape[-2:] != (self.Nres, self.Nres):
+            raise ValueError(f"phase must have shape (B, {self.Nres}, {self.Nres}),\n\tgot {tuple(phase.shape)}.")
+        
+        B = phase.shape[0]
+
+        # Full lenslet EM fields, zero-padded on the lenslet FFT grid
+        lenslet_em_field = self._get_lenslet_em_field(phase)
+        norma = float(self.cube_flux.shape[1])  # lenslet grid size as FFT normalization
+        # Full lenslet stamps before detector-plane assembly
+        intensity = torch.abs(torch.fft.fft2(lenslet_em_field, dim=(-2, -1)) / norma) **2
+        # intensity is shape (B, nSubap^2, H, W)
+        valid_cube = intensity[:, self.valid_subapertures_id]
+        self.sum_intensity = valid_cube.sum(dim=1)
+
+        if hasattr(self, "outerMask"):
+            outer_mask = self.outerMask
+            if not torch.is_tensor(outer_mask):
+                outer_mask = torch.tensor(outer_mask, dtype=intensity.dtype, device=intensity.device)
+            else:
+                outer_mask = outer_mask.to(device=intensity.device, dtype=intensity.dtype)
+            denom = valid_cube.sum(dim=(1, 2, 3)).clamp_min(1e-12)
+            numer = (valid_cube * outer_mask.unsqueeze(0).unsqueeze(0)).sum(dim=(1, 2, 3))
+            self.edge_subaperture_criterion = numer / denom
+
+        if self.binning_factor > 1:
+            remainder = intensity.shape[-1] % self.binning_factor
+            if remainder != 0:
+                pad_total = self.binning_factor - remainder
+                pad_before = pad_total // 2
+                pad_after = pad_total - pad_before
+                intensity = F.pad(intensity, (pad_before, pad_after, pad_before, pad_after),
+                                  mode='constant', value=0.0)
+            intensity = self._sum_bin_last2(intensity, self.binning_factor)
+        elif self.binning_factor != 1:
+            raise ValueError("The binning_factor must be a scalar >= 1.")
+        # Assemble the detector frame
+        det_pitch = self.n_pix_subap // self.binning_factor
+        if not torch.is_tensor(self.index_x):
+            ind_x = torch.as_tensor(self.index_x, device=intensity.device, dtype=torch.long)
+        else:
+            ind_x = self.index_x.to(device=intensity.device, dtype=torch.long)
+
+        if not torch.is_tensor(self.index_y):
+            ind_y = torch.as_tensor(self.index_y, device=intensity.device, dtype=torch.long)
+        else:
+            ind_y = self.index_y.to(device=intensity.device, dtype=torch.long)
+
+        self.raw_data = self.add_stamp_raw_data(
+            ind_x=ind_x, ind_y=ind_y, stamps=intensity,
+            detector_shape=(self.nSubap * det_pitch, self.nSubap * det_pitch),
+        )
+        self.frame_no_noise = self.raw_data
+        flux = self.frame_no_noise.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
+        self.frame_no_noise /= flux
+        self.psf_no_noise = self.frame_no_noise.clone()
+        if not self.useNoise:
+            self.maps_intensity = self.split_raw_data(input_frame=self.frame_no_noise)
+            return self.frame_no_noise
+        self.AddNoiseToFrame()
+        self.maps_intensity=self.split_raw_data(input_frame=self.frame_with_noise)
+        return self.frame_with_noise
+    
+    def SetPhotonsAndRON(self, Nphotons, RON):
+        self.Nphotons = Nphotons
+        self.RON = RON
+    
+    def AddNoiseToFrame(self):
+        self.frame_with_noise = PoissonNoise(
+            self.frame_no_noise * self.Nphotons * self.beamSplitProportionForWFSDetector
+            ) + self.RON * torch.randn_like(self.frame_no_noise)
+        flux = self.frame_with_noise.sum(dim=(-2, -1), keepdim=True)
+        flux = torch.clamp(flux, min=1e-12)
+        self.frame_with_noise = self.frame_with_noise / flux
+        if self.beamSplitProportionForWFSDetector < 1.0:
+            self.psf_with_noise = PoissonNoise(
+                self.psf_no_noise * self.Nphotons * (1.0 - self.beamSplitProportionForWFSDetector) + self.focalPlaneRON * torch.randn_like(self.psf_no_noise)
+                )
+        else:
+            self.psf_with_noise = self.psf_no_noise
+            
