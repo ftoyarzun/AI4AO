@@ -27,7 +27,7 @@ class ShackHartmann(nn.Module):
         self.binning_factor = WFSParams["binning_factor"]
         self.shannon_sampling = WFSParams["shannon_sampling"]
         self.n_pixel_per_subap = WFSParams["n_pixel_per_subap"]
-        self.half_pixel_shift = WFSParams["half_pixel_shift", False]
+        self.half_pixel_shift = WFSParams["half_pixel_shift"]
 
         if self.binning_factor < 1 or int(self.binning_factor) != self.binning_factor:
             raise ValueError(
@@ -44,7 +44,7 @@ class ShackHartmann(nn.Module):
                 f"Nres ({self.Nres}) must be divisible by nSubap ({self.nSubap})"
                 )
         
-        self.n_pix_subap_init = self.Nres // self.nSubap
+        self.n_pix_subap_init = self.Nres // self.nSubap 
 
         if self.n_pixel_per_subap is None:
             self.n_pix_subap = self.n_pix_subap_init
@@ -123,10 +123,16 @@ class ShackHartmann(nn.Module):
         cube_flux = torch.zeros((n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
                                  device=self.device, dtype=torch.float32)
         k = 0
-        x_insert_0 = self.center_init - self.n_pix_lenslet_init // 2
-        x_insert_1 = self.center_init + self.n_pix_lenslet_init // 2
-        y_insert_0 = self.center_init - self.n_pix_lenslet_init // 2
-        y_insert_1 = self.center_init + self.n_pix_lenslet_init // 2
+        # Insert the subaperture flux into the center of each zero-padded
+        # lenslet stamp. The inserted block has size `n_pix_subap_init` (the
+        # subaperture size), not `n_pix_lenslet_init` (the zero-padded stamp
+        # size). Using the subaperture size ensures shapes match when
+        # assigning `sub_flux` (which is `n_pix_subap_init x n_pix_subap_init`).
+        
+        x_insert_0 = self.center_init - self.n_pix_subap_init // 2
+        x_insert_1 = self.center_init + self.n_pix_subap_init // 2
+        y_insert_0 = self.center_init - self.n_pix_subap_init // 2
+        y_insert_1 = self.center_init + self.n_pix_subap_init // 2
 
         for xs, ys in self.lenslet_slices:
             sub_flux = self.pupil[xs, ys]
@@ -169,23 +175,19 @@ class ShackHartmann(nn.Module):
         self.phasor = torch.exp(phase_term).to(torch.complex64)
 
     def _get_lenslet_em_field(self, phase):
-        """
-        Build one zero-padded complex EM field per lenslet.
-        Input:
-            phase: (B, Nres, Nres)
-        Output:
-            em_field: (B, nSubap^2, n_pix_lenslet_init, n_pix_lenslet_init)
-        """
         if phase.dim() != 3:
-            raise ValueError("phase must have a batch dimensio. shape (B, Nres, Nres).")
+            raise ValueError("phase must have shape (B, Nres, Nres).")
+
         B = phase.shape[0]
         n_lenslets = self.nSubap ** 2
+
         uin = self.pupil.unsqueeze(0) * torch.exp(1j * phase)
         uin = uin / torch.sqrt(self.pupil.sum())
 
         em_field = torch.zeros(
-            (B, n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init), 
-            dtype=torch.complex64, device=self.device
+            (B, n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
+            dtype=torch.complex64,
+            device=self.device
         )
 
         x_insert_0 = self.center_init - self.n_pix_subap_init // 2
@@ -196,8 +198,10 @@ class ShackHartmann(nn.Module):
         for k, (xs, ys) in enumerate(self.lenslet_slices):
             sub_field = uin[:, xs, ys]
             em_field[:, k, x_insert_0:x_insert_1, y_insert_0:y_insert_1] = sub_field
-            em_field *= self.phasor.unsqueeze(0).unsqueeze(0)
+
+        em_field = em_field * self.phasor.unsqueeze(0).unsqueeze(0)
         return em_field
+
     def _bin_intensity(self, intensity, factor):
         """
         Sum-binning over the last 2 dimentions
@@ -297,7 +301,7 @@ class ShackHartmann(nn.Module):
         ind_x, ind_y : torch.Tensor
             Shape (nStamp,), lenslet indices on the SH grid.
         stamps : torch.Tensor
-            Shape (B, nStamp, sy, sx)
+            Shape (B, nStamp, sy, sx), sy and sx are coordinates within subaperture 
         detector_shape : tuple or None
             Optional (Ny, Nx). If None, uses the standard SH detector size.
 
@@ -334,7 +338,7 @@ class ShackHartmann(nn.Module):
         else:
             Ny, Nx = detector_shape
 
-        cx = ind_x * pitch + pitch // 2
+        cx = ind_x * pitch + pitch // 2  # central coordinates for each stamp
         cy = ind_y * pitch + pitch // 2
         x0 = cx - sy // 2
         y0 = cy - sx // 2
@@ -392,7 +396,7 @@ class ShackHartmann(nn.Module):
                 k += 1
 
         if valid_only:
-            maps_intensity = maps_intensity[:, self.valid_subapertures_1d]
+            maps_intensity = maps_intensity[:, self.valid_subapertures_id]
 
         return maps_intensity
 
@@ -483,7 +487,7 @@ class ShackHartmann(nn.Module):
         self.frame_with_noise = self.frame_with_noise / flux
         if self.beamSplitProportionForWFSDetector < 1.0:
             self.psf_with_noise = PoissonNoise(
-                self.psf_no_noise * self.Nphotons * (1.0 - self.beamSplitProportionForWFSDetector) + self.focalPlaneRON * torch.randn_like(self.psf_no_noise)
+                self.psf_no_noise * self.Nphotons * (1.0 - self.beamSplitProportionForWFSDetector) + self.focalplaneRON * torch.randn_like(self.psf_no_noise)
                 )
         else:
             self.psf_with_noise = self.psf_no_noise
