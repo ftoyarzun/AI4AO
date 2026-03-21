@@ -76,6 +76,7 @@ class PhaseDataset(Dataset):
         self.photonRange = WFSParams['Nphotons']
         self.RONRange = WFSParams['RON']
         self.Nactuator = WFSParams['Nactuator']
+        self.c_obs = WFSParams['c_obs']
                        
         self.L0Range = AtmosParams['L0']
         self.r0Range = AtmosParams['r0']
@@ -98,11 +99,12 @@ class PhaseDataset(Dataset):
         self.movingTestDatasetPath = "moving_test_dataset.pth"
      
   
-        x = np.linspace(-self.Nres/2, self.Nres/2, self.Nres)                                          # Build the mesh
+        x = np.linspace(-self.Nres/2, self.Nres/2, self.Nres) # Build the mesh
         [x,y] = np.meshgrid(x,x) 
-                                       
-        self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
+        radius = (self.Nres+1) / 2
+        self.pupil = np.bitwise_and((x**2 + y**2) <= radius**2, (x**2 + y**2) >= (self.c_obs * radius)**2)
         self.pupilSum = self.pupil.sum()
+
         self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
 
         #  ## Compute some example PSDs
@@ -181,7 +183,8 @@ class PhaseDataset(Dataset):
         self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device)
-        self.nLayers = np.random.randint(*self.nLayersRange)
+        self.nLayers = self.nLayersRange[0]
+        # self.nLayers = np.random.randint(*self.nLayersRange)
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
@@ -201,7 +204,6 @@ class PhaseDataset(Dataset):
     def __getitem__(self, idx):
         
         device = self.pupil.device  # Ensure tensors stay on the same device
-        
         # Generate batch of random parameters
         r0 = torch.empty(self.Nphases, 1, 1).uniform_(self.r0Range[0], self.r0Range[1])  # Fried parameter
         L0 = torch.empty(self.Nphases, 1, 1).uniform_(self.L0Range[0], self.L0Range[1])  # Outer scale
@@ -396,7 +398,7 @@ class PhaseDataset(Dataset):
         Updates r0, L0, correction level, photon/RON noise, fractional layer weights,
         and wind speed vectors for each atmospheric layer.
         """
-        self.nLayers = np.random.randint(*self.nLayersRange)
+        self.nLayers = np.random.randint(self.nLayersRange[0], self.nLayersRange[1])
         
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.r0Range)
         self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.L0Range)
@@ -411,9 +413,26 @@ class PhaseDataset(Dataset):
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
         
+    def DrawRandomParameters_ultimate(self):
+        """
+        Ultimate branch verison of draw random parameters, since
+        turbulence statistics have to be constant.
+        """
+        self.nLayers = self.nLayersRange[0]
+        self.r0_moving = torch.zeros(self.Nphases, 1, 1, device=self.device) + self.r0Range[0]
+        self.levelOfCorrection = torch.zeros(self.Nphases, 1, 1, device=self.device) + self.levelOfCorrectionRange
+        self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.photonRange)
+        self.Nphotons = torch.pow(10, self.Nphotons)
+        self.RON = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.RONRange)
+        
+        self.fractionalr0 = torch.tensor(
+            [0.7316, 0.0650, 0.0193, 0.0252, 0.0574, 0.0500, 0.0515]
+            ).reshape(-1, 1, 1, 1).expand(-1, self.Nphases, 1, 1)
+     
+        self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
+        self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
         
 
-     
     def BuildAtmospherePSD(self, generateClosedLoop):
         """
         Construct the atmospheric power spectral density (PSD) for all layers.
