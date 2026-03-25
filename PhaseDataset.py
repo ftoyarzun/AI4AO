@@ -15,6 +15,8 @@ import random
 import matplotlib.pyplot as plt
 import os
 import time
+import astropy.units as u
+import poppy
 from scipy.io import loadmat
 
 
@@ -99,13 +101,28 @@ class PhaseDataset(Dataset):
         self.movingTestDatasetPath = "moving_test_dataset.pth"
      
   
-        x = np.linspace(-self.Nres/2, self.Nres/2, self.Nres) # Build the mesh
-        [x,y] = np.meshgrid(x,x) 
-        radius = (self.Nres+1) / 2
-        self.pupil = np.bitwise_and((x**2 + y**2) <= radius**2, (x**2 + y**2) >= (self.c_obs * radius)**2)
+        # x = np.linspace(-self.Nres/2, self.Nres/2, self.Nres) # Build the mesh
+        # [x,y] = np.meshgrid(x,x) 
+        # radius = (self.Nres+1) / 2
+        # self.pupil = np.bitwise_and((x**2 + y**2) <= radius**2, (x**2 + y**2) >= (self.c_obs * radius)**2)
+        # IRCS+AO188 pupil parameters
+        sp_offset = 1.278  # Spider offset [m]
+        sp_angle = 51.75   # Spider angle [deg]
+        sp_thick = 0.224   # Spider thickness [m]
+        # Subaru IRCS+AO188
+        ap = poppy.CircularAperture(radius=self.D/2.0*u.m)
+        sec = poppy.AsymmetricSecondaryObscuration(
+                secondary_radius=self.c_obs/2.0*u.m,
+                support_angle=(90-sp_angle, 90+sp_angle, 270-sp_angle, 270+sp_angle),
+                support_width=[sp_thick, sp_thick, sp_thick, sp_thick],
+                support_offset_x=[-sp_offset/2., -sp_offset/2., sp_offset/2., sp_offset/2.])
+        pupil = poppy.CompoundAnalyticOptic(opticslist=[ap,sec], name='AO188+IRCS')
+        mask = pupil.sample(npix=self.Nres, grid_size=self.D, what='amplitude')
+        self.pupil = mask
+
         self.pupilSum = self.pupil.sum()
 
-        self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
+        self.pupil_logical = np.where(self.pupil.flatten() > 0)
 
         #  ## Compute some example PSDs
         [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres)
@@ -205,21 +222,20 @@ class PhaseDataset(Dataset):
         
         device = self.pupil.device  # Ensure tensors stay on the same device
         # Generate batch of random parameters
-        r0 = torch.empty(self.Nphases, 1, 1).uniform_(self.r0Range[0], self.r0Range[1])  # Fried parameter
-        L0 = torch.empty(self.Nphases, 1, 1).uniform_(self.L0Range[0], self.L0Range[1])  # Outer scale
-        levelOfCorrection = torch.empty(self.Nphases, 1, 1).uniform_(self.levelOfCorrectionRange[0], self.levelOfCorrectionRange[1])
-
-        windSpeedVector_x = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
-        windSpeedVector_y = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
+        r0 = torch.zeros(self.Nphases, 1, 1) + self.r0Range[0]  # Fried parameter
+        L0 = torch.zeros(self.Nphases, 1, 1) + self.L0Range[0]  # Outer scale
+        levelOfCorrection = torch.zeros(self.Nphases, 1, 1)
+        # windSpeedVector_x = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
+        # windSpeedVector_y = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
      
 
         # Compute the PSDs in batch mode
         atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr, self.dF, r0, L0)  # Shape: (Nphases, H, W)
         fitting_PSD = TorchPropagator.GetFittingPSD(self.fx, self.fy, self.dF, self.D, self.Nactuator, levelOfCorrection)  # Shape: (Nphases, H, W)
-        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx, self.fy, self.dF, self.loopFrequency, self.delayFrames, windSpeedVector_x, windSpeedVector_y)  # Shape: (Nphases, H, W)
+        #temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx, self.fy, self.dF, self.loopFrequency, self.delayFrames, windSpeedVector_x, windSpeedVector_y)  # Shape: (Nphases, H, W)
         
         
-        total_PSD = atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD
+        total_PSD = atmosphere_PSD * fitting_PSD #+ temporalErrorPSD * atmosphere_PSD
         
         
         resolution = total_PSD.shape[-1]

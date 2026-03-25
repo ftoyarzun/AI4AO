@@ -5,11 +5,14 @@ Created on Tue  Mar 17 15:58 2026
 """
 
 import warnings
+import poppy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import astropy.units as u
 import numpy as np
 from TorchPropagator import PoissonNoise
+from torchvision.transforms import Resize, InterpolationMode
 
 class ShackHartmann(nn.Module):
     """
@@ -24,6 +27,19 @@ class ShackHartmann(nn.Module):
         self.c_obs = WFSParams["c_obs"]
         self.useNoise = WFSParams["useNoise"]
         self.beamSplitProportionForWFSDetector = WFSParams["beamSplitProportionForWFSDetector"]
+        self.QE = WFSParams["QE"]
+        self.FWC = WFSParams["FWC"]
+        self.gain = WFSParams["gain"]
+        self.bits = WFSParams["bits"]
+        self.sensor = WFSParams["sensor"]
+        self.darkCurrent = WFSParams["darkCurrent"]
+        self.applyDigitalization = WFSParams["applyDigitalization"]
+        if not (0.0 <= self.QE <= 1.0):
+            raise ValueError(f"QE must be between 0 and 1, got {self.QE}")
+        if self.FWC is not None and self.FWC <= 0:
+            raise ValueError(f"FWC must be > 0, got {self.FWC}")
+        if self.sensor not in ["EMCCD", "CCD", "CMOS"]:
+            raise ValueError("sensor must be 'EMCCD', 'CCD', or 'CMOS'")
         # Shack-Hartmann parameters
         self.wavelength = WFSParams["wavelength"]
         self.nSubap = WFSParams["nSubap"]
@@ -33,7 +49,7 @@ class ShackHartmann(nn.Module):
         self.shannon_sampling = WFSParams["shannon_sampling"]
         self.n_pixel_per_subap = WFSParams["n_pixel_per_subap"]
         self.half_pixel_shift = WFSParams["half_pixel_shift"]
-
+        
         if self.binning_factor < 1 or int(self.binning_factor) != self.binning_factor:
             raise ValueError(
                 "binning_factor must be a positive integer"
@@ -99,12 +115,21 @@ class ShackHartmann(nn.Module):
         self.RON = 2.
         self.focalplaneRON = 4.
 
-        # build pupil
-        x = torch.linspace(-self.Nres / 2, self.Nres / 2, self.Nres, dtype=torch.float32, device=self.device)
-        self.x, self.y = torch.meshgrid(x, x, indexing="ij")
-        radius = ((self.Nres + 1) / 2)
-        self.pupil = torch.bitwise_and(((self.x**2 + self.y**2) <= radius**2), (self.x**2 + self.y**2) >= (self.c_obs * radius)**2).to(torch.float32)
-        self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
+        # IRCS+AO188 pupil parameters
+        sp_offset = 1.278  # Spider offset [m]
+        sp_angle = 51.75   # Spider angle [deg]
+        sp_thick = 0.224   # Spider thickness [m]
+
+        # Subaru IRCS+AO188
+        ap = poppy.CircularAperture(radius=self.D/2.0*u.m)
+        sec = poppy.AsymmetricSecondaryObscuration(
+                secondary_radius=self.c_obs/2.0*u.m,
+                support_angle=(90-sp_angle, 90+sp_angle, 270-sp_angle, 270+sp_angle),
+                support_width=[sp_thick, sp_thick, sp_thick, sp_thick],
+                support_offset_x=[-sp_offset/2., -sp_offset/2., sp_offset/2., sp_offset/2.])
+        pupil = poppy.CompoundAnalyticOptic(opticslist=[ap,sec], name='AO188+IRCS')
+        mask = pupil.sample(npix=self.Nres, grid_size=self.D, what='amplitude')
+        self.pupil = torch.from_numpy(mask).to(self.device)
 
         # edge mask used for wrap detection on the native FFT stamp
         self.outerMask = torch.ones(
@@ -128,8 +153,14 @@ class ShackHartmann(nn.Module):
         self.frame_no_noise = None
         self.frame_with_noise = None
         self.maps_intensity = None
-        self.psf_no_noise = None
-        self.psf_with_noise = None
+        self.frame_photons_no_noise = None
+        self.frame_photons_with_noise = None
+        self.frame_electrons_no_noise = None
+        self.frame_electrons_with_noise = None
+        self.saturation = 0.0
+        self.quantification_noise = 0.0
+        self.photon_noise = 0.0
+        self.dark_shot_noise = 0.0
 
         self._SetPhotonsAndRON(WFSParams["Nphotons"][0], WFSParams["RON"][0])
 
@@ -154,10 +185,55 @@ class ShackHartmann(nn.Module):
         with torch.no_grad():
             self.matched_filter.weight.copy_(kernel)
         # 8x8 pupil:
-        x = torch.linspace(-8 / 2, 8 / 2, 8, dtype=torch.float32)
-        xx, yy = torch.meshgrid(x, x, indexing="ij")
-        radius = (8 + 1) / 2
-        self.snr_pupil = torch.bitwise_and(((xx**2 + yy**2) <= radius**2), (xx**2 + yy**2) >= (self.c_obs * radius)**2).to(torch.float32)
+        resizer = Resize(size=(self.nSubap, self.nSubap), interpolation=InterpolationMode.BILINEAR)
+        self.snr_pupil = resizer(self.pupil.unsqueeze(0)).squeeze() > 0.2
+
+    def photons_to_electrons(self, frame_photons):
+        return frame_photons * self.QE
+
+    def apply_saturation(self, frame_electrons):
+        if self.FWC is None:
+            self.saturation = 0.0
+            return frame_electrons
+
+        max_val = float(frame_electrons.max().detach().item())
+        self.saturation = 100.0 * max_val / self.FWC
+        if max_val > self.FWC:
+            warnings.warn(f"The detector is saturating, {self.saturation:.1f} %")
+        return torch.clamp(frame_electrons, min=0.0, max=self.FWC)
+
+    def apply_dark_current(self, frame_electrons):
+        if self.darkCurrent == 0:
+            self.dark_shot_noise = 0.0
+            return frame_electrons
+        dark_map = torch.full_like(frame_electrons, self.darkCurrent)
+        dark_noise = PoissonNoise(dark_map)
+        self.dark_shot_noise = float(np.sqrt(self.darkCurrent))
+        return frame_electrons + dark_noise
+
+    def apply_readout_noise(self, frame_electrons):
+        if self.RON == 0:
+            return frame_electrons
+        return frame_electrons + self.RON * torch.randn_like(frame_electrons)
+
+    def apply_gain(self, frame):
+        return frame * self.gain
+
+    def digitalize(self, frame):
+        if self.bits is None:
+            self.quantification_noise = 0.0
+            return frame
+
+        if self.FWC is None:
+            max_val = frame.amax(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
+            self.quantification_noise = 0.0
+            out = frame / max_val * (2**self.bits)
+            return torch.clamp(out, min=0.0, max=float(2**self.bits - 1))
+
+        self.quantification_noise = self.FWC * (2**(-self.bits)) / np.sqrt(12)
+        out = frame / self.FWC * (2**self.bits - 1)
+        return torch.clamp(out, min=0.0, max=float(2**self.bits - 1)).to(torch.uint16)
+
 
     def configure_pixel_scale(self):
         self.pixel_scale_init = np.rad2deg(self.wavelength / self.d_subap / self.zero_padding) * 3600.
@@ -175,7 +251,7 @@ class ShackHartmann(nn.Module):
         # If a finer pixel scale is requested, increase the FFT sampling first
         while ratio < .95:
             self.zero_padding += 1
-            self.pixel_scale_init = np.rad2deg(self.wavelength / self.d_subap / self.zero_padding) / 3600
+            self.pixel_scale_init = np.rad2deg(self.wavelength / self.d_subap / self.zero_padding) * 3600
             ratio  = pixel_scale_requested / self.pixel_scale_init
         candidates = np.array([
             max(1, int(np.floor(pixel_scale_requested / self.pixel_scale_init))),
@@ -299,13 +375,12 @@ class ShackHartmann(nn.Module):
     def get_lenslet_em_field(self, phase):
         if phase.dim() != 3:
             raise ValueError("phase must have shape (B, Nres, Nres).")
-
+        self.pupil = self.pupil.to(phase.device)
         B = phase.shape[0]
         n_lenslets = self.nSubap ** 2
 
         uin = self.pupil.unsqueeze(0) * torch.exp(1j * phase)
         uin = uin / torch.sqrt(self.pupil.sum())
-
         em_field = torch.zeros(
             (B, n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
             dtype=torch.complex64,
@@ -502,7 +577,7 @@ class ShackHartmann(nn.Module):
         
         # Full lenslet EM fields, zero-padded on the lenslet FFT grid
         lenslet_em_field = self.get_lenslet_em_field(phase)
-        norma = float(self.cube_flux.shape[1])  # lenslet grid size as FFT normalization
+        norma = self.cube_flux.shape[1]  # lenslet grid size as FFT normalization
         # Full lenslet stamps before detector-plane assembly
         intensity = torch.abs(torch.fft.fft2(lenslet_em_field, dim=(-2, -1)) / norma) **2
         # intensity is shape (B, nSubap^2, H, W)
@@ -524,13 +599,18 @@ class ShackHartmann(nn.Module):
             stamps=intensity_detector,
             detector_shape=(self.detector_size, self.detector_size),
         )
+        flux = self.raw_data.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
+        raw_data_norm = self.raw_data / flux
 
-        self.frame_no_noise = self.raw_data
-        flux = self.frame_no_noise.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
-        self.frame_no_noise = self.frame_no_noise / flux
-        self.psf_no_noise = self.frame_no_noise.clone()
+        self.frame_photons_no_noise = (raw_data_norm * self.Nphotons * self.beamSplitProportionForWFSDetector)
+
+        self.frame_electrons_no_noise = self.photons_to_electrons(self.frame_photons_no_noise)
+        self.frame_no_noise = self.frame_electrons_no_noise
 
         if not self.useNoise:
+            if self.FWC is not None:
+                self.frame_electrons_no_noise = self.apply_saturation(self.frame_electrons_no_noise)
+                self.frame_no_noise = self.frame_electrons_no_noise
             self.maps_intensity = self.split_raw_data(input_frame=self.frame_no_noise)
             return self.frame_no_noise
 
@@ -539,26 +619,29 @@ class ShackHartmann(nn.Module):
         return self.frame_with_noise
     
     def _SetPhotonsAndRON(self, Nphotons, RON):
-        self.Nphotons = torch.pow(10, torch.Tensor([Nphotons], device=self.device))
+        self.Nphotons = torch.pow(10, torch.tensor([Nphotons], device=self.device))
         self.RON = RON
     
     def _AddNoiseToFrame(self):
-        self.frame_with_noise = PoissonNoise(
-            self.frame_no_noise * self.Nphotons * self.beamSplitProportionForWFSDetector
-            ) + self.RON * torch.randn_like(self.frame_no_noise)
-        flux = self.frame_with_noise.sum(dim=(-2, -1), keepdim=True)
-        flux = torch.clamp(flux, min=1e-12)
-        self.frame_with_noise = self.frame_with_noise / flux
-        if self.beamSplitProportionForWFSDetector < 1.0:
-            self.psf_with_noise = PoissonNoise(
-                self.psf_no_noise * self.Nphotons * (1.0 - self.beamSplitProportionForWFSDetector) + self.focalplaneRON * torch.randn_like(self.psf_no_noise)
-                )
-        else:
-            self.psf_with_noise = self.psf_no_noise
+        frame_photons = self.frame_photons_no_noise.clone()
+        self.frame_photons_with_noise = PoissonNoise(frame_photons)
+        self.photon_noise = torch.sqrt(frame_photons.clamp_min(0.0))
+        frame_electrons = self.photons_to_electrons(self.frame_photons_with_noise)
+        frame_electrons = self.apply_dark_current(frame_electrons)
+        frame_electrons = self.apply_saturation(frame_electrons)
+        if self.sensor == "EMCCD":
+            frame_electrons = self.apply_gain(frame_electrons)
+        frame_electrons = self.apply_readout_noise(frame_electrons)
+        if self.sensor in ["CCD", "CMOS"]:
+            frame_electrons = self.apply_gain(frame_electrons)
+        self.frame_electrons_with_noise = torch.clamp(frame_electrons, min=0.0)
+        self.frame_with_noise = self.frame_electrons_with_noise
+        if self.applyDigitalization and self.bits is not None:
+            self.frame_with_noise = self.digitalize(self.frame_with_noise)
 
 
     def calcSNR(self):
         with torch.no_grad():
-            signal = self.matched_filter(self.frame_with_noise.unsqueeze(1)) * self.snr_pupil
-            noise = torch.sqrt(signal)  
+            signal = self.matched_filter(self.frame_with_noise.unsqueeze(1).to(torch.float32)) * self.snr_pupil
+            noise = torch.sqrt(signal) # torch.sqrt(signal + ) 
             return signal / noise        

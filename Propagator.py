@@ -88,7 +88,7 @@ def Zernike(pupil, pupil_logical, resolution, j):
     R = np.sqrt(X**2 + Y**2)
     R = R/R.max()
     theta = np.arctan2(Y, X)
-    out = np.zeros([np.sum(pupil),j])
+    out = np.zeros([np.sum(pupil>0),j])
     outFullRes = np.zeros([resolution**2, j])
     
 

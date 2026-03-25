@@ -4,3 +4,5 @@ torch
 random
 numpy
 webdataset
+poppy
+astropy
