@@ -34,6 +34,8 @@ class ShackHartmann(nn.Module):
         self.sensor = WFSParams["sensor"]
         self.darkCurrent = WFSParams["darkCurrent"]
         self.applyDigitalization = WFSParams["applyDigitalization"]
+        self.exposureTime = WFSParams["exposureTime"]
+        self.backgroundRange = WFSParams["backgroundRange"]
         if not (0.0 <= self.QE <= 1.0):
             raise ValueError(f"QE must be between 0 and 1, got {self.QE}")
         if self.FWC is not None and self.FWC <= 0:
@@ -110,10 +112,12 @@ class ShackHartmann(nn.Module):
                 "The class will zero-pad detector stamps, but no extra signal exists outside the "
                 "technical FoV; use a larger pupil resolution if you need more physical FoV."
             )
+
+        self.pixel_area_arcsec2 = self.fov_pixel_binned_arcsec ** 2
+
         # Noise defaults
         self.Nphotons = 1e7
         self.RON = 2.
-        self.focalplaneRON = 4.
 
         # IRCS+AO188 pupil parameters
         sp_offset = 1.278  # Spider offset [m]
@@ -161,6 +165,7 @@ class ShackHartmann(nn.Module):
         self.quantification_noise = 0.0
         self.photon_noise = 0.0
         self.dark_shot_noise = 0.0
+        
 
         self._SetPhotonsAndRON(WFSParams["Nphotons"][0], WFSParams["RON"][0])
 
@@ -184,9 +189,13 @@ class ShackHartmann(nn.Module):
         kernel = torch.from_numpy(gaussian).unsqueeze(0).unsqueeze(0).float()
         with torch.no_grad():
             self.matched_filter.weight.copy_(kernel)
-        # 8x8 pupil:
+        # pupils
         resizer = Resize(size=(self.nSubap, self.nSubap), interpolation=InterpolationMode.BILINEAR)
-        self.snr_pupil = resizer(self.pupil.unsqueeze(0)).squeeze() > 0.2
+        # pupil for bg flux
+        self.bg_pupil = resizer(self.pupil.unsqueeze(0)).squeeze()
+        # valid pupil for snr calc
+        self.snr_pupil = self.bg_pupil > 0.2
+
 
     def photons_to_electrons(self, frame_photons):
         return frame_photons * self.QE
@@ -206,7 +215,8 @@ class ShackHartmann(nn.Module):
         if self.darkCurrent == 0:
             self.dark_shot_noise = 0.0
             return frame_electrons
-        dark_map = torch.full_like(frame_electrons, self.darkCurrent)
+        mean_dark = self.darkCurrent * self.exposureTime
+        dark_map = torch.full_like(frame_electrons, mean_dark)
         dark_noise = PoissonNoise(dark_map)
         self.dark_shot_noise = float(np.sqrt(self.darkCurrent))
         return frame_electrons + dark_noise
@@ -602,7 +612,19 @@ class ShackHartmann(nn.Module):
         flux = self.raw_data.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
         raw_data_norm = self.raw_data / flux
 
-        self.frame_photons_no_noise = (raw_data_norm * self.Nphotons * self.beamSplitProportionForWFSDetector)
+        self._SetUniformBackgroundFromSky()
+        bg_subap_photons = self.bg_per_pixel * (self.detector_pitch ** 2) * self.bg_pupil
+        bg_subap_per_pixel = bg_subap_photons / (self.detector_pitch ** 2)
+        bg_map = bg_subap_per_pixel.repeat_interleave(self.detector_pitch, dim=0).repeat_interleave(self.detector_pitch, dim=1)
+        bg_map = bg_map.unsqueeze(0)  # shape (1, detector_size, detector_size)
+        if bg_map.shape[0] == 1 and raw_data_norm.shape[0] > 1:
+            bg_map = bg_map.expand(raw_data_norm.shape[0], -1, -1)
+
+        source_photons = raw_data_norm * self.Nphotons * self.beamSplitProportionForWFSDetector
+
+        self.source_photons_no_noise = source_photons
+        self.background_photons_no_noise = bg_map
+        self.frame_photons_no_noise = source_photons + bg_map
 
         self.frame_electrons_no_noise = self.photons_to_electrons(self.frame_photons_no_noise)
         self.frame_no_noise = self.frame_electrons_no_noise
@@ -621,6 +643,14 @@ class ShackHartmann(nn.Module):
     def _SetPhotonsAndRON(self, Nphotons, RON):
         self.Nphotons = torch.pow(10, torch.tensor([Nphotons], device=self.device))
         self.RON = RON
+
+    def _SetUniformBackgroundFromSky(self):
+        self.sky_brightness = torch.empty(1, device=self.device).uniform_(*self.backgroundRange)
+
+
+        self.bg_per_pixel = (
+            self.sky_brightness * self.exposureTime * self.pixel_area_arcsec2 * self.beamSplitProportionForWFSDetector
+        )
     
     def _AddNoiseToFrame(self):
         frame_photons = self.frame_photons_no_noise.clone()
