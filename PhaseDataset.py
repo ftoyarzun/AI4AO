@@ -207,13 +207,6 @@ class PhaseDataset(Dataset):
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         
         
-        
-        if not os.path.exists(self.testDatasetPath):
-            self.GenerateTestDataSet(10)
-            
-        if not os.path.exists(self.movingTestDatasetPath):
-            self.GenerateMovingTestDataSet()
-        
     def __len__(self):
         
         return self.Nphases

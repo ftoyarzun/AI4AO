@@ -673,5 +673,5 @@ class ShackHartmann(nn.Module):
     def calcSNR(self):
         with torch.no_grad():
             signal = self.matched_filter(self.frame_with_noise.unsqueeze(1).to(torch.float32)) * self.snr_pupil
-            noise = torch.sqrt(signal) # torch.sqrt(signal + ) 
+            noise = torch.sqrt(signal) # torch.sqrt(signal + background + dark_signal + ron^2) 
             return signal / noise        
