@@ -35,9 +35,9 @@ def npy_bytes_from_array(arr: np.ndarray):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", type=str, default="shards/data-%03d.tar")
-    parser.add_argument("--n", type=int, default=int(2**22), help="number of samples")
-    parser.add_argument("--shard-size", type=int, default=int(2**13), help="samples per shard")
+    parser.add_argument("--out", type=str, default="shards/data-%04d.tar")
+    parser.add_argument("--n", type=int, default=10000, help="number of samples")
+    parser.add_argument("--shard-size", type=int, default=500, help="samples per shard")
     parser.add_argument("--device", type=str, default=None, help="torch device to use (default: auto-detect)")
     parser.add_argument("--params", type=str, default=None, help="optional params file (unused, kept for compatibility)")
     parser.add_argument("--include-metadata", action="store_true", help="include scalar metadata (r0, Nphotons, RON) as meta.json")
@@ -46,6 +46,7 @@ def main():
 
     # compute padding width based on total number of samples
     pad = len(str(args.n - 1)) if args.n > 1 else 1
+    pad_shard = len(str((args.n - 1) // args.shard_size)) if args.n > 1 else 1
 
     device = args.device
     if device is None:
@@ -97,7 +98,7 @@ def main():
                     pass
 
                 writer.write(sample)
-                pbar.set_postfix(shard=f"{shard_idx:03d}")
+                pbar.set_postfix(shard=f"{shard_idx:0{pad_shard}d}")
                 pbar.update(1)
 
 

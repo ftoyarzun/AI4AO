@@ -125,7 +125,7 @@ class PhaseDataset(Dataset):
         self.pupil_logical = np.where(self.pupil.flatten() > 0)
 
         #  ## Compute some example PSDs
-        [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres)
+        [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres, self.device)
         self.fsqr = self.fx**2 + self.fy**2
         
         upSize = 2
@@ -213,11 +213,11 @@ class PhaseDataset(Dataset):
 
     def __getitem__(self, idx):
         
-        device = self.pupil.device  # Ensure tensors stay on the same device
+        device = self.fsqr.device  # Ensure tensors stay on the same device
         # Generate batch of random parameters
-        r0 = torch.zeros(self.Nphases, 1, 1) + self.r0Range[0]  # Fried parameter
-        L0 = torch.zeros(self.Nphases, 1, 1) + self.L0Range[0]  # Outer scale
-        levelOfCorrection = torch.zeros(self.Nphases, 1, 1)
+        r0 = torch.zeros(self.Nphases, 1, 1, device=device) + self.r0Range[0]  # Fried parameter
+        L0 = torch.zeros(self.Nphases, 1, 1, device=device) + self.L0Range[0]  # Outer scale
+        levelOfCorrection = torch.zeros(self.Nphases, 1, 1, device=device)
         # windSpeedVector_x = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
         # windSpeedVector_y = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
      
