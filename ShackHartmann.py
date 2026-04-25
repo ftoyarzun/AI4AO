@@ -334,30 +334,27 @@ class ShackHartmann(nn.Module):
                 self.lenslet_slices.append((slice(x0, x1), slice(y0, y1)))
         self.index_x = torch.tensor(self.index_x, device=self.device, dtype=torch.long)
         self.index_y = torch.tensor(self.index_y, device=self.device, dtype=torch.long)  
-
+    
     def _initialize_flux_from_pupil(self):
         """
         OOPAO-like initialize_flux using the telescope flux map.
         """
-        n_lenslets = self.nSubap ** 2
-        cube_flux = torch.zeros((n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
-                                 device=self.device, dtype=torch.float32)
-        k = 0
-        # Insert the subaperture flux into the center of each zero-padded
-        # lenslet stamp. The inserted block has size `n_pix_subap_init` (the
-        # subaperture size), not `n_pix_lenslet_init` (the zero-padded stamp
-        # size). Using the subaperture size ensures shapes match when
-        # assigning `sub_flux` (which is `n_pix_subap_init x n_pix_subap_init`).
-        
-        x_insert_0 = self.center_init - self.n_pix_subap_init // 2
-        x_insert_1 = self.center_init + self.n_pix_subap_init // 2
-        y_insert_0 = self.center_init - self.n_pix_subap_init // 2
-        y_insert_1 = self.center_init + self.n_pix_subap_init // 2
+        s = self.n_pix_subap_init
+        L = self.nSubap ** 2
 
-        for xs, ys in self.lenslet_slices:
-            sub_flux = self.pupil[xs, ys]
-            cube_flux[k, x_insert_0:x_insert_1, y_insert_0:y_insert_1] = sub_flux
-            k += 1
+        sub_flux = self.pupil.unfold(0, s, s).unfold(1, s, s)
+        sub_flux = sub_flux.contiguous().view(L, s, s)
+
+        pad_total = self.n_pix_lenslet_init - s
+        pad_before = pad_total // 2
+        pad_after = pad_total - pad_before
+
+        cube_flux = F.pad(
+            sub_flux,
+            (pad_before, pad_after, pad_before, pad_after),
+            mode="constant",
+            value=0.0,
+        )
 
         self.cube_flux = cube_flux
         self.photon_per_subaperture = cube_flux.sum(dim=(1, 2))
@@ -385,30 +382,46 @@ class ShackHartmann(nn.Module):
     def get_lenslet_em_field(self, phase):
         if phase.dim() != 3:
             raise ValueError("phase must have shape (B, Nres, Nres).")
-        self.pupil = self.pupil.to(phase.device)
-        B = phase.shape[0]
-        n_lenslets = self.nSubap ** 2
 
-        uin = self.pupil.unsqueeze(0) * torch.exp(1j * phase)
-        uin = uin / torch.sqrt(self.pupil.sum())
-        em_field = torch.zeros(
-            (B, n_lenslets, self.n_pix_lenslet_init, self.n_pix_lenslet_init),
-            dtype=torch.complex64,
-            device=self.device
+        device = phase.device
+        pupil = self.pupil.to(device)
+        phasor = self.phasor.to(device)
+
+        B = phase.shape[0]
+        s = self.n_pix_subap_init
+        L = self.nSubap ** 2
+
+        # Complex field in the pupil plane
+        uin = pupil.unsqueeze(0) * torch.exp(1j * phase)
+        uin = uin / torch.sqrt(pupil.sum())
+
+        # Extract all subapertures at once:
+        # (B, nSubap, nSubap, s, s)
+        sub_fields = uin.unfold(1, s, s).unfold(2, s, s)
+
+        # Reorder to (B, L, s, s)
+        sub_fields = sub_fields.contiguous().view(B, L, s, s)
+
+        # Symmetric center padding from s -> n_pix_lenslet_init
+        pad_total = self.n_pix_lenslet_init - s
+        if pad_total < 0:
+            raise ValueError(
+                f"n_pix_lenslet_init ({self.n_pix_lenslet_init}) must be >= "
+                f"n_pix_subap_init ({s})."
+            )
+        pad_before = pad_total // 2
+        pad_after = pad_total - pad_before
+
+        em_field = F.pad(
+            sub_fields,
+            (pad_before, pad_after, pad_before, pad_after),
+            mode="constant",
+            value=0.0,
         )
 
-        x_insert_0 = self.center_init - self.n_pix_subap_init // 2
-        x_insert_1 = self.center_init + self.n_pix_subap_init // 2
-        y_insert_0 = self.center_init - self.n_pix_subap_init // 2
-        y_insert_1 = self.center_init + self.n_pix_subap_init // 2
-
-        for k, (xs, ys) in enumerate(self.lenslet_slices):
-            sub_field = uin[:, xs, ys]
-            em_field[:, k, x_insert_0:x_insert_1, y_insert_0:y_insert_1] = sub_field
-
-        em_field = em_field * self.phasor.unsqueeze(0).unsqueeze(0)
+        em_field = em_field * phasor.unsqueeze(0).unsqueeze(0)
         return em_field
-    
+
     def crop_or_pad_to_size(self, stamps, target_size):
         """
         Center crop or symmetric zero-pad each lenslet stamp to target_size.
@@ -530,38 +543,41 @@ class ShackHartmann(nn.Module):
         return raw_data
 
     def split_raw_data(self, input_frame=None, valid_only=False):
-        """
-        The detector frame is split into nSubap x nSubap tiles of size
-        (n_pix_subap // binning_factor), and each tile is embedded in the center
-        of an analysis window of size (n_pix_subap, n_pix_subap).
-        """
         if input_frame is None:
             input_frame = self.frame_no_noise
 
         if input_frame.dim() == 2:
             input_frame = input_frame.unsqueeze(0)
 
-        B = input_frame.shape[0]
+        B, H, W = input_frame.shape
         det_pitch = self.n_pix_subap // self.binning_factor
-        center = self.n_pix_subap // 2
 
-        maps_intensity = torch.zeros(
-            (B, self.nSubap ** 2, self.n_pix_subap, self.n_pix_subap),
-            dtype=input_frame.dtype, device=input_frame.device,
+        expected_H = self.nSubap * det_pitch
+        expected_W = self.nSubap * det_pitch
+        if (H, W) != (expected_H, expected_W):
+            raise ValueError(
+                f"input_frame must have shape (B, {expected_H}, {expected_W}), "
+                f"got {(B, H, W)}."
+            )
+
+        tiles = input_frame.view(B, self.nSubap, det_pitch, self.nSubap, det_pitch)
+        tiles = tiles.permute(0, 1, 3, 2, 4).contiguous()
+        tiles = tiles.view(B, self.nSubap ** 2, det_pitch, det_pitch)
+
+        pad_total = self.n_pix_subap - det_pitch
+        if pad_total < 0:
+            raise ValueError(
+                f"n_pix_subap ({self.n_pix_subap}) must be >= det_pitch ({det_pitch})."
+            )
+        pad_before = pad_total // 2
+        pad_after = pad_total - pad_before
+
+        maps_intensity = F.pad(
+            tiles,
+            (pad_before, pad_after, pad_before, pad_after),
+            mode="constant",
+            value=0.0,
         )
-
-        xw0 = center - det_pitch // 2
-        xw1 = center + det_pitch // 2
-        yw0 = center - det_pitch // 2
-        yw1 = center + det_pitch // 2
-
-        k = 0
-        row_chunks = torch.chunk(input_frame, self.nSubap, dim=-2)
-        for i in range(self.nSubap):
-            col_chunks = torch.chunk(row_chunks[i], self.nSubap, dim=-1)
-            for j in range(self.nSubap):
-                maps_intensity[:, k, xw0:xw1, yw0:yw1] = col_chunks[j]
-                k += 1
 
         if valid_only:
             maps_intensity = maps_intensity[:, self.valid_subapertures_id]
