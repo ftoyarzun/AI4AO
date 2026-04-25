@@ -362,11 +362,12 @@ def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
 
 
 def PoissonNoise(x):
-    """From M. Dufraisse PhD : differentiable Poisson Noise Model using Gaussian approx for each pixel and reparametrization tricks"""
+    """
+    From M. Dufraisse PhD : differentiable Poisson Noise Model
+    using Gaussian approx for each pixel and reparametrization tricks
+    """
 
-    return x + torch.sqrt(torch.clamp(x, min=1e-9)) * torch.randn(
-        x.shape, device=x.device, dtype=x.dtype
-    )
+    return x + torch.sqrt(torch.clamp(x, min=1e-9)) * torch.randn(x.shape, device=x.device, dtype=x.dtype)
 
 
 class WFS:
