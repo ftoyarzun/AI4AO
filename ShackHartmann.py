@@ -26,6 +26,7 @@ class ShackHartmann(nn.Module):
         self.D = WFSParams["D"]  # telescope diameter in meters
         self.c_obs = WFSParams["c_obs"]
         self.useNoise = WFSParams["useNoise"]
+        self.separateNoise = WFSParams["separateNoise"]
         self.beamSplitProportionForWFSDetector = WFSParams["beamSplitProportionForWFSDetector"]
         self.QE = WFSParams["QE"]
         self.FWC = WFSParams["FWC"]
@@ -639,6 +640,11 @@ class ShackHartmann(nn.Module):
         source_photons = raw_data_norm * self.Nphotons * self.beamSplitProportionForWFSDetector
 
         self.source_photons_no_noise = source_photons
+        if self.separateNoise:
+            self.source_electrons_no_noise = self.photons_to_electrons(self.source_photons_no_noise)
+            self.frame_no_noise_no_bg = self.apply_saturation(self.source_electrons_no_noise)
+            self.frame_no_noise_no_bg = self.apply_gain(self.frame_no_noise_no_bg)
+            self.frame_no_noise_no_bg = self.digitalize(self.frame_no_noise_no_bg)
         self.background_photons_no_noise = bg_map
         self.frame_photons_no_noise = source_photons + bg_map
 

@@ -78,7 +78,7 @@ def main():
                 # Produce frame (returns tensor with leading batch dim)
                 with torch.no_grad():
                     frame = wfs.Propagator(phase).squeeze()
-
+                signal_frame_np = wfs.frame_no_noise_no_bg.squeeze().cpu().numpy()
                 frame_np = frame.squeeze().cpu().numpy()
                 phase_np = phase.cpu().numpy()
 
@@ -88,6 +88,7 @@ def main():
                 sample = {
                     "__key__": key,
                     "frame.npy": npy_bytes_from_array(frame_np),
+                    "signal_frame.npy": npy_bytes_from_array(signal_frame_np),
                     "phase.npy": npy_bytes_from_array(phase_np),
                 }
 
