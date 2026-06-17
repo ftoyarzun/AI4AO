@@ -96,7 +96,6 @@ class MaskManager(nn.Module):
             )
         if self.maskType in [
             "Pyramid",
-            "Zernike",
             "BiOEdge",
             "IBiOEdge",
             "DoublePyramid",
@@ -158,6 +157,26 @@ class MaskManager(nn.Module):
                 )
             )
 
+        if self.maskType in ["Zernike"]:
+            self.depths = nn.Parameter(
+                torch.tensor(
+                    [-torch.pi * 0.33],
+                    # [torch.pi * 0.5, -torch.pi * 1],
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+            )
+            self.diameters = nn.Parameter(
+                torch.tensor([2.14], device=self.device, dtype=torch.float32)
+            )
+            self.positions = nn.Parameter(
+                torch.tensor(
+                    [[0.0, 0.0]],
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+            )
+
         if self.maskType not in mask_types_list:
             raise ValueError(f"Unsupported mask type: {self.maskType}")
 
@@ -165,8 +184,10 @@ class MaskManager(nn.Module):
         if self.maskType == "Pyramid":
             self.phaseMask = self.BuildPyramidMask()
 
-        if self.maskType == "Zernike":
+        if self.maskType == "Zernike" and self.use_MTF is False:
             self.phaseMask = self.BuildZernikeMask()
+        if self.maskType == "Zernike" and self.use_MTF is True:
+            self.phaseMask, self.transmisionMask = self.BuildZernikeMaskMTF()
 
         if self.maskType == "BiOEdge":
             self.transmisionMask = self.BuildBiOEdgeMask()
@@ -410,6 +431,32 @@ class MaskManager(nn.Module):
 
         return phaseMask
 
+    def BuildZernikeMaskMTF(self):
+        N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
+        transmisionMask = torch.zeros(
+            1, 1, N, N, device=self.device, dtype=torch.float32
+        )
+        phaseMask = torch.ones(1, 1, 1, 1, device=self.device, dtype=torch.float32)
+        transmisionMask[0, 0] = self.make_pupil(
+            self.sampling * self.MTF_focal_upscale * self.diameters[0] / 2, N
+        )
+
+        phaseMask[0, 0] = phaseMask[0, 0] * self.depths[0]
+
+        self.WFS.MakeMTFMatrices(self.diameters[0])
+
+        frame_center = np.ones((1, 1)) * self.N // 2
+        pupil_center = (
+            frame_center + self.positions.detach().cpu().numpy() / 2 / np.pi * self.N
+        )
+        self.pupil_centers = np.round(pupil_center).astype(np.int32)
+
+        self.WFS.pupil_shifts = (self.pupil_centers - frame_center)[:, 0].astype(
+            np.int32
+        )
+
+        return phaseMask, transmisionMask
+
     def DoubleZernikeMaskMTF(self):
         N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
         transmisionMask = torch.zeros(
@@ -558,9 +605,10 @@ class MaskVisualizator:
         E2E_WFS: The model containing the mask information and type.
     """
 
-    def __init__(self, E2E_WFS, loss):
+    def __init__(self, E2E_WFS, loss, loss_ideal):
         self.E2E_WFS = E2E_WFS
         self.loss = loss
+        self.loss_ideal = loss_ideal
 
     def SetCanvas(self):
         """
@@ -604,6 +652,7 @@ class MaskVisualizator:
         plt.pause(0.3)
 
         (self.lossPlot,) = self.ax[0].plot(self.loss.cpu().detach())
+        (self.lossIdealPlot,) = self.ax[0].plot(self.loss_ideal.cpu().detach())
         (self.reconstructionPlotTheoretical,) = self.ax[1].plot(
             self.loss.cpu().detach()
         )
@@ -649,8 +698,13 @@ class MaskVisualizator:
         smooth_loss = np.convolve(
             self.loss.cpu().detach().numpy(), np.ones(100) / 100, "valid"
         )
+        smooth_loss_ideal = np.convolve(
+            self.loss_ideal.cpu().detach().numpy(), np.ones(100) / 100, "valid"
+        )
         self.lossPlot.set_xdata(np.arange(len(smooth_loss)))
         self.lossPlot.set_ydata(smooth_loss)
+        self.lossIdealPlot.set_xdata(np.arange(len(smooth_loss_ideal)))
+        self.lossIdealPlot.set_ydata(smooth_loss_ideal)
         self.ax[0].relim()
         self.ax[0].autoscale_view()
 

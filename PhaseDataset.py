@@ -87,6 +87,8 @@ class PhaseDataset(Dataset):
         self.levelOfCorrectionRange = LoopParams['levelOfCorrection']
         self.loopFrequency = LoopParams['loopFrequency']
         self.delayFrames = LoopParams['delayFrames']
+        self.loopGainRange = LoopParams['loopGain']
+        self.loopLeakRange = LoopParams['loopLeak']
         self.windSpeedRange = LoopParams['windSpeedVector']
      
         self.device=device       
@@ -125,8 +127,8 @@ class PhaseDataset(Dataset):
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
         
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
-            M2C = torch.from_numpy(loadmat('M2C_KL_OOPAO_synthetic_IF')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
-            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            M2C = torch.from_numpy(loadmat(r'C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
+            papyrus_dm = torch.from_numpy(np.load(r"C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
 
             
@@ -185,14 +187,16 @@ class PhaseDataset(Dataset):
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
+        self.loopGain = torch.empty(self.Nphases, 1, 1, device=self.device)
+        self.loopLeak = torch.empty(self.Nphases, 1, 1, device=self.device)
         
         
         
-        if not os.path.exists(self.testDatasetPath):
-            self.GenerateTestDataSet(10)
+        # if not os.path.exists(self.testDatasetPath):
+        #     self.GenerateTestDataSet(10)
             
-        if not os.path.exists(self.movingTestDatasetPath):
-            self.GenerateMovingTestDataSet()
+        # if not os.path.exists(self.movingTestDatasetPath):
+        #     self.GenerateMovingTestDataSet()
         
     def __len__(self):
         
@@ -200,7 +204,7 @@ class PhaseDataset(Dataset):
 
     def __getitem__(self, idx):
         
-        device = self.pupil.device  # Ensure tensors stay on the same device
+        device = self.device  # Ensure tensors stay on the same device
         
         # Generate batch of random parameters
         r0 = torch.empty(self.Nphases, 1, 1).uniform_(self.r0Range[0], self.r0Range[1])  # Fried parameter
@@ -214,10 +218,17 @@ class PhaseDataset(Dataset):
         # Compute the PSDs in batch mode
         atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr, self.dF, r0, L0)  # Shape: (Nphases, H, W)
         fitting_PSD = TorchPropagator.GetFittingPSD(self.fx, self.fy, self.dF, self.D, self.Nactuator, levelOfCorrection)  # Shape: (Nphases, H, W)
-        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx, self.fy, self.dF, self.loopFrequency, self.delayFrames, windSpeedVector_x, windSpeedVector_y)  # Shape: (Nphases, H, W)
+        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving,
+                                                                self.fy_moving,
+                                                                self.loopFrequency,
+                                                                self.loopGain,
+                                                                self.loopLeak, 
+                                                                self.delayFrames,
+                                                                self.windSpeedVector_x,
+                                                                self.windSpeedVector_y)  # Shape: (Nphases, H, W)
         
         
-        total_PSD = atmosphere_PSD * fitting_PSD + temporalErrorPSD * atmosphere_PSD
+        total_PSD = atmosphere_PSD * fitting_PSD + temporalErrorPSD * (1 - fitting_PSD) * atmosphere_PSD
         
         
         resolution = total_PSD.shape[-1]
@@ -397,10 +408,13 @@ class PhaseDataset(Dataset):
         and wind speed vectors for each atmospheric layer.
         """
         self.nLayers = np.random.randint(*self.nLayersRange)
-        
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.r0Range)
         self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.L0Range)
+
         self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.levelOfCorrectionRange)
+        self.loopGain = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.loopGainRange)
+        self.loopLeak = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.loopLeakRange)
+
         self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.photonRange)
         self.Nphotons = torch.pow(10, self.Nphotons)
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.RONRange)
@@ -408,9 +422,21 @@ class PhaseDataset(Dataset):
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 1.)
         self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0) 
         
-        self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
-        self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
+        self.windSpeed = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
+        self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
+        self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
+
+   
+        currentIntegratedWindSpeed = torch.sum(self.fractionalr0 *
+                                            torch.sqrt(self.windSpeedVector_x ** 2 +
+                                                        self.windSpeedVector_y ** 2) ** (5/3), dim = 0) ** (3/5)
         
+
+        normalization = self.windSpeed / currentIntegratedWindSpeed
+        self.windSpeedVector_x = self.windSpeedVector_x * normalization
+        self.windSpeedVector_y = self.windSpeedVector_y * normalization
+        
+
         
 
      
@@ -426,14 +452,22 @@ class PhaseDataset(Dataset):
         """
         atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, self.dF_moving, self.r0_moving, self.L0, self.f_slope)  # Shape: (Nphases, H, W)
         total_PSD = atmosphere_PSD# * fitting_PSD
+        total_PSD = total_PSD.repeat(self.nLayers, 1, 1, 1)
         if not generateClosedLoop:
             return total_PSD
         
-        total_PSD = total_PSD.repeat(self.nLayers, 1, 1, 1)
         fitting_PSD = TorchPropagator.GetFittingPSD(self.fx_moving, self.fy_moving, self.dF_moving, self.D, self.Nactuator, self.levelOfCorrection)  # Shape: (Nphases, H, W)
-        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving, self.fx_moving, self.dF_moving, self.loopFrequency, self.delayFrames, self.windSpeedVector_x, self.windSpeedVector_y)  # Shape: (Nphases, H, W)
+        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving,
+                                                                self.fy_moving,
+                                                                self.loopFrequency,
+                                                                self.loopGain,
+                                                                self.loopLeak, 
+                                                                self.delayFrames,
+                                                                self.windSpeedVector_x,
+                                                                self.windSpeedVector_y)  # Shape: (Nphases, H, W)
+        
         total_PSD *= fitting_PSD
-        total_PSD += temporalErrorPSD * atmosphere_PSD
+        total_PSD += temporalErrorPSD * (1. - fitting_PSD) * atmosphere_PSD
         
         return total_PSD
         

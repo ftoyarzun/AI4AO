@@ -60,24 +60,26 @@ class End2EndWFS(nn.Module):
             return Papyrus1stStage(wfsParams, atmosParams, device).to(self.device)
         elif wfsParams["Reconstruction"] == "Papyrus2ndstage":
             return Papyrus2ndStage(wfsParams, atmosParams, device).to(self.device)
+        elif wfsParams["Reconstruction"] == "Rama":
+            return Rama(wfsParams, atmosParams, device).to(self.device)
         elif wfsParams["Reconstruction"] == "PapyrusPhase":
             return PapyrusPhase(self.WFS.pupil, device).to(self.device)
         elif wfsParams["Reconstruction"] == "VGGNet":
             return VGGNet(wfsParams).to(self.device)
         elif wfsParams["Reconstruction"] == "UNet":
-            return UNetWithMLP(1, mlp_output_size=wfsParams["Nzernike"]).to(self.device)
+            return UNetWithMLP(2, mlp_output_size=wfsParams["Nzernike"]).to(self.device)
         elif wfsParams["Reconstruction"] == "Transformer":
             return ViT_PyTorch(
-                embed_dim=256,
-                img_size=80,
+                img_size=92,
                 patch_size=8,
-                dropout=0.2,
+                in_channels=2,
+                embed_dim=128,
+                depth=8,
                 num_heads=4,
-                num_encoders=4,
-                expansion=2,
-                Nzernike=self.Nzernike,
+                mlp_ratio=4.0,
+                out_dim=self.Nzernike,
+                dropout=0.1,
             ).to(self.device)
-
         else:
             raise ValueError(f"Unknown phase estimator: {wfsParams['Reconstruction']}")
 

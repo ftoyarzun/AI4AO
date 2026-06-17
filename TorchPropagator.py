@@ -273,30 +273,45 @@ def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection=1):
     return high_pass_filter
 
 
-def transferFunc(Nd, ki, Tp):
+def openLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
     """
-    Computes the closed-loop transfer function for an adaptive optics system.
-
-    Args:
-        Nd (float): The total system delay in frames, representing the delay in the loop.
-        ki (float): The integrator gain of the adaptive optics control system.
-        Tp (float): The Laplace variable.
-
-    Returns:
-        f_cl (float): The closed-loop transfer function of the adaptive optics system.
+    Return the temporal open loop transfer function for a integrator controller.
+    Source: AOPERA (R. Fetick)
+    Parameters
+    ----------
+    freq : np.array
+        Array of temporal frequencies to evaluate the CLTF on.
+    ao_freq : float
+        The sampling temporal frequency of the AO loop.
+    ki : float
+        Integrator gain.
+    leak : float
+        Leaky integrator.
+    nb_frame_delay : float
+        Number of frame delay.
+        Must include: RTC, pixel transfert, DM rise.
+        Must not include: WFS integration, DM zero-order-hold.
     """
-    Hdm = (1 - torch.exp(-Tp)) / Tp
-    Hwfs = (1 - torch.exp(-Tp)) / Tp
-    Hdelay = torch.exp(-Nd * Tp)
-    Hcorr = ki / (1 - torch.exp(-Tp))
-    f_ol = Hdm * Hwfs * Hdelay * Hcorr
-    f_cl = 1 / (1 + f_ol)
-    n_cl = f_cl * Hdm * Hcorr * Hdelay
-    return f_cl
+    z = torch.exp(2j*torch.pi*freq/ao_freq) # it is one method to pass from Tp to z
+    not_zero_issue = 1 - 1e-8 # avoid issue to divide by zero at leak/z = 1
+    H = ki/(1-not_zero_issue*leak/z) # controler
+    H *= 1/z**(nb_frame_delay+1) # delay + WFS + zero order hold
+    H *= torch.sinc(freq/ao_freq)
+
+    return H
+
+def closedLoopTransferFunction(*args, **kwargs):
+    """
+    Return the temporal closed loop transfer function.
+    See the open_loop_transfer arguments.
+    Source: AOPERA (R. Fetick)
+    """
+    return 1/(1+openLoopTransferFunction(*args, **kwargs))
+
 
 
 def GetTemporalErrorPSD(
-    fx, fy, dF, freq, delayFrames, windSpeedVector_x, windSpeedVector_y
+    fx, fy, freq, ki, leak, delayFrames, windSpeedVector_x, windSpeedVector_y
 ):
     """
     Computes the temporal error power spectral density (PSD) given the spatial frequencies and other parameters.
@@ -315,18 +330,12 @@ def GetTemporalErrorPSD(
     fx_temporal = fx * windSpeedVector_x + 1e-7
     fy_temporal = fy * windSpeedVector_y + 1e-7
 
-    f_temporal = torch.sqrt(fx_temporal**2 + fy_temporal**2)
+    f_temporal = fx_temporal + fy_temporal
 
-    T_delay = delayFrames / freq
-    T_integration = 1 / freq
+    ETF = closedLoopTransferFunction(f_temporal, freq, ki, leak, delayFrames)
+    ETF = torch.abs(ETF) ** 2
 
-    return (
-        1
-        - 2
-        * torch.cos(2 * torch.pi * T_delay * f_temporal)
-        * torch.sinc(T_integration * f_temporal)
-        + torch.sinc(T_integration * f_temporal) ** 2
-    )
+    return ETF
 
 
 def GetMultiplePhaseMapAndZernike(PSD, pupil, pupilLogical, CM, Nphases):
@@ -566,12 +575,13 @@ class WFS:
             torch.exp(1j * self.phaseMask) - 1
         ) * self.iMFT_focal_to_pupil(psi_ref)
         self.frame_no_noise = torch.abs(psi_zwfs) ** 2
-        self.frame_no_noise[:, 0] = torch.roll(
-            self.frame_no_noise[:, 0], shifts=-self.pupil_shifts[0], dims=-2
-        )  # up
-        self.frame_no_noise[:, 1] = torch.roll(
-            self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
-        )
+        for i in range(self.frame_no_noise.shape[1]):
+            self.frame_no_noise[:, i] = torch.roll(
+                self.frame_no_noise[:, i], shifts=-self.pupil_shifts[i].item(), dims=-2
+            )  # up
+            # self.frame_no_noise[:, 1] = torch.roll(
+            #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
+            # )
 
     def Propagator(self, phase):
         """
@@ -598,9 +608,11 @@ class WFS:
         self.frame_no_noise = torch.abs(torch.zeros_like(uin_padded))
         self.psf_no_noise = torch.abs(torch.zeros_like(uin_padded))
 
+        ufocal = fft2(fftshift(uin_padded, [-2, -1]))
+        self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
+
         if self.use_MTF:
-            # ufocal = fft2(fftshift(uin_padded, [-2, -1]))
-            # self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
+            
             self.MTFPropagator(uin, uin_padded)
         else:
             self.FFTPropagator(uin_padded)

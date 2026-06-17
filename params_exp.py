@@ -16,13 +16,12 @@ import numpy as np
 WFSParams = dict(
     {
         "Nres": 78,  # 40,                                                              # Number of pixels in the aperture of the telescope
-        "sampling": 240
-        / 78,  # 6,                                                        # Zero-padding factor (2 is Shannon)
+        "sampling": 240 / 78,  # 6,                                                        # Zero-padding factor (2 is Shannon)
         "D": 1.52,  # Telescope diameter (m)
         "Modulation": 0,  # Modulation in \lambda/D
         "Nphotons": [4.5, 6],  # Log range of number of photons in measurement
         "RON": [1, 2],  # Read-out noise in photons per pixel per frame
-        "Nzernike": 150,  # Number of modes to reconstruct
+        "Nzernike": 195,  # Number of modes to reconstruct
         "Nactuator": 17,  # Number of actuators across the diameter of the DM
         "useNoise": True,  # use photon and read-out noise
         "InitParam": [1.57, 1.57],  # wavefront sensor specific parameters
@@ -30,11 +29,11 @@ WFSParams = dict(
         "Reconstruction": "Papyrus",  # Reconstruction algorithm. The full list can be found in Constants.py in reconstruction_types_list
         "beamSplitProportionForWFSDetector": 1.0,  # Add the effects of a beam splitter to assign the correct amount of light to the wfs frame and psf frame
         "ModalBasis": "Papyrus_KL",  # Basis used for the reconstruction. The full list can be found in Constants.py in basis_list
-        "Substract_Reference": True,  # Substract or not the reference intensity frame
-        "Extract_pupils": True,
+        "Substract_Reference": False,  # Substract or not the reference intensity frame
+        "Extract_pupils": False,
         "Bin_factor": 1,
         "Center_noise": 2,
-        "Use_MTF": True,
+        "Use_MTF": False,
         "MTF_upscale": 10,
     }
 )
@@ -57,8 +56,10 @@ LoopParams = dict(
     {
         "loopFrequency": 1000,
         "delayFrames": 1,
-        "windSpeedVector": [-10, 10],
-        "levelOfCorrection": [0.0, 1.0],
+        "windSpeedVector": [1, 20],
+        "levelOfCorrection": [0.5, 1.0],
+        "loopGain": [0.2, 0.5],
+        "loopLeak": [0.9,1.] 
     }
 )
 
