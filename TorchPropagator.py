@@ -583,7 +583,7 @@ class WFS:
             #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
             # )
 
-    def Propagator(self, phase):
+    def Propagator(self, phase, pupil = None):
         """
         Simulates the propagation considering a input phase aberration and a phase mask
 
@@ -593,10 +593,13 @@ class WFS:
            torch tensor: Sensor measurement NphasesxNresxNres
 
         """
+        if pupil is None:
+            pupil = self.pupil.unsqueeze(0)
         with torch.no_grad():
             pad = int(self.Nres * (self.sampling - 1)) // 2
             uin = (
                 self.pupil.unsqueeze(0)
+                * pupil
                 * torch.exp(1j * phase)
                 / torch.sqrt(self.pupil.sum())
             )

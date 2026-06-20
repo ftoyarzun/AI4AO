@@ -83,16 +83,16 @@ class End2EndWFS(nn.Module):
         else:
             raise ValueError(f"Unknown phase estimator: {wfsParams['Reconstruction']}")
 
-    def forward(self, x):
+    def forward(self, phase, pupil):
         if self.OptimizeMask:
             self.UpdateMask()
-            self.Image = self.WFS.Propagator(x)
+            self.Image = self.WFS.Propagator(phase, pupil)
             input_to_network = torch.clone(self.Image)
             input_to_network = self.framePreprocessor.ProcessFrame(input_to_network)
 
         else:
             with torch.no_grad():
-                self.Image = self.WFS.Propagator(x)
+                self.Image = self.WFS.Propagator(phase, pupil)
                 input_to_network = torch.clone(self.Image)
                 input_to_network = self.framePreprocessor.ProcessFrame(input_to_network)
         # self.focalPlaneImage = self.WFS.psf_with_noise

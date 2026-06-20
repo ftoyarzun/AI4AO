@@ -82,6 +82,8 @@ class PhaseDataset(Dataset):
         self.Nphases = AtmosParams['Nphases']
         self.nLayersRange = AtmosParams["Layers"]
         self.f_slope = AtmosParams["f_slope"]
+        self.wavelength = AtmosParams["Wavelength"]
+        self.useScintillation = AtmosParams["Scintillation"]
                                
                                
         self.levelOfCorrectionRange = LoopParams['levelOfCorrection']
@@ -111,9 +113,16 @@ class PhaseDataset(Dataset):
         [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres)
         self.fsqr = self.fx**2 + self.fy**2
         
-        upSize = 2
+        upSize = 4
         [self.dF_moving, self.fx_moving, self.fy_moving] = TorchPropagator.GetSpatialFrequencies(self.D * upSize, self.Nres * upSize, self.device)
         self.fsqr_moving = self.fx_moving**2 + self.fy_moving**2
+
+        if self.useScintillation:
+            x = np.linspace(-self.Nres/2*upSize, self.Nres/2*upSize-1, self.Nres*upSize)                                          # Build the mesh
+            [x,y] = np.meshgrid(x,x) 
+
+            self.pupilASP = torch.from_numpy((x**2 + y**2) <= ((self.Nres*upSize+1)/3)**2).to(device=device, dtype = torch.float32)
+            self.masterPropagatorPhase = torch.fft.fftshift(torch.exp(-1j * torch.pi * self.wavelength * self.fsqr_moving), dim = (-2, -1))
 
     # ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
     
@@ -189,6 +198,7 @@ class PhaseDataset(Dataset):
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.loopGain = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.loopLeak = torch.empty(self.Nphases, 1, 1, device=self.device)
+        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         
         
         
@@ -361,17 +371,23 @@ class PhaseDataset(Dataset):
 
         self.movingWavefrontGenerator *= self.translationPhase
         
-        
+        self.layeredPhase = torch.fft.fft2(self.movingWavefrontGenerator, dim=(-2, -1), norm="ortho").real
+        self.layeredPhase *= torch.sqrt(self.fractionalr0)
         phaseMap = self.CompressAtmosphere() 
-        
         phaseMap = self.RemovePiston(phaseMap)
+        
+        if self.useScintillation:
+            N = self.layeredPhase.shape[-1]
+            pupilMap = self.ComputeScintillation().abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+        else:
+            pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
         
         # Compute Zernike decomposition
         Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
         
         self.movingCount += 1
          
-        return phaseMap, Ze, self.Nphotons, self.RON, self.r0_moving, torch.stack((self.windSpeedVector_x,self.windSpeedVector_y)), self.fractionalr0
+        return phaseMap, pupilMap, Ze, self.Nphotons, self.RON, self.r0_moving, torch.stack((self.windSpeedVector_x,self.windSpeedVector_y)), self.fractionalr0
     
     def RemovePiston(self, phaseMap):
         mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
@@ -386,12 +402,22 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Resulting phase map cropped and projected onto the pupil.
         """
-        layeredPhase = torch.fft.fft2(self.movingWavefrontGenerator, dim=(-2, -1), norm="ortho").real
-        croppedLayeredPhase = layeredPhase[:, :, :self.Nres, :self.Nres]
-        phaseMap = (torch.sqrt(self.fractionalr0) * croppedLayeredPhase).sum(dim=0)
+        N = self.layeredPhase.shape[-1]
+        croppedLayeredPhase = self.layeredPhase[:, :, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+        phaseMap = croppedLayeredPhase.sum(dim=0)
         phaseMap = self.pupil * phaseMap  # Apply pupil mask
         return phaseMap
+    
+    def ComputeScintillation(self):
+        scintillationSupport = self.pupilASP.repeat(self.Nphases, 1, 1).to(dtype=torch.complex64)
+        N = self.layeredPhase.shape[-1]
+        for i in range(self.nLayers):
+            dist = self.layerHeights[i] - self.layerHeights[i + 1] if i < self.nLayers-1 else self.layerHeights[0]
+            scintillationSupport = scintillationSupport * torch.exp(1j * self.layeredPhase[i])
+            scintillationSupport = self.ASP(scintillationSupport, dist)
         
+        scintillationSupport = scintillationSupport#[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+        return scintillationSupport
     
     def ResetMovingWavefront(self):
         """
@@ -420,13 +446,16 @@ class PhaseDataset(Dataset):
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.RONRange)
 
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 1.)
-        self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0) 
+        self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0)
+        self.fractionalr0,_ = torch.sort(self.fractionalr0, dim = 0) 
         
         self.windSpeed = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
 
-   
+        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = 0.1) * 1e2
+        self.layerHeights,_ = torch.sort(self.layerHeights, dim = 0, descending = True)
+
         currentIntegratedWindSpeed = torch.sum(self.fractionalr0 *
                                             torch.sqrt(self.windSpeedVector_x ** 2 +
                                                         self.windSpeedVector_y ** 2) ** (5/3), dim = 0) ** (3/5)
@@ -498,6 +527,14 @@ class PhaseDataset(Dataset):
         self.windSpeedVector_x = data["windSpeedVector_x"]
         self.windSpeedVector_y = data["windSpeedVector_y"]
         self.fractionalr0 = data["fractionalr0"]
+
+    def ASP(self, input_field, distance):
+        
+        field_freq = torch.fft.fft2(torch.fft.ifftshift(input_field, dim = (-2,-1)), dim = (-2,-1))
+        field_filtered = field_freq * self.masterPropagatorPhase ** distance
+        field_out = torch.fft.fftshift(torch.fft.ifft2(field_filtered, dim = (-2,-1)), dim = (-2,-1))
+
+        return field_out
         
         
 
