@@ -152,7 +152,7 @@ class VGGNet(nn.Module):
     def __init__(self, wfsParams, input_channels=4):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
 
         self.features = nn.Sequential(
             VGGBlock(input_channels, 64, conv_layers=2),
@@ -165,7 +165,7 @@ class VGGNet(nn.Module):
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Dropout(0.01),
-            nn.Linear(512, Nzernike),
+            nn.Linear(512, Nmodes),
         )
 
         self.apply(self._init_weights)
@@ -189,7 +189,7 @@ class VGGNet(nn.Module):
 
 
 class PapyrusBlock(nn.Module):
-    def __init__(self, Nzernike, initial_kernel_size=3):
+    def __init__(self, Nmodes, initial_kernel_size=3):
         super().__init__()
 
         kernel_size = 3
@@ -217,8 +217,8 @@ class PapyrusBlock(nn.Module):
             nn.Dropout(0.2),
         )
 
-        # self.outputlayer = nn.Linear(256, Nzernike)
-        self.outputlayer = nn.Sequential(nn.Linear(1024, Nzernike))
+        # self.outputlayer = nn.Linear(256, Nmodes)
+        self.outputlayer = nn.Sequential(nn.Linear(1024, Nmodes))
 
         self._init_weights()
 
@@ -241,7 +241,7 @@ class PapyrusBlock(nn.Module):
 
 
 class PapyrusBlock2(nn.Module):
-    def __init__(self, channels_in, Nzernike, initial_kernel_size=3):
+    def __init__(self, channels_in, Nmodes, initial_kernel_size=3):
         super().__init__()
 
         self.enc1 = ResidualBlock(channels_in, 32, initial_kernel_size)
@@ -251,12 +251,12 @@ class PapyrusBlock2(nn.Module):
 
         self.pool = nn.MaxPool2d(2)
 
-        # self.outputlayer = nn.Linear(256, Nzernike)
+        # self.outputlayer = nn.Linear(256, Nmodes)
         self.outputlayer = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Dropout(0.2),
-            nn.Linear(256, Nzernike),
+            nn.Linear(256, Nmodes),
         )
 
         self._init_weights()
@@ -290,12 +290,12 @@ class Papyrus(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
         channels = 1
 
-        self.papy1 = PapyrusBlock2(channels, Nzernike // 3, 11)
-        self.papy2 = PapyrusBlock2(channels, Nzernike // 3, 7)
-        self.papy3 = PapyrusBlock2(channels, Nzernike - 2 * (Nzernike // 3))
+        self.papy1 = PapyrusBlock2(channels, Nmodes // 3, 11)
+        self.papy2 = PapyrusBlock2(channels, Nmodes // 3, 7)
+        self.papy3 = PapyrusBlock2(channels, Nmodes - 2 * (Nmodes // 3))
 
     def forward(self, x):
         x = x.unsqueeze(1)
@@ -337,7 +337,7 @@ class ResidualBlock(nn.Module):
 #         x,y = torch.meshgrid(x,x)
 #         self.pupil = ((x**2 + y**2) < ((17/2)**2 + 300/self.N)).to(device = device)
 
-#         Nzernike = wfsParams["Nzernike"]
+#         Nmodes = wfsParams["Nmodes"]
 
 #         # encoder stage blocks (no stride inside blocks)
 
@@ -372,7 +372,7 @@ class ResidualBlock(nn.Module):
 #     def forward(self, x):
 #         """
 #         x: [B, 80, 80]  (grayscale)
-#         returns: [B, Nzernike]
+#         returns: [B, Nmodes]
 #         """
 #         x = x.unsqueeze(1)  # -> [B,1,80,80]
 
@@ -407,7 +407,7 @@ class ResidualBlock(nn.Module):
 #     def __init__(self, wfsParams, atmosParams, device, dropout=0.01, start_filters = 16):
 #         super().__init__()
 
-#         Nzernike = wfsParams["Nzernike"]
+#         Nmodes = wfsParams["Nmodes"]
 
 
 #         # Encoder
@@ -441,7 +441,7 @@ class ResidualBlock(nn.Module):
 #             nn.Dropout(dropout),
 #             nn.Linear(start_filters*10*10, 512),
 #             nn.GELU(),
-#             nn.Linear(512, Nzernike)
+#             nn.Linear(512, Nmodes)
 #         )
 
 #     self._init_weights()
@@ -492,7 +492,7 @@ class ResidualBlock(nn.Module):
 
 #         # Global pooling from the last decoder feature
 #         pooled = self.global_pool(d0)  # [B, 64, 1, 1]
-#         out = self.fc(pooled)          # [B, Nzernike]
+#         out = self.fc(pooled)          # [B, Nmodes]
 
 #         return out
 
@@ -525,7 +525,7 @@ class PapyrusPhase(nn.Module):
             nn.Dropout(0.2),
         )
 
-        # self.outputlayer = nn.Linear(256, Nzernike)
+        # self.outputlayer = nn.Linear(256, Nmodes)
         self.outputlayer = nn.Sequential(
             nn.Linear(512, pupil.sum().to(dtype=torch.int32))
         )
@@ -541,7 +541,7 @@ class DataFusion(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
 
         self.encoder = nn.Sequential(
             nn.Conv2d(2, 8, kernel_size=5, padding=2),
@@ -567,9 +567,9 @@ class DataFusion(nn.Module):
             nn.Dropout(0.01),
         )
 
-        # self.outputlayer = nn.Linear(256, Nzernike)
+        # self.outputlayer = nn.Linear(256, Nmodes)
         self.outputlayer = nn.Sequential(
-            nn.Linear(256, 256), nn.GELU(), nn.Linear(256, Nzernike)
+            nn.Linear(256, 256), nn.GELU(), nn.Linear(256, Nmodes)
         )
 
     def forward(self, x):
@@ -583,7 +583,7 @@ class SimpleNet(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
 
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=11, padding=7),
@@ -610,7 +610,7 @@ class SimpleNet(nn.Module):
         )
 
         self.outputlayer = nn.Sequential(
-            nn.Linear(512, Nzernike),
+            nn.Linear(512, Nmodes),
         )
 
         self._init_weights()
@@ -637,7 +637,7 @@ class Papyrus1stStage(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
         self.binning = wfsParams["Bin_factor"]
         self.bin_step = nn.AvgPool2d(self.binning)
 
@@ -666,7 +666,7 @@ class Papyrus1stStage(nn.Module):
         )
 
         self.outputlayer = nn.Sequential(
-            nn.Linear(512, Nzernike),
+            nn.Linear(512, Nmodes),
         )
 
         self._init_weights()
@@ -695,7 +695,7 @@ class Rama(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
 
         self.encoder = nn.Sequential(
             nn.Conv2d(4, 8, kernel_size=7, padding=3),
@@ -721,7 +721,7 @@ class Rama(nn.Module):
         )
 
         self.outputlayer = nn.Sequential(
-            nn.Linear(128*4*4, Nzernike),
+            nn.Linear(128*4*4, Nmodes),
         )
 
         self._init_weights()
@@ -747,11 +747,11 @@ class Rama(nn.Module):
 #     def __init__(self, wfsParams, atmosParams, device):
 #         super().__init__()
 
-#         Nzernike = wfsParams["Nzernike"]
+#         Nmodes = wfsParams["Nmodes"]
 #         channels = 2
 
-#         self.papy1 = PapyrusBlock2(channels, Nzernike // 2, 11)
-#         self.papy2 = PapyrusBlock2(channels, Nzernike - (Nzernike // 2))
+#         self.papy1 = PapyrusBlock2(channels, Nmodes // 2, 11)
+#         self.papy2 = PapyrusBlock2(channels, Nmodes - (Nmodes // 2))
 
 #     def forward(self, x):
 #         x1 = self.papy1(x)
@@ -765,7 +765,7 @@ class Papyrus2ndStage(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
 
-        Nzernike = wfsParams["Nzernike"]
+        Nmodes = wfsParams["Nmodes"]
         self.binning = wfsParams["Bin_factor"]
         self.bin_step = nn.AvgPool2d(self.binning)
 
@@ -794,7 +794,7 @@ class Papyrus2ndStage(nn.Module):
         )
 
         self.outputlayer = nn.Sequential(
-            nn.Linear(512, Nzernike),
+            nn.Linear(512, Nmodes),
         )
 
         self._init_weights()
@@ -886,7 +886,7 @@ class OptimizedLinearEstimator(nn.Module):
 
     "They are initalized using the propagator code from the starting point"
 
-    def __init__(self, init=0, WFS=None, Nzernike=0):
+    def __init__(self, init=0, WFS=None, Nmodes=0):
 
         super().__init__()
 
@@ -895,7 +895,7 @@ class OptimizedLinearEstimator(nn.Module):
 
             print("Initalization of the reconstruction matrix")
             [z, z_FullRes] = Zernike(
-                WFS.pupil.cpu(), WFS.pupil_logical, WFS.Nres, Nzernike
+                WFS.pupil, Nmodes
             )
             z_FullRes = z_FullRes
             WFS.BuildReconstructionMatrix(z_FullRes, WFS.mask)
@@ -906,7 +906,7 @@ class OptimizedLinearEstimator(nn.Module):
         else:
             number_of_pixels = WFS.Npix**2
             self.param = nn.Parameter(
-                torch.zeros((Nzernike, number_of_pixels), dtype=torch.float64)
+                torch.zeros((Nmodes, number_of_pixels), dtype=torch.float64)
             )
 
     def forward(self, image):

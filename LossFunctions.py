@@ -18,20 +18,20 @@ class Custom_Loss_Function(nn.Module):
     Args:
         epsilon (float): Small value for numerical stability (currently unused).
         degree (int): Power to which the error is raised (e.g., 2 for MSE).
-        NZernike (int): Number of Zernike modes considered in the loss.
+        Nmodes (int): Number of modes considered in the loss.
         device (str): Device on which tensors will be allocated ('cuda' or 'cpu').
     """
 
-    def __init__(self, epsilon=1e-2, degree=2, NZernike=209, device="cuda"):
+    def __init__(self, epsilon=1e-2, degree=2, Nmodes=209, device="cuda"):
         super().__init__()
         self.epsilon = epsilon
         self.degree = degree
-        self.NZernike = NZernike
+        self.Nmodes = Nmodes
 
         self.linspace = torch.sqrt(
-            (torch.linspace(1, NZernike, NZernike, device=device))
+            (torch.linspace(1, Nmodes, Nmodes, device=device))
         )
-        # self.linspace = torch.linspace(1, NZernike, NZernike, device=device)
+        # self.linspace = torch.linspace(1, Nmodes, Nmodes, device=device)
 
     def forward(self, y_pred, y_true, r0):
         """
@@ -45,7 +45,7 @@ class Custom_Loss_Function(nn.Module):
         Returns:
             Tensor: Scalar loss value.
         """
-        diff = (y_pred - y_true)[..., : self.NZernike] * self.linspace
+        diff = (y_pred - y_true)[..., : self.Nmodes] * self.linspace
         return torch.mean(torch.abs(diff) ** self.degree * r0)  # ** (5/3))
 
 
@@ -58,7 +58,7 @@ class Relative_Loss_Function(nn.Module):
     Args:
         epsilon (float): Small value for numerical stability (currently unused).
         degree (int): Power to which the error is raised (e.g., 2 for MSE).
-        NZernike (int): Number of Zernike modes considered in the loss.
+        Nmodes (int): Number of modes considered in the loss.
         device (str): Device on which tensors will be allocated ('cuda' or 'cpu').
     """
 

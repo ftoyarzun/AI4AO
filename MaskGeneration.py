@@ -14,7 +14,7 @@ import time
 
 from Constants import mask_types_list
 
-from TorchPropagator import ZernikeFullView
+from TorchPropagator import Zernike
 from IPython.display import display, clear_output
 
 
@@ -104,7 +104,7 @@ class MaskManager(nn.Module):
                 torch.tensor(ParamsDict["InitParam"], device=self.device)
             )
         if self.maskType == "ModalMask":
-            self.phaseMaskGenerator = ModalMaskGeneration(self.N, self.device).to(
+            self.phaseMaskGenerator = ModalMaskGeneration(self.WFS.pupil).to(
                 self.device
             )
         if self.maskType in ["FullyFreePhase"]:
@@ -579,7 +579,7 @@ class FreeMaskGenerator(nn.Module):
 
 class ModalMaskGeneration(nn.Module):
 
-    def __init__(self, maskResolution, device, NumberOfModes=30):
+    def __init__(self, pupil, device, NumberOfModes=30):
         super().__init__()
 
         # self.coefs = nn.Parameter(torch.randn(size=(NumberOfModes, 1, 1), device = device) / 100., requires_grad=True)
@@ -588,9 +588,8 @@ class ModalMaskGeneration(nn.Module):
         self.coefs.data[7] = 0.7833
         self.coefs.data[10] = 1.0787
 
-        self.modes = ZernikeFullView(maskResolution, range(3, NumberOfModes + 3)).to(
-            device=device
-        )
+        _, self.modes = Zernike(pupil, j = NumberOfModes)
+        self.modes = self.modes.permute(1,0).view(NumberOfModes, *pupil.shape[-2:])
 
     def forward(self):
         return torch.sum(self.modes * self.coefs, dim=0)
@@ -693,7 +692,7 @@ class MaskVisualizator:
 
         plt.pause(0.1)
 
-    def update_plots(self, zernikeTeo, zernikeEst):
+    def update_plots(self, modeTeo, modeEst):
         clear_output(wait=True)
         smooth_loss = np.convolve(
             self.loss.cpu().detach().numpy(), np.ones(100) / 100, "valid"
@@ -708,10 +707,10 @@ class MaskVisualizator:
         self.ax[0].relim()
         self.ax[0].autoscale_view()
 
-        self.reconstructionPlotTheoretical.set_xdata(np.arange(len(zernikeTeo[0])))
-        self.reconstructionPlotTheoretical.set_ydata(zernikeTeo[0].cpu().detach())
-        self.reconstructionPlotEstimated.set_xdata(np.arange(len(zernikeEst[0])))
-        self.reconstructionPlotEstimated.set_ydata(zernikeEst[0].cpu().detach())
+        self.reconstructionPlotTheoretical.set_xdata(np.arange(len(modeTeo[0])))
+        self.reconstructionPlotTheoretical.set_ydata(modeTeo[0].cpu().detach())
+        self.reconstructionPlotEstimated.set_xdata(np.arange(len(modeEst[0])))
+        self.reconstructionPlotEstimated.set_ydata(modeEst[0].cpu().detach())
         self.ax[1].relim()
         self.ax[1].autoscale_view()
         display(self.fig, clear=True)

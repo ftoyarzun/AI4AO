@@ -24,7 +24,7 @@ class End2EndWFS(nn.Module):
         super().__init__()
         self.device = device
         self.maskType = wfsParams["MaskType"]
-        self.Nzernike = wfsParams["Nzernike"]
+        self.Nmodes = wfsParams["Nmodes"]
         self.N = wfsParams["Nres"] * wfsParams["sampling"]
         self.Nres = wfsParams["Nres"]
         self.WFS = WFS(wfsParams, device)
@@ -67,7 +67,7 @@ class End2EndWFS(nn.Module):
         elif wfsParams["Reconstruction"] == "VGGNet":
             return VGGNet(wfsParams).to(self.device)
         elif wfsParams["Reconstruction"] == "UNet":
-            return UNetWithMLP(2, mlp_output_size=wfsParams["Nzernike"]).to(self.device)
+            return UNetWithMLP(2, mlp_output_size=self.Nmodes).to(self.device)
         elif wfsParams["Reconstruction"] == "Transformer":
             return ViT_PyTorch(
                 img_size=92,
@@ -77,7 +77,7 @@ class End2EndWFS(nn.Module):
                 depth=8,
                 num_heads=4,
                 mlp_ratio=4.0,
-                out_dim=self.Nzernike,
+                out_dim=self.Nmodes,
                 dropout=0.1,
             ).to(self.device)
         else:
