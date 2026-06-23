@@ -97,6 +97,8 @@ class PhaseDataset(Dataset):
 
         self.translationPhase = 1.
         self.movingCount = 0
+
+        self.generateClosedLoop = False
         
         self.testDatasetPath = "test_dataset.pth"
         self.movingTestDatasetPath = "moving_test_dataset.pth"
@@ -121,7 +123,7 @@ class PhaseDataset(Dataset):
             x = np.linspace(-self.Nres/2*upSize, self.Nres/2*upSize-1, self.Nres*upSize)                                          # Build the mesh
             [x,y] = np.meshgrid(x,x) 
 
-            self.pupilASP = torch.from_numpy((x**2 + y**2) <= ((self.Nres*upSize+1)/3)**2).to(device=device, dtype = torch.float32)
+            self.pupilASP = torch.from_numpy((x**2 + y**2) <= ((self.Nres*upSize+1)/2.2)**2).to(device=device, dtype = torch.float32)
             self.masterPropagatorPhase = torch.fft.fftshift(torch.exp(-1j * torch.pi * self.wavelength * self.fsqr_moving), dim = (-2, -1))
 
     # ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
@@ -213,51 +215,9 @@ class PhaseDataset(Dataset):
         return self.Nphases
 
     def __getitem__(self, idx):
-        
-        device = self.device  # Ensure tensors stay on the same device
-        
-        # Generate batch of random parameters
-        r0 = torch.empty(self.Nphases, 1, 1).uniform_(self.r0Range[0], self.r0Range[1])  # Fried parameter
-        L0 = torch.empty(self.Nphases, 1, 1).uniform_(self.L0Range[0], self.L0Range[1])  # Outer scale
-        levelOfCorrection = torch.empty(self.Nphases, 1, 1).uniform_(self.levelOfCorrectionRange[0], self.levelOfCorrectionRange[1])
-
-        windSpeedVector_x = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
-        windSpeedVector_y = torch.empty(self.Nphases, 1, 1).uniform_(-10, 10)
-     
-
-        # Compute the PSDs in batch mode
-        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr, self.dF, r0, L0)  # Shape: (Nphases, H, W)
-        fitting_PSD = TorchPropagator.GetFittingPSD(self.fx, self.fy, self.dF, self.D, self.Nactuator, levelOfCorrection)  # Shape: (Nphases, H, W)
-        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving,
-                                                                self.fy_moving,
-                                                                self.loopFrequency,
-                                                                self.loopGain,
-                                                                self.loopLeak, 
-                                                                self.delayFrames,
-                                                                self.windSpeedVector_x,
-                                                                self.windSpeedVector_y)  # Shape: (Nphases, H, W)
-        
-        
-        total_PSD = atmosphere_PSD * fitting_PSD + temporalErrorPSD * (1 - fitting_PSD) * atmosphere_PSD
-        
-        
-        resolution = total_PSD.shape[-1]
-        sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(total_PSD, dim=(-2, -1))).to(device)  # FFT shift along spatial dims
-        randMap_real = torch.randn(self.Nphases, resolution, resolution, dtype=torch.float32, device=device)
-        randMap_imag = torch.randn(self.Nphases, resolution, resolution, dtype=torch.float32, device=device)
-        phaseMap = torch.fft.ifft2(sqrt_fftshift_PSD * (randMap_real + 1j * randMap_imag), dim=(-2, -1), norm="ortho").real
-        
-
-        phaseMap = phaseMap - torch.mean(phaseMap[:, self.pupil.bool()], dim=-1, keepdim=True).unsqueeze(-1)
-        phaseMap = self.pupil * phaseMap  # Apply pupil mask
-
-        # Compute Zernike decomposition
-        Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
-        
-        Nphotons = torch.pow(10, torch.empty(self.Nphases, 1, 1).uniform_(self.photonRange[0], self.photonRange[1])).to(self.device)
-        RON = torch.empty(self.Nphases, 1, 1).uniform_(self.RONRange[0], self.RONRange[1]).to(self.device)
-         
-        return phaseMap, Ze, Nphotons, RON, r0.to(device)
+        if idx == 0:
+            self.ResetMovingWavefront()
+        return self.GetMovingWavefront(idx)
            
     
     def GenerateTestDataSet(self, Ntest):
@@ -336,7 +296,7 @@ class PhaseDataset(Dataset):
         
         
     @torch.no_grad() 
-    def GetMovingWavefront(self, generateClosedLoop = False):
+    def GetMovingWavefront(self, idx):
         """
         Generate a moving (time-evolving) wavefront phase map.
     
@@ -353,32 +313,36 @@ class PhaseDataset(Dataset):
                 - wind (torch.Tensor): Wind speed vectors for each layer.
                 - fractionalr0 (torch.Tensor): Relative r0 contribution of each layer.
         """
-        if self.movingCount == 0:
+        if idx == 0:
             # Generate batch of random parameters
             self.DrawRandomParameters()    
 
             # Compute the PSDs in batch mode
-            total_PSD = self.BuildAtmospherePSD(generateClosedLoop)
+            total_PSD, atm_PSD = self.BuildAtmospherePSD()
             
             resolution = total_PSD.shape[-1]
             sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(total_PSD, dim=(-2, -1)))  # FFT shift along spatial dims
             randMap = torch.randn(self.nLayers, self.Nphases, resolution, resolution, dtype=torch.complex32, device=self.device) 
             self.movingWavefrontGenerator = sqrt_fftshift_PSD * randMap 
+            
+            if self.useScintillation:
+                sqrt_fftshift_atm_PSD = torch.sqrt(torch.fft.fftshift(atm_PSD, dim=(-2, -1)))
+                self.movingScintillationWavefrontGenerator = sqrt_fftshift_atm_PSD * randMap
        
-        if self.movingCount == 1:
+        if idx == 1:
             phase_factor = (1j * 2 * torch.pi / self.loopFrequency * (self.windSpeedVector_x * self.fx_moving.unsqueeze(0).unsqueeze(0) + self.windSpeedVector_y * self.fy_moving.unsqueeze(0).unsqueeze(0))).to(device = self.device, dtype = torch.complex32)
             self.translationPhase = torch.fft.fftshift(torch.exp(phase_factor), dim = (-2, -1))
-
-        self.movingWavefrontGenerator *= self.translationPhase
-        
-        self.layeredPhase = torch.fft.fft2(self.movingWavefrontGenerator, dim=(-2, -1), norm="ortho").real
-        self.layeredPhase *= torch.sqrt(self.fractionalr0)
+ 
+        self.layeredPhase = self.MakeLayersFromGenerator(idx, self.movingWavefrontGenerator)
         phaseMap = self.CompressAtmosphere() 
-        phaseMap = self.RemovePiston(phaseMap)
-        
+
         if self.useScintillation:
             N = self.layeredPhase.shape[-1]
-            pupilMap = self.ComputeScintillation().abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+            if self.generateClosedLoop:
+                self.scintillationLayeredPhase = self.MakeLayersFromGenerator(idx, self.movingScintillationWavefrontGenerator)
+                pupilMap = self.ComputeScintillation(self.scintillationLayeredPhase).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+            else:
+                pupilMap = self.ComputeScintillation(self.layeredPhase).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
         else:
             pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
         
@@ -391,9 +355,13 @@ class PhaseDataset(Dataset):
     
     def RemovePiston(self, phaseMap):
         mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
-        
         masked_mean = (phaseMap * mask).sum(dim=(-2, -1), keepdim=True) / self.pupilSum
         return phaseMap - masked_mean * mask
+    
+    def MakeLayersFromGenerator(self, idx, generator):
+        layeredPhase = torch.fft.fft2(generator * self.translationPhase ** idx, dim=(-2, -1), norm="ortho").real
+        layeredPhase *= torch.sqrt(self.fractionalr0)
+        return layeredPhase
     
     def CompressAtmosphere(self):
         """
@@ -406,14 +374,16 @@ class PhaseDataset(Dataset):
         croppedLayeredPhase = self.layeredPhase[:, :, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
         phaseMap = croppedLayeredPhase.sum(dim=0)
         phaseMap = self.pupil * phaseMap  # Apply pupil mask
+        phaseMap = self.RemovePiston(phaseMap)
         return phaseMap
     
-    def ComputeScintillation(self):
+    def ComputeScintillation(self, layeredPhase):
+
         scintillationSupport = self.pupilASP.repeat(self.Nphases, 1, 1).to(dtype=torch.complex64)
-        N = self.layeredPhase.shape[-1]
+
         for i in range(self.nLayers):
             dist = self.layerHeights[i] - self.layerHeights[i + 1] if i < self.nLayers-1 else self.layerHeights[0]
-            scintillationSupport = scintillationSupport * torch.exp(1j * self.layeredPhase[i])
+            scintillationSupport = scintillationSupport * torch.exp(1j * layeredPhase[i])
             scintillationSupport = self.ASP(scintillationSupport, dist)
         
         scintillationSupport = scintillationSupport#[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
@@ -424,7 +394,6 @@ class PhaseDataset(Dataset):
         Reset the temporal evolution state of the moving wavefront generator.
         """
         self.translationPhase = 1.
-        self.movingWavefrontGenerator = None
         self.movingCount = 0
         
     def DrawRandomParameters(self):
@@ -446,30 +415,29 @@ class PhaseDataset(Dataset):
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.RONRange)
 
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 1.)
+        random_to_sort = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 0.5)
+        _,index_sorted = torch.sort(self.fractionalr0 + random_to_sort, dim = 0) 
+        self.fractionalr0 = torch.gather(self.fractionalr0, dim=0, index=index_sorted)
         self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0)
-        self.fractionalr0,_ = torch.sort(self.fractionalr0, dim = 0) 
+
+        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = 0.001) * 2e0
+        self.layerHeights,_ = torch.sort(self.layerHeights, dim = 0, descending = True)
         
         self.windSpeed = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
 
-        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = 0.1) * 1e2
-        self.layerHeights,_ = torch.sort(self.layerHeights, dim = 0, descending = True)
-
         currentIntegratedWindSpeed = torch.sum(self.fractionalr0 *
                                             torch.sqrt(self.windSpeedVector_x ** 2 +
                                                         self.windSpeedVector_y ** 2) ** (5/3), dim = 0) ** (3/5)
-        
 
         normalization = self.windSpeed / currentIntegratedWindSpeed
         self.windSpeedVector_x = self.windSpeedVector_x * normalization
         self.windSpeedVector_y = self.windSpeedVector_y * normalization
         
 
-        
-
      
-    def BuildAtmospherePSD(self, generateClosedLoop):
+    def BuildAtmospherePSD(self):
         """
         Construct the atmospheric power spectral density (PSD) for all layers.
     
@@ -479,13 +447,24 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Atmospheric PSD with optional closed-loop correction applied.
         """
-        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, self.dF_moving, self.r0_moving, self.L0, self.f_slope)  # Shape: (Nphases, H, W)
+        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, 
+                                                          self.dF_moving, 
+                                                          self.r0_moving, 
+                                                          self.L0, 
+                                                          self.f_slope)  # Shape: (Nphases, H, W)
+        
         total_PSD = atmosphere_PSD# * fitting_PSD
         total_PSD = total_PSD.repeat(self.nLayers, 1, 1, 1)
-        if not generateClosedLoop:
-            return total_PSD
+        if not self.generateClosedLoop:
+            return total_PSD, total_PSD
         
-        fitting_PSD = TorchPropagator.GetFittingPSD(self.fx_moving, self.fy_moving, self.dF_moving, self.D, self.Nactuator, self.levelOfCorrection)  # Shape: (Nphases, H, W)
+        fitting_PSD = TorchPropagator.GetFittingPSD(self.fx_moving,
+                                                    self.fy_moving, 
+                                                    self.dF_moving, 
+                                                    self.D, 
+                                                    self.Nactuator, 
+                                                    self.levelOfCorrection)  # Shape: (Nphases, H, W)
+        
         temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving,
                                                                 self.fy_moving,
                                                                 self.loopFrequency,
@@ -498,7 +477,7 @@ class PhaseDataset(Dataset):
         total_PSD *= fitting_PSD
         total_PSD += temporalErrorPSD * (1. - fitting_PSD) * atmosphere_PSD
         
-        return total_PSD
+        return total_PSD, atmosphere_PSD
         
         
     def LoadTestMovingWavefront(self, file_path="moving_test_dataset.pth"):
@@ -568,31 +547,31 @@ class PermanentPhaseDataset(Dataset):
         return self.inputs[idx], self.outputs[idx], self.photons[idx], self.rons[idx], self.r0s[idx]
 
     
-if __name__ == "__main__":
+# if __name__ == "__main__":
     
     
-    device = 'cuda'
+#     device = 'cuda'
     
-    paramfile = 'params_exp.py'
+#     paramfile = 'params_exp.py'
 
-    AtmosParams = Config.fromfile(paramfile)['AtmosParams']
-    WFSParams = Config.fromfile(paramfile)['WFSParams']
-    LoopParams = Config.fromfile(paramfile)['LoopParams']
+#     AtmosParams = Config.fromfile(paramfile)['AtmosParams']
+#     WFSParams = Config.fromfile(paramfile)['WFSParams']
+#     LoopParams = Config.fromfile(paramfile)['LoopParams']
 
-    dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
+#     dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
     
-    # outPhaseMap, outZe,_,_,_ = dataset[0]
+#     # outPhaseMap, outZe,_,_,_ = dataset[0]
     
-    t1 = time.perf_counter()
-    dataset.ResetMovingWavefront()
-    outPhaseMap, outZe,_,_,_,_,fr0 = dataset.GetMovingWavefront(generateClosedLoop = True)
-    t2 = time.perf_counter()
-    print(1/(t2 - t1))
+#     t1 = time.perf_counter()
+#     dataset.ResetMovingWavefront()
+#     outPhaseMap, outZe,_,_,_,_,fr0 = dataset.GetMovingWavefront()
+#     t2 = time.perf_counter()
+#     print(1/(t2 - t1))
     
     
-    plt.figure(1)
-    plt.imshow(outPhaseMap[0,:,:].cpu().data.numpy())
-    plt.colorbar()
-    plt.show()
+#     plt.figure(1)
+#     plt.imshow(outPhaseMap[0,:,:].cpu().data.numpy())
+#     plt.colorbar()
+#     plt.show()
     
     
