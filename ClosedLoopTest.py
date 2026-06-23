@@ -43,7 +43,7 @@ if __name__ == "__main__":
     leak = 0.99
     start_after_iteration = 0
     
-    z_FullRes = dataset.z_FullRes.view(-1, dataset.Nzernike).transpose(0, 1)
+    z_FullRes = dataset.z_FullRes.view(-1, dataset.Nmodes).transpose(0, 1)
     #dataset.LoadTestMovingWavefront()
     phaseGT,zernike,photons,ron,r0s,wind,fractionalr0 = dataset.GetMovingWavefront(generateClosedLoop = True)
     

@@ -12,14 +12,12 @@ import numpy as np
 
 np.math = math
 import torch.nn as nn
-import random
+
 
 from torch.fft import fft2, fftshift, ifft2, ifftshift
 
-from Constants import double_transmision_masks
 
-
-def Zernike(pupil, pupil_logical, resolution, j):
+def Zernike(pupil, j = 100):
     """
     Creates the Zernike polynomial basis
 
@@ -81,23 +79,27 @@ def Zernike(pupil, pupil_logical, resolution, j):
 
             factorial = scipy.special.factorial
 
-        R = np.zeros(r.shape)
+        R = torch.zeros_like(r)
         # Can cast the below to "int", n,m are always *both* either even or odd
         for i in range(0, int((n - m) / 2) + 1):
 
-            R += np.array(
+            R += (
                 r ** (n - 2 * i)
                 * (((-1) ** (i)) * factorial(n - i))
                 / (
                     factorial(i)
                     * factorial(int(0.5 * (n + m) - i))
                     * factorial(int(0.5 * (n - m) - i))
-                ),
-                dtype="float",
+                )
             )
         return R
+    
 
-    pupil = pupil.cpu()
+    pupil_logical = torch.where(pupil.view(-1) > 0)[0]
+    resolution = pupil.shape[-1]
+
+    device = pupil.device
+    # pupil = pupil.cpu()
     X, Y = torch.where(pupil > 0)
 
     X = (X - (resolution + resolution % 2 - 1) / 2) / resolution
@@ -105,8 +107,8 @@ def Zernike(pupil, pupil_logical, resolution, j):
     R = torch.sqrt(X**2 + Y**2)
     R = R / R.max()
     theta = torch.arctan2(Y, X)
-    out = torch.zeros([torch.sum(pupil), j], dtype=torch.float32)
-    outFullRes = torch.zeros([resolution**2, j], dtype=torch.float32)
+    out = torch.zeros((int(torch.sum(pupil).item()), j), dtype=torch.float32, device = device)
+    outFullRes = torch.zeros((resolution**2, j), dtype=torch.float32, device = device)
 
     for i in range(1, j + 1):
         n, m = zernIndex(i + 1)
@@ -135,54 +137,11 @@ def Zernike(pupil, pupil_logical, resolution, j):
         # clip
         out[:, i - 1] = Z
 
-        outFullRes[pupil_logical[0], i - 1] = Z.to(outFullRes.dtype)
+        outFullRes[pupil_logical, i - 1] = Z.to(outFullRes.dtype)
 
     outFullRes = torch.reshape(outFullRes, [resolution, resolution, j])
 
     return out, outFullRes
-
-
-def ZernikeFullView(resolution, modes):
-    x = torch.linspace(-1, 1, resolution)
-    X, Y = torch.meshgrid(x, x, indexing="xy")
-
-    R = torch.sqrt(X**2 + Y**2)
-    pupil = R < 1
-
-    theta = torch.arctan2(Y, X)
-    outFullRes = torch.zeros([len(modes), resolution, resolution], dtype=torch.float32)
-
-    index = 0
-
-    for i in modes:
-        n, m = ao.zernike.zernIndex(i + 1)
-        n_t = torch.tensor(n, dtype=torch.float32)
-
-        if m == 0:
-            Z = torch.sqrt(n_t + 1) * ao.zernike.zernikeRadialFunc(n, 0, R)
-        else:
-            if m > 0:  # j is even
-                Z = (
-                    torch.sqrt(2 * (n_t + 1))
-                    * ao.zernike.zernikeRadialFunc(n, m, R)
-                    * torch.cos(m * theta)
-                )
-            else:  # i is odd
-                m = abs(m)
-                Z = (
-                    torch.sqrt(2 * (n_t + 1))
-                    * ao.zernike.zernikeRadialFunc(n, m, R)
-                    * torch.sin(m * theta)
-                )
-
-        Z *= pupil
-        Z -= Z[pupil].mean()
-        Z *= 1 / torch.std(Z[pupil])
-
-        outFullRes[index, :, :] = Z.to(outFullRes.dtype)
-        index += 1
-
-    return outFullRes
 
 
 def GetSpatialFrequencies(D, resolution, device="cpu"):
@@ -868,144 +827,3 @@ class WFS:
         )
 
         return temp
-
-
-# %% Set general parameter and build classes
-if __name__ == "__main__":
-
-    plt.close("all")
-    ## WFS parameters
-    Nres = 50  # Number of pixels in the aperture of the telescope
-    sampling = 4  # Zero-padding factor (2 is Shannon)
-    Npix = Nres * sampling  # Total number of pixels
-    D = 1  # Telescope diameter (m)
-    Nphotons = 1e7  # Number of photons in measurement
-    RON = 0  # Read-out noise in photons per pixel per frame
-    Nzernike = 50  # Number of Zernike modes to reconstruct
-    Nactuator = 10  # Number of actuators across the diameter of the DM
-    useNoise = False  # Add Noise or not
-
-    maskType = "Pyramid"  # Type of mask Pyramidal or Zernike
-    ## Atmosphere parameters
-    r0 = 0.15  # Fried parameter (m)
-    l0 = 1e-10  # Inner scale (m)
-    L0 = 20  # Outter scale (m)
-    Nphases = 30  # Number of independent phase screens to simulate
-
-    ## Loop parameters
-    loopFrequency = 1000
-    delayFrames = 1
-    windSpeedVector = torch.tensor([5, 10])
-
-    ## device ('cuda' or 'cpu')
-
-    device = "cuda"
-
-    ## intialization of the parameter vector
-    param = torch.tensor([0.78, 0.78], dtype=torch.float32)
-    ## Generate the wfs object
-    wfs = WFS(Nres, sampling, D, Nphotons, RON, useNoise, param, maskType, device)
-    wfs.modulation = 5
-    wfs.BuildReferenceIntensity()
-    ## By default this generates the mask for the pyramid waferont sensor. Use the method wfs.SetMask(mask) to change to the desired mask
-
-    ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
-    # Warning : requires the librairy aotools which works only on cpu'
-
-    [z, z_FullRes] = Zernike(wfs.pupil.cpu(), wfs.pupil_logical, wfs.Nres, Nzernike)
-
-    invZ = torch.linalg.pinv(z).to(device)
-
-    z_FullRes = z_FullRes.to(device)
-    # ## Build the reconstruction matrix
-    wfs.BuildReconstructionMatrix(z_FullRes, wfs.mask)
-
-    # ## Compute some example PSDs
-    [dF, fx, fy] = GetSpatialFrequencies(D, Nres)
-    atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, r0, L0, wfs.pupil, wfs.pupil_logical)
-    fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 1)
-    # temporalErrorPSD = GetTemporalErrorPSD(fx, fy, dF, loopFrequency, delayFrames, windSpeedVector)
-
-    # #%% This section is just to test how the images look like, what would be the perfect estimation and what is the phase estimation using a linear reconstructor
-
-    [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(
-        atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases
-    )
-
-    test_frame = wfs.Propagator(outPhaseMap_test)
-
-    ## Set initial data for figures
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    fig.suptitle("Full atmospheric turbulence", fontsize=16)
-    img = axes[0].imshow(test_frame[0, :, :].cpu().detach().numpy())
-    (line1,) = axes[1].plot(outZe_test[0, :].cpu())
-    (line2,) = axes[1].plot(outZe_test[0, :].cpu())
-    axes[1].legend(["Ground truth", "Linear reconstructor"])
-
-    ## run through the small dataset to observe the system in action
-    test_frame = wfs.Propagator(outPhaseMap_test)
-    estimated_phase = wfs.GetReconstructedPhase(test_frame)
-
-    for ii in range(Nphases):
-
-        plt.figure(1)
-        plt.subplot(1, 2, 1)
-        img.set_data(test_frame[ii, :, :].cpu().detach().numpy())
-
-        plt.subplot(1, 2, 2)
-        line1.set_ydata(outZe_test[ii, :].cpu().detach().numpy())
-        line2.set_ydata(estimated_phase.squeeze()[ii, :].cpu().detach().numpy())
-        plt.xlabel("Zernike mode index")
-        plt.ylabel("Zernike mode Amplitude")
-        plt.pause(0.1)
-        plt.show()
-
-    [outPhaseMap_test, outZe_test] = GetMultiplePhaseMapAndZernike(
-        atmosphere_PSD * fitting_PSD, wfs.pupil, wfs.pupil_logical, invZ, Nphases
-    )
-    fig.suptitle("Residual turbulence after the AO loop", fontsize=16)
-
-    test_frame = wfs.Propagator(outPhaseMap_test)
-    estimated_phase = wfs.GetReconstructedPhase(test_frame)
-
-    for ii in range(Nphases):
-
-        plt.figure(1)
-        plt.subplot(1, 2, 1)
-        img.set_data(test_frame[ii, :, :].cpu().detach().numpy())
-        plt.subplot(1, 2, 2)
-        line1.set_ydata(outZe_test[ii, :].cpu())
-        line2.set_ydata(estimated_phase[ii, :].cpu().detach().numpy())
-        plt.xlabel("Zernike mode index")
-        plt.ylabel("Zernike mode Amplitude")
-        plt.pause(0.1)
-        plt.show()
-
-    # #%% Generate datasets
-
-    # Ndataset_each = 500
-    # ## Generate full turbulence data
-    # ## We have to simulate as many different atmospheric conditions as possible. To do this, we have to change r0 and L0
-    # ## r0 could have values like torch.logspace(-2,-0.5,5)
-    # ## L0 could have values like torch.linspace(20,40)
-    # ## Some examples...
-    # #atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, 0.01, 30, wfs.pupil, wfs.pupil_logical)
-    # #atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, 0.05, 40, wfs.pupil, wfs.pupil_logical)
-    # #atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, 0.1, 20, wfs.pupil, wfs.pupil_logical)
-    # #atmosphere_PSD = GetAtmospherePSD(fx, fy, dF, 0.2, 30, wfs.pupil, wfs.pupil_logical)
-
-    # [outPhaseMap_fullTurbulence, outZe_fullTurbulence] = GetMultiplePhaseMapAndZernike(atmosphere_PSD, wfs.pupil, wfs.pupil_logical, invZ, Ndataset_each)
-    # ## Generate perfect correction data
-    # ## We have to test different levels of correction
-    # ## Some examples...
-    # ## fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 0)
-    # ## fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 0.5)
-    # ## fitting_PSD = GetFittingPSD(fx, fy, dF, D, Nactuator, 1)
-    # [outPhaseMap_correction, outZe_correction] = GetMultiplePhaseMapAndZernike(atmosphere_PSD*fitting_PSD, wfs.pupil, wfs.pupil_logical, invZ, Ndataset_each)
-
-
-# Check of the phase mask compared to the numpy version
-
-# plt.figure()
-# plt.imshow(wfs.mask.real.cpu().data.numpy())
-# plt.show()

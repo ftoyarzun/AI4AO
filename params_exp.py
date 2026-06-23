@@ -22,7 +22,7 @@ WFSParams = dict(
         "Modulation": 0,  # Modulation in \lambda/D
         "Nphotons": [4.5, 6],  # Log range of number of photons in measurement
         "RON": [1, 3],  # Read-out noise in photons per pixel per frame
-        "Nzernike": 150,  # Number of modes to reconstruct
+        "Nmodes": 150,  # Number of modes to reconstruct
         "Nactuator": 15,  # Number of actuators across the diameter of the DM
         "useNoise": True,  # use photon and read-out noise
         "InitParam": [1.57, 1.57],  # wavefront sensor specific parameters

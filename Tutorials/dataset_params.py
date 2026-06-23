@@ -20,7 +20,7 @@ WFSParams = dict(
         "D": 0.6,  # Telescope diameter (m)
         "Nphotons": [4.5, 6],  # Log range of number of photons in measurement
         "RON": [1, 2],  # Read-out noise in photons per pixel per frame
-        "Nzernike": 150,  # Number of modes to reconstruct
+        "Nmodes": 150,  # Number of modes to reconstruct
         "Nactuator": 17,  # Number of actuators across the diameter of the DM
         "ModalBasis": "Zernike",  # Basis used for the reconstruction. The full list can be found in Constants.py in basis_list
     }

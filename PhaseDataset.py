@@ -7,7 +7,6 @@ Created on Thu Jan  2 14:21:44 2025
 """
 import torch
 from mmengine import Config
-import Propagator as Propagator
 import TorchPropagator as TorchPropagator
 from torch.utils.data import Dataset
 import numpy as np
@@ -21,7 +20,7 @@ from scipy.io import loadmat
 class PhaseDataset(Dataset):
     """
     PhaseDataset is a custom PyTorch dataset used to generate synthetic wavefront phase maps 
-    and corresponding Zernike decompositions for training neural networks in adaptive optics systems.
+    and corresponding mode decompositions for training neural networks in adaptive optics systems.
 
     It supports:
     - Static and dynamic (moving) wavefront generation.
@@ -29,12 +28,12 @@ class PhaseDataset(Dataset):
     - Configurable parameters from wavefront sensor (WFS), atmospheric, and control loop settings.
     - PSD-based generation of phase maps using Fourier domain techniques.
     - Automatic generation and caching of static and dynamic test datasets.
-    - Computation of Zernike coefficients for phase map reconstruction and analysis.
+    - Computation of mode coefficients for phase map reconstruction and analysis.
 
     Attributes:
         D (float): Aperture diameter.
         Nres (int): Resolution of the wavefront map (number of pixels).
-        Nzernike (int): Number of Zernike modes to generate.
+        Nmodes (int): Number of modes to generate.
         photonRange (tuple): Log-scale range of photon count per measurement.
         RONRange (tuple): Read-Out Noise (RON) range.
         Nactuator (int): Number of actuators for the deformable mirror.
@@ -46,17 +45,17 @@ class PhaseDataset(Dataset):
         delayFrames (int): Control loop delay in frames.
         windSpeedRange (tuple): Range of wind speed values for each layer.
         pupil (Tensor): Circular aperture mask.
-        z_FullRes (Tensor): Precomputed full-resolution Zernike polynomials.
-        invZ (Tensor): Pseudo-inverse of the Zernike matrix for decomposition.
+        z_FullRes (Tensor): Precomputed full-resolution modes.
+        invZ (Tensor): Pseudo-inverse of the modes matrix for decomposition.
         testDatasetPath (str): File path for cached static dataset.
         movingTestDatasetPath (str): File path for cached moving dataset.
 
     Usage:
         dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
-        sample = dataset[idx]  # Returns phaseMap, Zernike coefficients, photons, RON, r0
+        sample = dataset[idx]  # Returns phaseMap, modes coefficients, photons, RON, r0
 
     Dependencies:
-        Requires `TorchPropagator` and `Propagator` modules for PSD and Zernike generation.
+        Requires `TorchPropagator` and `Propagator` modules for PSD and mode generation.
     """
     def __init__(self, WFSParams, AtmosParams, LoopParams, device):
         """
@@ -72,7 +71,7 @@ class PhaseDataset(Dataset):
         
         self.D = WFSParams['D']
         self.Nres = WFSParams['Nres']
-        self.Nzernike = WFSParams['Nzernike']
+        self.Nmodes = WFSParams['Nmodes']
         self.photonRange = WFSParams['Nphotons']
         self.RONRange = WFSParams['RON']
         self.Nactuator = WFSParams['Nactuator']
@@ -104,12 +103,12 @@ class PhaseDataset(Dataset):
         self.movingTestDatasetPath = "moving_test_dataset.pth"
      
   
-        x = np.linspace(-self.Nres/2, self.Nres/2, self.Nres)                                          # Build the mesh
-        [x,y] = np.meshgrid(x,x) 
+        x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, device = self.device, dtype = torch.float32)                                          # Build the mesh
+        [x,y] = torch.meshgrid(x,x, indexing='ij') 
                                        
         self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
         self.pupilSum = self.pupil.sum()
-        self.pupil_logical = np.where(np.reshape(self.pupil,self.Nres*self.Nres)>0)
+        self.pupil_logical = torch.where(self.pupil.view(-1,1)>0)
 
         #  ## Compute some example PSDs
         [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres)
@@ -120,64 +119,52 @@ class PhaseDataset(Dataset):
         self.fsqr_moving = self.fx_moving**2 + self.fy_moving**2
 
         if self.useScintillation:
-            x = np.linspace(-self.Nres/2*upSize, self.Nres/2*upSize-1, self.Nres*upSize)                                          # Build the mesh
-            [x,y] = np.meshgrid(x,x) 
+            x = torch.linspace(-self.Nres/2*upSize, self.Nres/2*upSize-1, self.Nres*upSize, device = self.device, dtype = torch.float32)                                          # Build the mesh
+            [x,y] = torch.meshgrid(x,x, indexing='ij') 
 
-            self.pupilASP = torch.from_numpy((x**2 + y**2) <= ((self.Nres*upSize+1)/2.2)**2).to(device=device, dtype = torch.float32)
+            self.pupilASP = (x**2 + y**2) <= ((self.Nres*upSize+1)/2.2)**2
             self.masterPropagatorPhase = torch.fft.fftshift(torch.exp(-1j * torch.pi * self.wavelength * self.fsqr_moving), dim = (-2, -1))
 
-    # ## Compute the first Nzernike Zernike polynomials and the inverse to obtain the perfect reconstructor
-    
-        # self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
-    
+    # ## Compute the first Nmodes modes and the inverse to obtain the perfect reconstructor
+
         if WFSParams['ModalBasis'] == "Zernike":
-            [z, z_FullRes] = Propagator.Zernike(self.pupil, self.pupil_logical, self.Nres, self.Nzernike)
+            [self.z, self.z_FullRes] = TorchPropagator.Zernike(self.pupil, self.Nmodes)
             
-            self.z_FullRes = torch.from_numpy(z_FullRes).to(device=device, dtype = torch.float32)
-            self.z = torch.from_numpy(z)
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
-        
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
-            M2C = torch.from_numpy(loadmat(r'C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
+            M2C = torch.from_numpy(loadmat(r'C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
             papyrus_dm = torch.from_numpy(np.load(r"C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
 
-            
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
             
         elif WFSParams['ModalBasis'] == "Papyrus_Zernike":
-            Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nzernike]
+            Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nmodes]
             papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ Z2C).view(80,80,-1)[1:-1, 1:-1, :]
 
             
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
             
         elif WFSParams['ModalBasis'] == "Papyrus_Zonal":
-            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            # papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_dm = papyrus_dm.view(80,80,-1)[1:-1, 1:-1, :]
 
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = papyrus_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
         
         elif WFSParams['ModalBasis'] == "Oziriis_KL":
-            oziriis_modal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nzernike]
+            oziriis_modal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
             oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
 
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
 
         elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
-            oziriis_zonal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nzernike]
+            oziriis_zonal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
             oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
 
-            self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
             self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
 
@@ -219,81 +206,6 @@ class PhaseDataset(Dataset):
             self.ResetMovingWavefront()
         return self.GetMovingWavefront(idx)
            
-    
-    def GenerateTestDataSet(self, Ntest):
-        """
-        Generate and save a static test dataset with given number of samples.
-    
-        Parameters:
-            Ntest (int): Number of test samples to generate.
-    
-        Saves:
-            A .pth file containing static wavefronts, Zernike coefficients, 
-            and noise/atmospheric parameters.
-        """
-        # Generate all data
-        inputs = []
-        outputs = []
-        photons = []
-        rons = []
-        r0s = []
-        
-        for i in range(Ntest):
-            a, b, c, d, e = self.__getitem__(0)  # Get input and output
-            inputs.append(a)
-            outputs.append(b)
-            photons.append(c)
-            rons.append(d)
-            r0s.append(e)
-        
-        # Convert lists to tensors
-        inputs = torch.stack(inputs)   # Shape: (dataset_size, ...)
-        outputs = torch.stack(outputs) # Shape: (dataset_size, ...)
-        photons = torch.stack(photons)
-        rons = torch.stack(rons)
-        r0s = torch.stack(r0s)
-        
-        # Save to a file
-        torch.save({"inputs": inputs,
-                    "outputs": outputs,
-                    "photons": photons,
-                    "rons": rons,
-                    "r0s": r0s}, self.testDatasetPath)
-        
-        print("Test dataset saved successfully.")
-
-
-    def GenerateMovingTestDataSet(self):
-        """
-        Generate and save a test dataset of temporally-evolving wavefronts
-        using a synthetic moving turbulence model.
-    
-        Saves:
-            A .pth file containing initial wavefront generator state and parameters
-            needed for further time evolution.
-        """
-        self.ResetMovingWavefront()
-        
-        _,_, Nphotons, ron, r0, wind, fractionalr0 = self.GetMovingWavefront()
-        
-        movingWavefrontGenerator = self.movingWavefrontGenerator
-        translationPhase = self.translationPhase
-        windSpeedVector_x = self.windSpeedVector_x
-        windSpeedVector_y = self.windSpeedVector_y
-        
-        torch.save(
-            {"movingWavefrontGenerator": movingWavefrontGenerator,
-             "translationPhase": translationPhase,
-             "Nphotons": Nphotons,
-             "ron": ron,
-             "r0": r0,
-             "windSpeedVector_x": windSpeedVector_x,
-             "windSpeedVector_y": windSpeedVector_y,
-             "fractionalr0": fractionalr0},
-            self.movingTestDatasetPath)
-        
-        print("Test dataset saved successfully.")
-        
         
     @torch.no_grad() 
     def GetMovingWavefront(self, idx):
@@ -306,7 +218,7 @@ class PhaseDataset(Dataset):
         Returns:
             Tuple of:
                 - phaseMap (torch.Tensor): Current phase map.
-                - Ze (torch.Tensor): Corresponding Zernike coefficients.
+                - Ze (torch.Tensor): Corresponding mode coefficients.
                 - Nphotons (torch.Tensor): Photon count.
                 - RON (torch.Tensor): Read-out noise.
                 - r0 (torch.Tensor): Fried parameter.
@@ -346,7 +258,7 @@ class PhaseDataset(Dataset):
         else:
             pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
         
-        # Compute Zernike decomposition
+        # Compute mode decomposition
         Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
         
         self.movingCount += 1
@@ -478,34 +390,7 @@ class PhaseDataset(Dataset):
         total_PSD += temporalErrorPSD * (1. - fitting_PSD) * atmosphere_PSD
         
         return total_PSD, atmosphere_PSD
-        
-        
-    def LoadTestMovingWavefront(self, file_path="moving_test_dataset.pth"):
-        """
-        Load a saved moving wavefront dataset from a file and restore internal state.
-    
-        Parameters:
-            file_path (str): Path to the .pth file containing the saved moving wavefront data.
-    
-        Restores:
-            - movingWavefrontGenerator: Function to generate temporal wavefronts.
-            - translationPhase: Precomputed translation phase map.
-            - Nphotons: Photon count.
-            - RON: Read-out noise.
-            - r0_moving: Fried parameter for the moving turbulence model.
-            - windSpeedVector_x: Wind speeds in the x-direction for each layer.
-            - windSpeedVector_y: Wind speeds in the y-direction for each layer.
-            - fractionalr0: Relative turbulence strength of each layer.
-        """
-        data = torch.load(file_path)
-        self.movingWavefrontGenerator = data["movingWavefrontGenerator"]
-        self.translationPhase = data["translationPhase"]
-        self.Nphotons = data["Nphotons"]
-        self.RON = data["ron"]
-        self.r0_moving = data["r0"]
-        self.windSpeedVector_x = data["windSpeedVector_x"]
-        self.windSpeedVector_y = data["windSpeedVector_y"]
-        self.fractionalr0 = data["fractionalr0"]
+  
 
     def ASP(self, input_field, distance):
         
@@ -515,63 +400,4 @@ class PhaseDataset(Dataset):
 
         return field_out
         
-        
-
-class PermanentPhaseDataset(Dataset):
-    def __init__(self, file_path="test_dataset.pth"):
-        """
-        Initialize a dataset for permanent (precomputed) static wavefront samples.
-    
-        Parameters:
-            file_path (str): Path to the .pth file containing saved dataset.
-    
-        Loads:
-            - inputs (torch.Tensor): Input wavefront sensor measurements or images.
-            - outputs (torch.Tensor): Ground truth Zernike coefficients.
-            - photons (torch.Tensor): Photon count for each sample.
-            - rons (torch.Tensor): Read-out noise values for each sample.
-            - r0s (torch.Tensor): Fried parameter for each sample.
-        """
-        data = torch.load(file_path)
-        self.inputs = data["inputs"]
-        self.outputs = data["outputs"]
-        self.photons = data["photons"]
-        self.rons = data["rons"]
-        self.r0s = data["r0s"]
-        self.Nzernike = self.outputs.shape[-1]
-
-    def __len__(self):
-        return len(self.inputs)
-
-    def __getitem__(self, idx):
-        return self.inputs[idx], self.outputs[idx], self.photons[idx], self.rons[idx], self.r0s[idx]
-
-    
-# if __name__ == "__main__":
-    
-    
-#     device = 'cuda'
-    
-#     paramfile = 'params_exp.py'
-
-#     AtmosParams = Config.fromfile(paramfile)['AtmosParams']
-#     WFSParams = Config.fromfile(paramfile)['WFSParams']
-#     LoopParams = Config.fromfile(paramfile)['LoopParams']
-
-#     dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
-    
-#     # outPhaseMap, outZe,_,_,_ = dataset[0]
-    
-#     t1 = time.perf_counter()
-#     dataset.ResetMovingWavefront()
-#     outPhaseMap, outZe,_,_,_,_,fr0 = dataset.GetMovingWavefront()
-#     t2 = time.perf_counter()
-#     print(1/(t2 - t1))
-    
-    
-#     plt.figure(1)
-#     plt.imshow(outPhaseMap[0,:,:].cpu().data.numpy())
-#     plt.colorbar()
-#     plt.show()
-    
-    
+  
