@@ -65,7 +65,7 @@ def trainMask (data, isLogical, Trained_End2EndWFS, optimizer):
         
         
 
-        l = loss(data,digital_image)*1e14
+        l = loss(data,digital_image)
     
         l. backward()
         
@@ -83,7 +83,7 @@ def trainMask (data, isLogical, Trained_End2EndWFS, optimizer):
     return 
 
 
-def trainBenchPhase (data):
+def TrainRooftop (data, Trained_End2EndWFS, optimizer):
     """
     Trains the MaskGenerator neural network to match a target mask pattern.
     Generates live plots and saves intermediate mask states into a GIF.
@@ -110,7 +110,6 @@ def trainBenchPhase (data):
     plt.show()
     
     Trained_End2EndWFS.maskManager.train()
-    Trained_End2EndWFS.maskManager.update_masks()
 
     for u in range(0,TrainRunNb) :
         
@@ -118,15 +117,20 @@ def trainBenchPhase (data):
         optimizer.zero_grad()
         
         Trained_End2EndWFS.maskManager.update_masks()
-        
-        upScale = torch.nn.functional.interpolate(benchPhase.unsqueeze(0), (78,78), mode = 'bilinear').squeeze(0)
 
-        Trained_End2EndWFS(upScale * 0)
-        
-        digital_image = Trained_End2EndWFS.Image[0]
+        Trained_End2EndWFS.WFS.BuildReferenceIntensity() 
         
 
-        l = loss(data,digital_image)*1e12
+        digital_image = Trained_End2EndWFS.WFS.reference_intensity
+        
+        pupils = Trained_End2EndWFS.GetPupils(digital_image.unsqueeze(0))
+        pupils_ref = Trained_End2EndWFS.GetPupils(referenceFrame.unsqueeze(0))
+        
+        light_ratio_pupils = pupils.sum(dim = (-2,-1))
+        light_ratio_pupils_ref = pupils_ref.sum(dim = (-2,-1))
+        
+
+        l = loss(light_ratio_pupils_ref,light_ratio_pupils)
     
         l. backward()
         
@@ -142,6 +146,52 @@ def trainBenchPhase (data):
         
         # final_train_loss = l +final_train_loss
     return 
+
+
+def TrainDMFlat(referenceFrame, Trained_End2EndWFS, optimizer, dm_flat, loss, TrainRunNb=100):
+    """
+    Trains the deformable mirror (DM) flat map to match a reference wavefront sensor image.
+
+    Args:
+        referenceFrame (Tensor): Target image to match.
+        Trained_End2EndWFS: AO system with WFS and Propagator.
+        optimizer: Optimizer to update dm_flat.
+        dm_flat (torch.nn.Parameter): Trainable DM map.
+        loss_fn: Loss function (e.g., torch.nn.MSELoss()).
+        TrainRunNb (int): Number of optimization iterations.
+
+    Returns:
+        None
+    """
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    img = ax.imshow(referenceFrame.cpu().detach().numpy())
+    fig.colorbar(img)
+    plt.show()
+
+    Trained_End2EndWFS.maskManager.train()
+
+    for u in range(TrainRunNb):
+        optimizer.zero_grad()
+
+        Trained_End2EndWFS.maskManager.update_masks()
+        
+        frame = Trained_End2EndWFS.WFS.Propagator(dm_flat).squeeze()
+ 
+        l = loss(referenceFrame, frame) * 1e10
+
+        l.backward()
+        
+        optimizer.step()
+
+        if u % 10 == 0:
+            print(f"Run {u:03d} | Loss: {l.item():.5f}")
+            img.set_data((referenceFrame - frame).cpu().detach().numpy())
+            img.set_clim(vmin=img.get_array().min(), vmax=img.get_array().max())
+            plt.pause(0.1)
+
+    return
+
 
 
 def fineAdjustmentMask (data, optimizer, index):
@@ -178,18 +228,16 @@ def fineAdjustmentMask (data, optimizer, index):
         optimizer.zero_grad()
         
         Trained_End2EndWFS.maskManager.update_masks()
-        
-        upScale = torch.nn.functional.interpolate(benchPhase.unsqueeze(0), (78,78), mode = 'bilinear').squeeze(0)
 
-        Trained_End2EndWFS.WFS.BuildReconstructionMatrix(papyrus_modal_dm[index]*1e7*amplitude, phaseOffset=upScale)
+        Trained_End2EndWFS.WFS.BuildReconstructionMatrix(papyrus_modal_dm[index]*amplitude, 30)# , (papyrus_zonal_dm  * dm_flat).sum(dim = 0))
 
         digital_image = Trained_End2EndWFS.WFS.iMat.view(-1,240, 240)
         
         
 
-        l = loss(data,digital_image)*1e14
+        l = loss(data,digital_image)*1e10
     
-        l. backward()
+        l. backward() 
         
         optimizer.step()
         
@@ -229,10 +277,11 @@ if __name__ == "__main__":
     
     #M2C = torch.from_numpy(np.load("../M2C.npy").astype(np.float32)).to(device=device)
     M2C = torch.from_numpy(loadmat('../M2C_KL_OOPAO_synthetic_IF')["M2C_KL"]).to(device = device, dtype = torch.float32)
-    papyrus_dm = torch.from_numpy(np.load("../papyrus_dm.npy").astype(np.float32)).to(device=device)
+    papyrus_dm = torch.from_numpy(np.load("../papyrus_dm.npy").astype(np.float32)).to(device=device) * 2e7
 
     papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1).permute(2,0,1)[:, 1:-1, 1:-1]
-    papyrus_modal_dm = torch.flip(papyrus_modal_dm, dims=[1,2])
+    papyrus_zonal_dm = papyrus_dm.view(80,80,-1).permute(2,0,1)[:, 1:-1, 1:-1]
+    #papyrus_modal_dm = torch.flip(papyrus_modal_dm, dims=[1,2])
 
 
 # %%
@@ -243,7 +292,7 @@ if __name__ == "__main__":
     # Initialisation of the system 
     Trained_End2EndWFS = End2EndWFS(WFSParams, AtmosParams, device)
     
-    Trained_End2EndWFS.WFS.modulation = 5
+    Trained_End2EndWFS.WFS.modulation = 3
 
     
     TrainRunNb = 300
@@ -268,64 +317,22 @@ if __name__ == "__main__":
 # %%
     
     optimizer = torch.optim.Adam([Trained_End2EndWFS.maskManager.rooftop],0.01)
-    trainMask(referenceFrame, False, Trained_End2EndWFS, optimizer)
+    TrainRooftop(referenceFrame, Trained_End2EndWFS, optimizer)
+    
     
     
     #%%
     
-    #amplitude = torch.nn.Parameter(torch.tensor(0.24))
-    #benchPhase = torch.nn.Parameter(torch.rand(1,39,39, device = device, dtype = torch.float32))
-    
-    index = range(20,30,2)
-    # optimizer = torch.optim.Adam([Trained_End2EndWFS.maskManager.maskShifts, amplitude, Trained_End2EndWFS.maskManager.rooftop],0.001)
-    optimizer = torch.optim.Adam([amplitude, benchPhase],0.001)
+    amplitude = torch.nn.Parameter(torch.tensor(1.))
+    # dm_flat = torch.nn.Parameter(0.001 * torch.randn(241, 1, 1, device = device, dtype = torch.float32))
+    index = range(40,90,5)
+    optimizer = torch.optim.Adam([Trained_End2EndWFS.maskManager.maskShifts, amplitude, Trained_End2EndWFS.maskManager.rooftop],0.01)
     fineAdjustmentMask(iMat_Papyrus[index], optimizer, index)
     
-    
     #%%
-    
-    # benchPhase = torch.nn.Parameter(torch.rand(1,39,39, device = device, dtype = torch.float32))
-    
-    optimizer = torch.optim.Adam([benchPhase],0.01)
-    
-    trainBenchPhase(referenceFrame)
-    
-    upScale = torch.nn.functional.interpolate(benchPhase.unsqueeze(0), (78,78), mode = 'bilinear').squeeze(0)
 
-    Trained_End2EndWFS(upScale * 0)
+    dm_flat = torch.nn.Parameter(0.001 * torch.randn(241, 1, 1, device = device, dtype = torch.float32))
+    optimizer = torch.optim.Adam([dm_flat, Trained_End2EndWFS.maskManager.maskShifts, Trained_End2EndWFS.maskManager.rooftop],0.01)
+    TrainDMFlat(referenceFrame, Trained_End2EndWFS, optimizer, dm_flat, loss, TrainRunNb=300)
 
-    digital_image = Trained_End2EndWFS.Image[0]
-    
-    
-    plt.figure()
-    plt.imshow(digital_image.cpu().detach())
-    plt.figure()
-    plt.imshow(referenceFrame.cpu())
-    
-    
-    #%%
-    
-    TrainRunNb = 500
-    
-    optimizer = torch.optim.AdamW([benchPhase, Trained_End2EndWFS.maskManager.fieldDistortion],0.001)
-    
-    trainBenchPhase(referenceFrame)
-    
-    upScale = torch.nn.functional.interpolate(benchPhase.unsqueeze(0), (78,78), mode = 'bilinear').squeeze(0)
-
-    Trained_End2EndWFS(upScale)
-
-    digital_image = Trained_End2EndWFS.Image[0]
-    
-    
-    plt.figure()
-    plt.imshow(digital_image.cpu().detach())
-    plt.figure()
-    plt.imshow(referenceFrame.cpu())
-    plt.figure()
-    plt.imshow(referenceFrame.cpu() - digital_image.cpu().detach())
-    
-    # checkpointManager.save()
-    
-    # Trained_End2EndWFS.WFS.BuildReconstructionMatrix(papyrus_modal_dm*1e7)
     
