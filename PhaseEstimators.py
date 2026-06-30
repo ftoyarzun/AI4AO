@@ -5,7 +5,8 @@ Created on Thu Apr 10 09:41:35 2025
 @author: franc
 """
 
-from TorchPropagator import WFS, Zernike
+from TorchPropagator import WFS
+from PhaseDataset import Zernike
 
 import torch.nn as nn
 import torch
