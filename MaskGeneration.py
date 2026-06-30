@@ -14,7 +14,7 @@ import time
 
 from Constants import mask_types_list
 
-from TorchPropagator import Zernike
+from PhaseDataset import Zernike
 from IPython.display import display, clear_output
 
 

@@ -7,7 +7,6 @@ Created on Thu Jan  2 14:21:44 2025
 """
 import torch
 from mmengine import Config
-import TorchPropagator as TorchPropagator
 from torch.utils.data import Dataset
 import numpy as np
 import random
@@ -15,6 +14,286 @@ import matplotlib.pyplot as plt
 import os
 import time
 from scipy.io import loadmat
+
+
+def Zernike(pupil, j = 100):
+    """
+    Creates the Zernike polynomial basis
+
+    Args:
+       pupil (torch array): Aperture of the telescope
+       pupil_logical (torch array): Logical values of the pupil for vectorization
+       resolution (int): pixels in the diameter
+       j (int): Number of zernike modes to use
+    Returns:
+       out (torch array): 2D Matrix in which each column corresponds to a zernike mode
+       outFullRes (torch array): 3D Matrix in which each 2D slice corresponds to a zernike mode
+
+    """
+
+    def zernIndex(j):
+        """
+        ADAPTED FROM AOTOOLS PACKAGE:https://github.com/AOtools/aotools
+
+        Find the [n,m] list giving the radial order n and azimuthal order
+        of the Zernike polynomial of Noll index j.
+
+        Parameters:
+            j (int): The Noll index for Zernike polynomials
+
+        Returns:
+            list: n, m values
+        """
+        n = int((-1.0 + np.sqrt(8 * (j - 1) + 1)) / 2.0)
+        p = j - (n * (n + 1)) / 2.0
+        k = n % 2
+        m = int((p + k) / 2.0) * 2 - k
+
+        if m != 0:
+            if j % 2 == 0:
+                s = 1
+            else:
+                s = -1
+            m *= s
+
+        return [n, m]
+
+    def zernikeRadialFunc(n, m, r):
+        """
+        ADAPTED FROM AOTOOLS PACKAGE:https://github.com/AOtools/aotools
+        Function to calculate the Zernike radial function
+
+        Parameters:
+            n (int): Zernike radial order
+            m (int): Zernike azimuthal order
+            r (ndarray): 2-d array of radii from the centre the array
+
+        Returns:
+            ndarray: The Zernike radial function
+        """
+        try:
+            factorial = np.math.factorial
+        except:
+            import scipy
+
+            factorial = scipy.special.factorial
+
+        R = torch.zeros_like(r)
+        # Can cast the below to "int", n,m are always *both* either even or odd
+        for i in range(0, int((n - m) / 2) + 1):
+
+            R += (
+                r ** (n - 2 * i)
+                * (((-1) ** (i)) * factorial(n - i))
+                / (
+                    factorial(i)
+                    * factorial(int(0.5 * (n + m) - i))
+                    * factorial(int(0.5 * (n - m) - i))
+                )
+            )
+        return R
+    
+
+    pupil_logical = torch.where(pupil.view(-1) > 0)[0]
+    resolution = pupil.shape[-1]
+
+    device = pupil.device
+    # pupil = pupil.cpu()
+    X, Y = torch.where(pupil > 0)
+
+    X = (X - (resolution + resolution % 2 - 1) / 2) / resolution
+    Y = (Y - (resolution + resolution % 2 - 1) / 2) / resolution
+    R = torch.sqrt(X**2 + Y**2)
+    R = R / R.max()
+    theta = torch.arctan2(Y, X)
+    out = torch.zeros((int(torch.sum(pupil).item()), j), dtype=torch.float32, device = device)
+    outFullRes = torch.zeros((resolution**2, j), dtype=torch.float32, device = device)
+
+    for i in range(1, j + 1):
+        n, m = zernIndex(i + 1)
+        n_t = torch.tensor(n, dtype=torch.float32)
+
+        if m == 0:
+            Z = torch.sqrt(n_t + 1) * zernikeRadialFunc(n, 0, R)
+        else:
+            if m > 0:  # j is even
+                Z = (
+                    torch.sqrt(2 * (n_t + 1))
+                    * zernikeRadialFunc(n, m, R)
+                    * torch.cos(m * theta)
+                )
+            else:  # i is odd
+                m = abs(m)
+                Z = (
+                    torch.sqrt(2 * (n_t + 1))
+                    * zernikeRadialFunc(n, m, R)
+                    * torch.sin(m * theta)
+                )
+
+        Z -= Z.mean()
+        Z *= 1 / torch.std(Z)
+
+        # clip
+        out[:, i - 1] = Z
+
+        outFullRes[pupil_logical, i - 1] = Z.to(outFullRes.dtype)
+
+    outFullRes = torch.reshape(outFullRes, [resolution, resolution, j])
+
+    return out, outFullRes
+
+
+def GetSpatialFrequencies(D, resolution, device="cpu"):
+    """
+    Computes the spatial frequencies for a given diameter and resolution.
+
+    Args:
+        D (float): Diameter of the telescope
+        resolution (int): Resolution of the telescope
+
+    Returns:
+        tuple:
+            - dF (float): Frequency step size
+            - fx (torch array): Spatial frequency components in the x direction
+            - fy (torch array): Spatial frequency components in the y direction
+    """
+    dF = 1 / (D)
+    fx = (
+        torch.linspace(
+            -resolution / 2,
+            resolution / 2 - 1,
+            resolution,
+            dtype=torch.float32,
+            device=device,
+        )
+        * dF
+    )
+    [fx, fy] = torch.meshgrid(fx, fx)
+    return dF, fx, fy
+
+
+# def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
+def GetAtmospherePSD(fsqr, dF, r0, L0, f_slope=11.0 / 6.0):
+    """
+    Computes the atmospheric power spectral density (PSD) for phase aberrations based on the spatial frequencies.
+
+    Args:
+        fx (torch array): Spatial frequency components in the x direction
+        fy (torch array): Spatial frequency components in the y direction
+        dF (float): Frequency step size
+        r0 (float): Fried parameter (m)
+        L0 (float): Outer scale of turbulence (m)
+        pupil (torch array): Pupil function of the system
+        pupilLogical (torch array): Logical pupil mask indicating valid regions of the pupil
+
+    Returns:
+        torch array: Atmospheric power spectral density (PSD) for phase aberrations
+    """
+    resolution = fsqr.shape[-1]
+    l0 = 1e-10  # Default value for the inner scale   ##PTP warning ?
+    # fsqr = fx**2 + fy**2
+    fm = 5.92 / l0 / (2 * torch.pi)
+    # frecuencia de escala interna [1/m]
+    f0 = 1 / L0
+    # frecuencia de escala externa [1/m]
+    PSD_phi = (
+        0.023
+        * r0 ** (-5 / 3)
+        / (fsqr + f0**2) ** (f_slope)
+        * dF**2
+        * resolution**2
+        * torch.exp(-fsqr / fm**2)
+    )
+    PSD_phi[..., resolution // 2, resolution // 2] = 0
+    return PSD_phi
+
+
+def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection=1):
+    """
+    Computes a fitting power spectral density (PSD) filter, including both low-pass and high-pass components.
+
+    Args:
+        fx (torch array): Spatial frequency components in the x direction
+        fy (torch array): Spatial frequency components in the y direction
+        dF (float): Frequency step size
+        D (float): Diameter of the telescope
+        Nactuator (int): Number of actuators in the diameter of the deformable mirror
+        levelOfCorrection (float, optional): Correction factor for high-pass filter (default is 1)
+
+    Returns:
+        torch array: High-pass filter for the fitting PSD
+    """
+    fc = Nactuator / 2 / D
+
+    low_pass_filter = (fx < fc) & (fy > -fc) & (fy < fc) & (fx > -fc)
+    high_pass_filter = 1 - low_pass_filter * levelOfCorrection
+
+    return high_pass_filter
+
+
+def openLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
+    """
+    Return the temporal open loop transfer function for a integrator controller.
+    Source: AOPERA (R. Fetick)
+    Parameters
+    ----------
+    freq : np.array
+        Array of temporal frequencies to evaluate the CLTF on.
+    ao_freq : float
+        The sampling temporal frequency of the AO loop.
+    ki : float
+        Integrator gain.
+    leak : float
+        Leaky integrator.
+    nb_frame_delay : float
+        Number of frame delay.
+        Must include: RTC, pixel transfert, DM rise.
+        Must not include: WFS integration, DM zero-order-hold.
+    """
+    z = torch.exp(2j*torch.pi*freq/ao_freq) # it is one method to pass from Tp to z
+    not_zero_issue = 1 - 1e-8 # avoid issue to divide by zero at leak/z = 1
+    H = ki/(1-not_zero_issue*leak/z) # controler
+    H *= 1/z**(nb_frame_delay+1) # delay + WFS + zero order hold
+    H *= torch.sinc(freq/ao_freq)
+
+    return H
+
+def closedLoopTransferFunction(*args, **kwargs):
+    """
+    Return the temporal closed loop transfer function.
+    See the open_loop_transfer arguments.
+    Source: AOPERA (R. Fetick)
+    """
+    return 1/(1+openLoopTransferFunction(*args, **kwargs))
+
+
+
+def GetTemporalErrorPSD(
+    fx, fy, freq, ki, leak, delayFrames, windSpeedVector_x, windSpeedVector_y
+):
+    """
+    Computes the temporal error power spectral density (PSD) given the spatial frequencies and other parameters.
+
+    Args:
+        fx (torch array): Spatial frequency components in the x direction
+        fy (torch array): Spatial frequency components in the y direction
+        dF (float): Frequency step size
+        freq (float): Temporal frequency of the system
+        delayFrames (int): Number of frames for delay
+        windSpeedVector (torch array): Wind speed vector [vx, vy]
+
+    Returns:
+        torch array: Temporal error power spectral density
+    """
+    fx_temporal = fx * windSpeedVector_x + 1e-7
+    fy_temporal = fy * windSpeedVector_y + 1e-7
+
+    f_temporal = fx_temporal + fy_temporal
+
+    ETF = closedLoopTransferFunction(f_temporal, freq, ki, leak, delayFrames)
+    ETF = torch.abs(ETF) ** 2
+
+    return ETF
 
 
 class PhaseDataset(Dataset):
@@ -111,11 +390,11 @@ class PhaseDataset(Dataset):
         self.pupil_logical = torch.where(self.pupil.view(-1,1)>0)
 
         #  ## Compute some example PSDs
-        [self.dF, self.fx, self.fy] = TorchPropagator.GetSpatialFrequencies(self.D, self.Nres)
+        [self.dF, self.fx, self.fy] = GetSpatialFrequencies(self.D, self.Nres, self.device)
         self.fsqr = self.fx**2 + self.fy**2
         
-        upSize = 4
-        [self.dF_moving, self.fx_moving, self.fy_moving] = TorchPropagator.GetSpatialFrequencies(self.D * upSize, self.Nres * upSize, self.device)
+        upSize = 4 if self.useScintillation else 2
+        [self.dF_moving, self.fx_moving, self.fy_moving] = GetSpatialFrequencies(self.D * upSize, self.Nres * upSize, self.device)
         self.fsqr_moving = self.fx_moving**2 + self.fy_moving**2
 
         if self.useScintillation:
@@ -128,7 +407,7 @@ class PhaseDataset(Dataset):
     # ## Compute the first Nmodes modes and the inverse to obtain the perfect reconstructor
 
         if WFSParams['ModalBasis'] == "Zernike":
-            [self.z, self.z_FullRes] = TorchPropagator.Zernike(self.pupil, self.Nmodes)
+            [self.z, self.z_FullRes] = Zernike(self.pupil, self.Nmodes)
             
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
             M2C = torch.from_numpy(loadmat(r'C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
@@ -172,7 +451,6 @@ class PhaseDataset(Dataset):
             raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
             
         
-        #self.invZ = torch.from_numpy(np.linalg.pinv(z)).to(self.device, dtype=torch.float32).transpose(0, 1)
         self.invZ = torch.linalg.pinv(self.z_FullRes.flatten(0,1)).to(self.device, dtype=torch.float32).transpose(0, 1)
         
         
@@ -234,7 +512,7 @@ class PhaseDataset(Dataset):
             
             resolution = total_PSD.shape[-1]
             sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(total_PSD, dim=(-2, -1)))  # FFT shift along spatial dims
-            randMap = torch.randn(self.nLayers, self.Nphases, resolution, resolution, dtype=torch.complex32, device=self.device) 
+            randMap = torch.randn(self.nLayers, self.Nphases, resolution, resolution, dtype=torch.complex64, device=self.device) 
             self.movingWavefrontGenerator = sqrt_fftshift_PSD * randMap 
             
             if self.useScintillation:
@@ -242,7 +520,7 @@ class PhaseDataset(Dataset):
                 self.movingScintillationWavefrontGenerator = sqrt_fftshift_atm_PSD * randMap
        
         if idx == 1:
-            phase_factor = (1j * 2 * torch.pi / self.loopFrequency * (self.windSpeedVector_x * self.fx_moving.unsqueeze(0).unsqueeze(0) + self.windSpeedVector_y * self.fy_moving.unsqueeze(0).unsqueeze(0))).to(device = self.device, dtype = torch.complex32)
+            phase_factor = (1j * 2 * torch.pi / self.loopFrequency * (self.windSpeedVector_x * self.fx_moving.unsqueeze(0).unsqueeze(0) + self.windSpeedVector_y * self.fy_moving.unsqueeze(0).unsqueeze(0)))
             self.translationPhase = torch.fft.fftshift(torch.exp(phase_factor), dim = (-2, -1))
  
         self.layeredPhase = self.MakeLayersFromGenerator(idx, self.movingWavefrontGenerator)
@@ -359,7 +637,7 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Atmospheric PSD with optional closed-loop correction applied.
         """
-        atmosphere_PSD = TorchPropagator.GetAtmospherePSD(self.fsqr_moving, 
+        atmosphere_PSD = GetAtmospherePSD(self.fsqr_moving, 
                                                           self.dF_moving, 
                                                           self.r0_moving, 
                                                           self.L0, 
@@ -370,14 +648,14 @@ class PhaseDataset(Dataset):
         if not self.generateClosedLoop:
             return total_PSD, total_PSD
         
-        fitting_PSD = TorchPropagator.GetFittingPSD(self.fx_moving,
+        fitting_PSD = GetFittingPSD(self.fx_moving,
                                                     self.fy_moving, 
                                                     self.dF_moving, 
                                                     self.D, 
                                                     self.Nactuator, 
                                                     self.levelOfCorrection)  # Shape: (Nphases, H, W)
         
-        temporalErrorPSD = TorchPropagator.GetTemporalErrorPSD(self.fx_moving,
+        temporalErrorPSD = GetTemporalErrorPSD(self.fx_moving,
                                                                 self.fy_moving,
                                                                 self.loopFrequency,
                                                                 self.loopGain,

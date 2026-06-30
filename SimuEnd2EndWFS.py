@@ -23,18 +23,13 @@ class End2EndWFS(nn.Module):
     def __init__(self, wfsParams, atmosParams, device):
         super().__init__()
         self.device = device
-        self.maskType = wfsParams["MaskType"]
         self.Nmodes = wfsParams["Nmodes"]
         self.N = wfsParams["Nres"] * wfsParams["sampling"]
         self.Nres = wfsParams["Nres"]
         self.WFS = WFS(wfsParams, device)
         self.ReconstructionType = wfsParams["Reconstruction"]
-        self.Substract_reference = wfsParams["Substract_Reference"]
         self.OptimizeMask = False
-        self.Extract_pupils = wfsParams["Extract_pupils"]
-        self.Bin_factor = wfsParams["Bin_factor"]
-        self.Centering_noise = wfsParams["Center_noise"]
-        self.use_MTF = wfsParams["Use_MTF"]
+
 
         # Phase Estimator Selection
         self.PhaseEstimator = self._build_phase_estimator(
@@ -105,80 +100,6 @@ class End2EndWFS(nn.Module):
         with torch.no_grad():
             self.WFS.BuildReferenceIntensity()
             self.framePreprocessor.ProcessReference(self.WFS.reference_intensity)
-
-    def GetPupils(self, images=None):
-
-        if images is None:
-            images = self.Image
-
-        Ncrop = (self.Nres + 2) // self.Bin_factor
-
-        centers = self.maskManager.pupil_centers // self.Bin_factor
-        if self.training:
-            centers += torch.randint(
-                -self.Centering_noise,
-                self.Centering_noise,
-                centers.shape,
-                device=self.device,
-            )
-
-        out = torch.zeros(
-            (images.shape[0], centers.shape[0], Ncrop, Ncrop), device=self.device
-        )
-
-        for i, center in enumerate(centers):
-            out[:, i] = images[
-                ...,
-                center[0] - Ncrop // 2 : center[0] + Ncrop // 2,
-                center[1] - Ncrop // 2 : center[1] + Ncrop // 2,
-            ]
-            out[:, i] -= torch.mean(out[:, i])
-            out[:, i] /= torch.std(out[:, i])
-        return out
-
-    def MergePupils(self, pupils=None):
-
-        if pupils is None:
-            pupils = self.GetPupils()
-
-        Ncrop = pupils.shape[-1]
-
-        out = torch.zeros((pupils.shape[0], Ncrop * 2, Ncrop * 2), device=self.device)
-
-        out[..., :Ncrop, :Ncrop] = pupils[:, 0]
-        out[..., Ncrop:, :Ncrop] = pupils[:, 1]
-        out[..., Ncrop:, Ncrop:] = pupils[:, 2]
-        out[..., :Ncrop, Ncrop:] = pupils[:, 3]
-
-        return out
-
-    def GetPhaseVariance(self, phase):
-        return torch.var(
-            phase[..., self.WFS.pupil.bool()], dim=-1, keepdim=True
-        ).unsqueeze(-1)
-
-    def bin_image(self, image: torch.Tensor, bin_size: int) -> torch.Tensor:
-        """
-        Bins a 2D image (or batch of images) by summing over bin_size x bin_size regions.
-
-        Args:
-            image (torch.Tensor): shape (B, C, H, W)
-            bin_size (int): binning factor
-
-        Returns:
-            torch.Tensor: binned image of shape (B, C, H//bin_size, W//bin_size)
-        """
-        B, H, W = image.shape
-        image = image.unsqueeze(1)  # Add channel dimension: (B, 1, H, W)
-
-        # Create uniform binning kernel
-        kernel = torch.ones((1, 1, bin_size, bin_size), device=image.device)
-
-        # Apply convolution with stride = bin_size
-        binned = F.conv2d(image, kernel, stride=bin_size)
-
-        return binned.squeeze(1)  # Remove channel dimension -> (B, H//bin, W//bin)
-
 
 class AOLoop:
     def __init__(
