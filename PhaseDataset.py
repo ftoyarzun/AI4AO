@@ -332,9 +332,6 @@ class PhaseDataset(Dataset):
     Usage:
         dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
         sample = dataset[idx]  # Returns phaseMap, modes coefficients, photons, RON, r0
-
-    Dependencies:
-        Requires `TorchPropagator` and `Propagator` modules for PSD and mode generation.
     """
     def __init__(self, WFSParams, AtmosParams, LoopParams, device):
         """
