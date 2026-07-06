@@ -94,11 +94,7 @@ class MaskManager(nn.Module):
             self.transmisionMaskGenerator = FreeMaskGenerator(isPhaseMask=False).to(
                 self.device
             )
-        if self.maskType in [
-            "BiOEdge",
-            "IBiOEdge",
-            "DoublePyramid",
-        ]:
+        if self.maskType in ["BiOEdge"]:
             self.param = nn.Parameter(
                 torch.tensor(ParamsDict["InitParam"], device=self.device)
             )
@@ -122,20 +118,6 @@ class MaskManager(nn.Module):
                 )
             )
 
-        if self.maskType in ["Papyrus"]:
-            self.mainSlope = nn.Parameter(
-                torch.tensor(torch.pi / 2, device=self.device, dtype=torch.float32)
-            )
-            self.maskShifts = nn.Parameter(
-                torch.ones(4, 2, device=self.device, dtype=torch.float32)
-            )
-            self.rooftop = nn.Parameter(
-                torch.tensor(-2.2999, device=self.device, dtype=torch.float32)
-            )
-            self.coordinatesRotation = nn.Parameter(
-                torch.tensor(0.0, device=self.device, dtype=torch.float32)
-            )
-
         if self.maskType in ["Pyramid"]:
             self.mainSlope = nn.Parameter(
                 torch.tensor(torch.pi / 2, device=self.device, dtype=torch.float32)
@@ -146,15 +128,12 @@ class MaskManager(nn.Module):
             self.rooftop = nn.Parameter(
                 torch.tensor(0, device=self.device, dtype=torch.float32)
             )
-            self.coordinatesRotation = nn.Parameter(
-                torch.tensor(0.0, device=self.device, dtype=torch.float32)
-            )
+
 
         if self.maskType in ["DoubleZernike"]:
             self.depths = nn.Parameter(
                 torch.tensor(
                     [torch.pi * 0.76, -torch.pi * 0.33],
-                    # [torch.pi * 0.5, -torch.pi * 1],
                     device=self.device,
                     dtype=torch.float32,
                 )
@@ -174,7 +153,6 @@ class MaskManager(nn.Module):
             self.depths = nn.Parameter(
                 torch.tensor(
                     [-torch.pi * 0.33],
-                    # [torch.pi * 0.5, -torch.pi * 1],
                     device=self.device,
                     dtype=torch.float32,
                 )
@@ -205,16 +183,6 @@ class MaskManager(nn.Module):
         if self.maskType == "BiOEdge":
             self.transmisionMask = self.BuildBiOEdgeMask()
             self.phaseMask = self.PupilDisplacementMask()
-
-        if self.maskType == "IBiOEdge":
-            [self.transmisionMask, self.phaseMask] = self.BuildIBiOEdgeMask()
-            self.phaseMask += self.PupilDisplacementMask()
-
-        if self.maskType == "DoublePyramid":
-            [self.transmisionMask, self.phaseMask] = self.DoublePyramidMask()
-
-        if self.maskType == "Papyrus":
-            self.phaseMask = self.BuildPapyrusPyramidMask()
 
         if self.maskType == "DoubleZernike" and self.use_MTF is False:
             self.phaseMask = self.DoubleZernikeMask()
@@ -308,27 +276,6 @@ class MaskManager(nn.Module):
 
         return F
 
-    def BuildPapyrusPyramidMask(self):
-
-        rooftop_in_pixels = self.rooftop * self.sampling / np.sqrt(2)
-
-        P1 = (self.x_mask + rooftop_in_pixels / 2) * self.maskShifts[0, 0] + (
-            self.y_mask + rooftop_in_pixels / 2
-        ) * self.maskShifts[0, 1]
-        P2 = -self.x_mask * self.maskShifts[1, 0] + self.y_mask * self.maskShifts[1, 1]
-        P3 = (
-            -(self.x_mask - rooftop_in_pixels / 2) * self.maskShifts[2, 0]
-            - (self.y_mask - rooftop_in_pixels / 2) * self.maskShifts[2, 1]
-        )
-        P4 = self.x_mask * self.maskShifts[3, 0] - self.y_mask * self.maskShifts[3, 1]
-
-        stacked = torch.stack([P1, P2, P3, P4])  # shape: (4, H, W)
-
-        F = torch.max(stacked * self.mainSlope, dim=0).values  # shape (H, W)
-
-        self.pupil_centers = self.GetPupilCenter()
-
-        return F
 
     def BuildBiOEdgeMask(self):
 
@@ -337,20 +284,6 @@ class MaskManager(nn.Module):
             self.linear_ramp(self.y_mask, self.param[0]),
         )
 
-    def BuildIBiOEdgeMask(self):
-        x_mask = 1.0 / (self.abs_x_mask + 1)
-        y_mask = 1.0 / (self.abs_y_mask + 1)
-        transmision = self.DoubleTransmisionMask(x_mask, y_mask)
-
-        value = torch.tensor([1.0], device=self.device, dtype=torch.float32)
-        phase = torch.zeros(
-            1, 4, self.N, self.N, device=self.device, dtype=torch.float32
-        )
-        phase[0, 0] = (torch.heaviside(self.x_mask, value)) * torch.pi / 2
-        phase[0, 1] = (torch.heaviside(self.x_mask, value)) * -torch.pi / 2
-        phase[0, 2] = (torch.heaviside(self.y_mask, value)) * torch.pi / 2
-        phase[0, 3] = (torch.heaviside(self.y_mask, value)) * -torch.pi / 2
-        return transmision, phase * 0
 
     def DoubleTransmisionMask(self, mask_x, mask_y):
         mask = torch.zeros(
@@ -398,22 +331,6 @@ class MaskManager(nn.Module):
 
         return mask
 
-    def DoublePyramidMask(self):
-        phaseMask = torch.zeros(
-            1, 2, self.N, self.N, device=self.device, dtype=torch.float32
-        )
-        phaseMask[0, 0] = self.BuildPyramidMask() / 1.57 * 0.80
-        phaseMask[0, 1] = self.BuildPyramidMask() * 1.2
-
-        transmisionMask = torch.zeros(
-            1, 2, self.N, self.N, device=self.device, dtype=torch.float32
-        )
-        transmisionMask[0, 0] = self.BuildPyramidMask() / self.param[0]
-        transmisionMask[0, 0] /= self.sampling * 8.0
-        transmisionMask[0, 0] = torch.clamp(transmisionMask[0, 0], 0, 1)
-        transmisionMask[0, 1] = 1.0 - transmisionMask[0, 0]
-
-        return torch.sqrt(transmisionMask), phaseMask
 
     def DoubleZernikeMask(self):
         phaseMask = torch.zeros(
@@ -734,116 +651,3 @@ class MaskVisualizator:
         self.ax[1].relim()
         self.ax[1].autoscale_view()
         display(self.fig, clear=True)
-
-
-def trainMask(
-    maskGenerator, uv_coords, mask, loss, TrainRunNb, optimizer, device="cuda"
-):
-    """
-    Trains the MaskGenerator neural network to match a target mask pattern.
-    Generates live plots and saves intermediate mask states into a GIF.
-
-    Args:
-        maskGenerator (nn.Module): Neural network to generate the mask.
-        uv_coords (Tensor): 2D coordinates input to the mask generator.
-        mask (Tensor): Target mask used for loss computation.
-        loss (function): Loss function to optimize.
-        TrainRunNb (int): Number of training iterations.
-        optimizer (torch.optim.Optimizer): Optimizer used for training.
-        device (str): Device for computation.
-
-    Returns:
-        None
-    """
-    final_train_loss = 0
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-
-    img = ax.imshow(maskGenerator(uv_coords).view(N, N).cpu().detach().numpy())
-    fig.colorbar(img)
-    plt.show()
-
-    # writer = imageio.get_writer(gif_path, mode="i", fps = 10)
-
-    maskGenerator.train()
-
-    for u in range(0, TrainRunNb):
-
-        optimizer.zero_grad()
-
-        output = maskGenerator(uv_coords).view(N, N)
-
-        l = loss(output, mask.to(output.dtype))
-
-        l.backward()
-
-        optimizer.step()
-
-        # parameters values should change during the loop
-        # print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  param_proc  : {:.7f}\n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item(),Trained_End2EndWFS.PhaseEstimator.param[0,0].item()), end="")
-        if u % 100 == 0:
-            # print(" Run n°  {}, train loss : {:.7f} param_opt 1 :   {:.7f} param_opt 2 :   {:.7f}  \n".format(u, l,Trained_End2EndWFS.WFSmodule.WFS.param[0].item(),Trained_End2EndWFS.WFSmodule.WFS.param[1].item()), end="")
-            print(f" Run n°  {u}, train loss : {l.item():.5f}")
-            img.set_data(maskGenerator(uv_coords).view(N, N).cpu().detach().numpy())
-            img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
-
-            fig.canvas.draw()
-            image = np.array(fig.canvas.buffer_rgba())
-            # writer.append_data(image)
-
-            plt.pause(0.1)
-            # loss_tracker.append(l.item())
-            # param_tracker.append(Trained_End2EndWFS.WFSmodule.WFS.param.tolist())
-
-        final_train_loss = l + final_train_loss
-        # writer.close()
-    return
-
-
-if __name__ == "__main__":
-
-    device = "cuda"  # set to "cpu" if Cuda is not available
-
-    paramfile = "params_exp.py"  # file of experimental parameters
-
-    gif_path = "test_mask_animation.gif"
-
-    mask_path = "Pyramid_mask.pth"
-    # Config extraction
-
-    N = 140
-
-    # Setting the loss function
-    loss = torch.nn.MSELoss()
-
-    # Initialisation of the system
-    maskGenerator = FreeMaskGenerator().to(device)
-
-    u = torch.linspace(-N // 2, N // 2 - 1, N) / (N / 2)  # Normalized frequency range
-    U, V = torch.meshgrid(u, u, indexing="xy")  # Create the full grid
-
-    pyr_mask = (np.pi / 2 * (torch.abs(U) + torch.abs(V)) * N / 2).to(device)
-    zernike_mask = np.pi / 2 * (torch.sqrt(U**2 + V**2) < 4 / N).to(device)
-    random_mask = torch.randn_like(zernike_mask)
-
-    uv_coords = torch.stack([U.flatten(), V.flatten()], dim=1).to(device)
-
-    # Flatten and stack into (N^2, 2) shape
-
-    # Optimization parameters (learning rate lr and nb of runs)
-
-    optimizer = torch.optim.Adam(maskGenerator.parameters(), 0.001)
-
-    a = time.time()
-    train_loss = trainMask(
-        maskGenerator, uv_coords, pyr_mask, loss, 3000, optimizer, device
-    )
-    b = time.time() - a
-
-    torch.save(
-        {
-            "Phase_Mask_state_dict": maskGenerator.state_dict(),
-            "optimizer_o_state_dict": optimizer.state_dict(),
-        },
-        mask_path,
-    )
