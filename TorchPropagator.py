@@ -243,18 +243,18 @@ class WFS:
         """
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
-        with torch.no_grad():
-            pad = int(self.Nres * (self.sampling - 1)) // 2
-            uin = (
-                self.pupil.unsqueeze(0)
-                * pupil
-                * torch.exp(1j * phase)
-                / torch.sqrt(self.pupil.sum())
-            )
-            uin = uin.unsqueeze(1)
-            uin_padded = torch.nn.functional.pad(
-                uin, (pad, pad, pad, pad)
-            )  # Pad the pupil
+
+        pad = int(self.Nres * (self.sampling - 1)) // 2
+        uin = (
+            self.pupil.unsqueeze(0)
+            * pupil
+            * torch.exp(1j * phase)
+            / torch.sqrt(self.pupil.sum())
+        )
+        uin = uin.unsqueeze(1)
+        uin_padded = torch.nn.functional.pad(
+            uin, (pad, pad, pad, pad)
+        )  # Pad the pupil
 
         self.frame_no_noise = torch.abs(torch.zeros_like(uin_padded))
         self.psf_no_noise = torch.abs(torch.zeros_like(uin_padded))
@@ -465,7 +465,7 @@ class WFS:
         self.reference_intensity = self.reference_intensity.squeeze()
         self.useNoise = tempUseNoise
 
-    def BuildReconstructionMatrix(self, modes, batch_size=30, phaseOffset=0):
+    def BuildReconstructionMatrix(self, modes, pupil = None, batch_size=30, phaseOffset=0):
         """
         Builds the reconstruction matrix by computing the signals for each mode using finite differences.
 
@@ -479,6 +479,9 @@ class WFS:
         self.useNoise = False
         delta = 1e-5
 
+        if pupil is None:
+            pupil = self.pupil.unsqueeze(0)
+
         Nmodes = modes.shape[0]
         iMat_parts = []
 
@@ -486,8 +489,8 @@ class WFS:
             modes_batch = modes[i : i + batch_size]  # (Npix^2, batch_size)
 
             # reshape to (1, Npix, Npix, batch_size) if needed by Propagator
-            push = self.Propagator(modes_batch * delta + phaseOffset)
-            pull = self.Propagator(-modes_batch * delta + phaseOffset)
+            push = self.Propagator(modes_batch * delta + phaseOffset, pupil)
+            pull = self.Propagator(-modes_batch * delta + phaseOffset, pupil)
 
             signal = (push - pull) / (2.0 * delta)
             signal_flat = signal.flatten(start_dim=-2)  # shape: (batch_size, Npix^2)
