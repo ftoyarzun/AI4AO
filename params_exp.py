@@ -35,6 +35,7 @@ WFSParams = dict(
         "Center_noise": 2,
         "Use_MTF": False,
         "MTF_upscale": 10,
+        "Wavelength": 550e-9,
     }
 )
 
@@ -47,7 +48,6 @@ AtmosParams = dict(
         "Nphases": 16,  # Number of phases in the batch
         "Layers": [10, 11],  # Number of layers in phase range
         "f_slope": 11.0 / 6.0,  # Slope of the spectrum (11/6) is the default
-        "Wavelength": 550e-9,
         "Scintillation": True
     }
 )
