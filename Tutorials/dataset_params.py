@@ -23,6 +23,7 @@ WFSParams = dict(
         "Nmodes": 150,  # Number of modes to reconstruct
         "Nactuator": 17,  # Number of actuators across the diameter of the DM
         "ModalBasis": "Zernike",  # Basis used for the reconstruction. The full list can be found in Constants.py in basis_list
+        "Wavelength": 550e-9, # Sensing wavelength (m) 
     }
 )
 
@@ -35,7 +36,6 @@ AtmosParams = dict(
         "Nphases": 16,  # Number of phases in the batch
         "Layers": [5, 10],  # Number of layers in phase range
         "f_slope": 11.0 / 6.0,  # Slope of the spectrum (11/6) is the default
-        "Wavelength": 550e-9, # Sensing wavelength (m) 
         "Scintillation": False # Use or not scinitillation
         
     }
