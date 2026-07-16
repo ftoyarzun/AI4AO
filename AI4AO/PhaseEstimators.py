@@ -8,11 +8,10 @@ Created on Thu Apr 10 09:41:35 2025
 from AI4AO.TorchPropagator import WFS
 from AI4AO.PhaseDataset import Zernike
 
-import torch.nn as nn
-import torch
-from mmengine import Config
-import os
-import torch.nn.functional as F
+import torch.nn as nn # type: ignore[import]
+import torch # type: ignore[import]
+
+import torch.nn.functional as F  # type: ignore[import]
 
 
 # class ResidualBlock(nn.Module):

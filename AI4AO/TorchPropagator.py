@@ -5,17 +5,14 @@ Created on Fri Dec  6 17:02:43 2024
 @author: pauline : conversion of propagator to torch
 """
 
-import torch
-import pylab as plt
+import torch # type: ignore[import]
+
 import math
 import numpy as np
 
 np.math = math
-import torch.nn as nn
 
-
-from torch.fft import fft2, fftshift, ifft2, ifftshift
-
+from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
 
 def PoissonNoise(x):

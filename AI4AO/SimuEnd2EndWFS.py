@@ -10,13 +10,10 @@ from AI4AO.TorchPropagator import WFS
 from AI4AO.PhaseEstimators import *
 from AI4AO.MaskGeneration import MaskManager
 from AI4AO.FramePreprocess import FramePreprocess
-import torch.nn as nn
-import torch
-from mmengine import Config
+import torch.nn as nn # type: ignore[import]
+import torch # type: ignore[import]
 import os
 from AI4AO.Constants import mask_types_list, param_needed_mask_list
-import torch.nn.functional as F
-import numpy as np
 
 
 class End2EndWFS(nn.Module):
@@ -367,17 +364,3 @@ class CheckpointManager:
 
         torch.save(dict_to_save, save_path)
 
-
-if __name__ == "__main__":
-
-    device = "cuda"
-
-    paramfile = "params_exp.py"
-
-    WFSParams = Config.fromfile(paramfile)["WFSParams"]
-
-    MyEnd2EndWFS = End2EndWFS(WFSParams, device)
-
-    # for p in MyEnd2EndWFS.PhaseEstimator.parameters():
-    #     if p.requires_grad:
-    #         print(p.name, p.data)

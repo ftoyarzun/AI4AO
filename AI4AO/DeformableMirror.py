@@ -1,5 +1,5 @@
-import torch
-import torch.nn as nn
+import torch  # type: ignore[import]
+import torch.nn as nn  # type: ignore[import]
 
 class DeformableMirror(nn.Module):
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None):

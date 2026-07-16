@@ -5,14 +5,10 @@ Created on Thu Jan  2 14:21:44 2025
 
 @author: ptrouve
 """
-import torch
-from mmengine import Config
-from torch.utils.data import Dataset
+import torch # type: ignore[import]
+from torch.utils.data import Dataset # type: ignore[import]
 import numpy as np
-import random
 import matplotlib.pyplot as plt
-import os
-import time
 from scipy.io import loadmat
 from pathlib import Path
 
