@@ -45,7 +45,12 @@ source ./venv/bin/activate
 .\venv\Scripts\activate
 ```
 
-After the environment is set up and activated, this package can then be easily installed. Anytime you wish to use this
+After the environment is set up and activated, follow the instructions from Pytorch's website to install the corresponding version for you. Using CUDA is highly recomended.
+```
+https://pytorch.org/get-started/locally/
+```
+
+Once the Pytorch installation finishes, this package can then be easily installed. Anytime you wish to use this
 package, you should activate the respective environment.
 
 ### Using `pip`
