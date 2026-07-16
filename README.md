@@ -9,6 +9,7 @@ The project was initially intended for personal use. It is now open to any inter
 	_ Phase Dataset: 		Extremely fast multi-layer phase screen generation, with and without scintillation.
 	_ Wavefront sensor: 	Fully differentiable and parallelized end-to-end WFS simulations
 	_ Mask Generation:      Test classic (Pyramid, Zernike) masks or create/optimize you own design
+	_ Deformable mirror:    Fully differentiable deformable mirror model to compute misregistration
 
 
 ## MODULES REQUIRED
