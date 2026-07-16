@@ -11,7 +11,7 @@ class DeformableMirror(nn.Module):
         self.D =            WFSDict["D"]
         self.Nact =         WFSDict["Nactuator"]
         self.wavelength =   WFSDict["Wavelength"]
-        self.wavenumber = 2 * torch.pi / self.wavelength
+        self.wavenumber =   2 * torch.pi / self.wavelength
         
         self.totalAct = 241
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
@@ -19,10 +19,21 @@ class DeformableMirror(nn.Module):
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
         self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+        
+
+        self._rotationAngle = nn.Parameter(torch.empty(1, device=self.device))
+        self._grid_shift = nn.Parameter(torch.empty((1,2,1,1), device=self.device))
+        self._radialScaling = nn.Parameter(torch.empty(1, device=self.device))
+        self._tangentialScaling = nn.Parameter(torch.empty(1, device=self.device))
+        self._anamorphosisAngle = nn.Parameter(torch.empty(1, device=self.device))
+        self._moffatParameter = nn.Parameter(torch.empty(1, device=self.device))
+        self._sign = nn.Parameter(torch.empty(1, device=self.device))
+        self._mechCoupling = nn.Parameter(torch.empty(1, device=self.device))
+
+
         self.moffatParameter = torch.tensor([DMDict["moffatParam"]], device=self.device, dtype=torch.float32)
         self.sign = torch.tensor([DMDict["signedAmplitude"]], device=self.device, dtype=torch.float32)
         self.mechCoupling = torch.tensor([DMDict["MechCoupling"]], device=self.device, dtype=torch.float32)
-
 
         if misreg is None:
             self.rotationAngle = torch.tensor([0], device=self.device, dtype=torch.float32)
@@ -41,16 +52,16 @@ class DeformableMirror(nn.Module):
         self.MakeActGrid()
         self.modesComputation()
 
-    def MakeDMTrainable(self):
-        self.moffatParameter = nn.Parameter(self.moffatParameter)
-        self.sign = nn.Parameter(self.sign)
-        self.mechCoupling = nn.Parameter(self.mechCoupling)
+    # def MakeDMTrainable(self):
+    #     self.moffatParameter = nn.Parameter(self.moffatParameter)
+    #     self.sign = nn.Parameter(self.sign)
+    #     self.mechCoupling = nn.Parameter(self.mechCoupling)
         
-        self.rotationAngle = nn.Parameter(self.rotationAngle)
-        self.grid_shift = nn.Parameter(self.grid_shift)
-        self.radialScaling = nn.Parameter(self.radialScaling)
-        self.tangentialScaling = nn.Parameter(self.tangentialScaling)
-        self.anamorphosisAngle = nn.Parameter(self.anamorphosisAngle)
+    #     self.rotationAngle = nn.Parameter(self.rotationAngle)
+    #     self.grid_shift = nn.Parameter(self.grid_shift)
+    #     self.radialScaling = nn.Parameter(self.radialScaling)
+    #     self.tangentialScaling = nn.Parameter(self.tangentialScaling)
+    #     self.anamorphosisAngle = nn.Parameter(self.anamorphosisAngle)
 
 
     def GetModalModes(self, M2C):
@@ -121,7 +132,7 @@ class DeformableMirror(nn.Module):
 
         r2 = (a*X**2 + 2*b*X*Y + c*Y**2)
 
-        self.modes = self.sign * 1e-6 * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
+        self.modes = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
 
 
     def GetMisreg(self):
@@ -164,6 +175,8 @@ class DeformableMirror(nn.Module):
         best_loss = torch.inf
         loss = torch.nn.MSELoss()
 
+        wfs.BuildReferenceIntensity()
+        
         best_params = []
         with torch.no_grad():
             for rotation in rotations:
@@ -200,3 +213,96 @@ class DeformableMirror(nn.Module):
             self.flip_lr = best_params[2]
             self.flip_tb = best_params[3]
             self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+
+
+    #### These properties are set such that when optimizing these values they all share the same order of magnitude.
+    # ---------- Rotation ----------
+    @property
+    def rotationAngle(self):
+        return self._rotationAngle * 180.0
+
+    @rotationAngle.setter
+    def rotationAngle(self, value):
+        with torch.no_grad():
+            self._rotationAngle.copy_(torch.as_tensor(value, device=self.device) / 180.0)
+
+    # ---------- Shift ----------
+    @property
+    def grid_shift(self):
+        return self._grid_shift * 5.0      # train around [-1,1], physical ±5 px
+
+    @grid_shift.setter
+    def grid_shift(self, value):
+        with torch.no_grad():
+            self._grid_shift.copy_(torch.as_tensor(value, device=self.device) / 5.0)
+
+    # ---------- Amplitude ----------
+    @property
+    def sign(self):
+        return self._sign * 1e-6            # train around O(1), output in m
+
+    @sign.setter
+    def sign(self, value):
+        with torch.no_grad():
+            self._sign.copy_(torch.as_tensor(value, device=self.device) / 1e-6)
+
+    # ---------- Radial Scaling ----------
+    @property
+    def radialScaling(self):
+        return self._radialScaling / 10
+
+    @radialScaling.setter
+    def radialScaling(self, value):
+        with torch.no_grad():
+            self._radialScaling.copy_(torch.as_tensor(value, device=self.device) * 10)
+
+    # ---------- Tangential Scaling ----------
+    @property
+    def tangentialScaling(self):
+        return self._tangentialScaling / 10
+
+    @tangentialScaling.setter
+    def tangentialScaling(self, value):
+        with torch.no_grad():
+            self._tangentialScaling.copy_(torch.as_tensor(value, device=self.device) * 10)
+
+    # ---------- Anamorphosis Angle ----------
+    @property
+    def anamorphosisAngle(self):
+        return self._anamorphosisAngle * 180.0
+
+    @anamorphosisAngle.setter
+    def anamorphosisAngle(self, value):
+        with torch.no_grad():
+            self._anamorphosisAngle.copy_(torch.as_tensor(value, device=self.device) / 180.0)
+
+
+    # ---------- Moffat Parameter ----------
+    @property
+    def moffatParameter(self):
+        return torch.exp(self._moffatParameter)
+
+    @moffatParameter.setter
+    def moffatParameter(self, value):
+        if torch.any(value <= 0):
+            raise ValueError("moffatParameter must be strictly positive.")
+        value = torch.as_tensor(value, device=self.device)
+        value = torch.log(value)
+        with torch.no_grad():
+            self._moffatParameter.copy_(value)
+
+    # ---------- Mechanical Coupling ----------
+    @property
+    def mechCoupling(self):
+        return torch.sigmoid(self._mechCoupling)
+
+    @mechCoupling.setter
+    def mechCoupling(self, value):
+        if torch.any(value <= 0) or torch.any(value >= 1):
+            raise ValueError("mechCoupling must be between 0 and 1.")
+        value = torch.as_tensor(value, device=self.device)
+
+        value = torch.log(value / (1 - value))
+
+        with torch.no_grad():
+            self._mechCoupling.copy_(value)

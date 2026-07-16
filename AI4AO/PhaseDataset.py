@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import os
 import time
 from scipy.io import loadmat
+from pathlib import Path
 
 
 def Zernike(pupil, j = 100):
@@ -350,6 +351,7 @@ class PhaseDataset(Dataset):
         self.Nmodes = WFSParams['Nmodes']
         self.photonRange = WFSParams['Nphotons']
         self.RONRange = WFSParams['RON']
+        self.wavelength = WFSParams["Wavelength"]
         self.Nactuator = WFSParams['Nactuator']
                        
         self.L0Range = AtmosParams['L0']
@@ -357,7 +359,7 @@ class PhaseDataset(Dataset):
         self.Nphases = AtmosParams['Nphases']
         self.nLayersRange = AtmosParams["Layers"]
         self.f_slope = AtmosParams["f_slope"]
-        self.wavelength = AtmosParams["Wavelength"]
+        
         self.useScintillation = AtmosParams["Scintillation"]
                                
                                
@@ -403,12 +405,20 @@ class PhaseDataset(Dataset):
 
     # ## Compute the first Nmodes modes and the inverse to obtain the perfect reconstructor
 
+        try:
+            base_dir = Path(__file__).resolve().parent
+        except NameError:
+            # Running in a notebook
+            base_dir = Path.cwd()
+
+        data_path = base_dir / 'dm_models'
+
         if WFSParams['ModalBasis'] == "Zernike":
             [self.z, self.z_FullRes] = Zernike(self.pupil, self.Nmodes)
             
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
-            M2C = torch.from_numpy(loadmat(r'C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
-            papyrus_dm = torch.from_numpy(np.load(r"C:\Users\foyarzun\Nextcloud\PhD\Code\Python\WFS_CoConception\papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+            M2C = torch.from_numpy(loadmat(data_path / r'M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
+            papyrus_dm = torch.from_numpy(np.load(data_path / r"papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
             papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
 
             self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
@@ -431,14 +441,14 @@ class PhaseDataset(Dataset):
             self.z = self.z_FullRes[self.pupil.bool()]
         
         elif WFSParams['ModalBasis'] == "Oziriis_KL":
-            oziriis_modal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
+            oziriis_modal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
             oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
 
             self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
             self.z = self.z_FullRes[self.pupil.bool()]
 
         elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
-            oziriis_zonal_dm = torch.from_numpy(np.load(r'C:\Users\foyarzun\Nextcloud\PostDoc\OZIRIIS\Data\OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
+            oziriis_zonal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
             oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
 
             self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
