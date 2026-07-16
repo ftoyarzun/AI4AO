@@ -27,7 +27,7 @@ class FramePreprocess:
 
         frame = self.GetPupils(frame, isReference = True)
 
-        if self.bin_factor is not 1:
+        if int(self.bin_factor) != 1:
             frame = self.BinImage(frame) * self.bin_factor ** 2
 
         self.normalization = torch.std(frame, dim=(-2, -1), keepdim=True)
@@ -39,7 +39,7 @@ class FramePreprocess:
 
         frame = self.GetPupils(frame)
 
-        if self.bin_factor is not 1:
+        if int(self.bin_factor) != 1:
             frame = self.BinImage(frame) * self.bin_factor ** 2
 
         if self.Substract_reference:

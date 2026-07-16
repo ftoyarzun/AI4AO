@@ -17,6 +17,7 @@ Thumbs.db
 *.mat
 Images/
 Data/
+Junk/
 
 # Jupyter notebooks
 *.ipynb_checkpoints/
