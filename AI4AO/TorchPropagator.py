@@ -6,6 +6,7 @@ Created on Fri Dec  6 17:02:43 2024
 """
 
 import torch # type: ignore[import]
+import torch.nn as nn  # type: ignore[import]
 
 import math
 import numpy as np
@@ -23,7 +24,7 @@ def PoissonNoise(x):
     )
 
 
-class WFS:
+class WFS(nn.Module):
     def __init__(self, ParamsDict, device):
         """
         The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
@@ -46,7 +47,7 @@ class WFS:
         None.
 
         """
-
+        super().__init__()
         self.Nres = ParamsDict["Nres"]
         self.sampling = ParamsDict["sampling"]
         self.Npix = int(self.Nres * self.sampling)
@@ -55,11 +56,7 @@ class WFS:
         self.useNoise = ParamsDict["useNoise"]
         self.device = device
         self.reference_intensity = None
-        self.modulation = ParamsDict["Modulation"]
         self.maskType = ParamsDict["MaskType"]
-        self.param = ParamsDict["InitParam"]
-        self.MTF_focal_upscale = ParamsDict["MTF_upscale"]
-        self.use_MTF = ParamsDict["Use_MTF"]
         self.pupil_centers = None
 
         self.beamSplitProportionForWFSDetector = ParamsDict[
@@ -87,15 +84,6 @@ class WFS:
         self.pupil = (self.x**2 + self.y**2) <= ((self.Nres + 1) / 2) ** 2
         self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
 
-        if self.maskType == "Pyramid":
-
-            self.BuildPyramidMask()
-
-        elif self.maskType == "Zernike":
-            self.BuildZernikeMask()
-
-        elif self.maskType == "Free":
-            pass
 
     def FFTPropagator(self, uin_padded):
         if self.modulation != 0:
@@ -213,7 +201,6 @@ class WFS:
         return Ep
 
     def MTFPropagator(self, uin, uin_padded):
-
         self.psi_f = self.MFT_pupil_to_focal(uin)
         psi_ref = self.psi_f * self.transmisionMask
         psi_zwfs = uin_padded + (
@@ -227,6 +214,9 @@ class WFS:
             # self.frame_no_noise[:, 1] = torch.roll(
             #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
             # )
+
+    def forward(self, phase, pupil = None):
+        return self.Propagator(phase, pupil)
 
     def Propagator(self, phase, pupil = None):
         """
@@ -259,11 +249,7 @@ class WFS:
         ufocal = fft2(fftshift(uin_padded, [-2, -1]))
         self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
 
-        if self.use_MTF:
-            
-            self.MTFPropagator(uin, uin_padded)
-        else:
-            self.FFTPropagator(uin_padded)
+        self.PropagateField(uin, uin_padded)
 
         self.frame_no_noise = self.frame_no_noise.sum(dim=1)
         self.frame_no_noise /= self.frame_no_noise.sum(dim=(-2, -1), keepdim=True)
@@ -271,12 +257,15 @@ class WFS:
 
         if not self.useNoise:
             return self.frame_no_noise
-            # return self.crop_center(self.frame_no_noise, self.crop_size)
 
         self.AddNoiseToFrame()
-
-        # return self.crop_center(self.frame_with_noise, self.crop_size)
         return self.frame_with_noise
+    
+    def PropagateField(self, uin, uin_padded):
+        if self.use_MTF:
+            self.MTFPropagator(uin, uin_padded)
+        else:
+            self.FFTPropagator(uin_padded)
 
     def SetPhotonsAndRON(self, Nphotons, RON):
         self.Nphotons = Nphotons
@@ -297,28 +286,6 @@ class WFS:
             self.psf_with_noise /= self.psf_with_noise.sum(dim=(-2, -1), keepdim=True)
         else:
             self.psf_with_noise = self.psf_no_noise
-
-    def crop_center(self, img, crop_size):
-        """
-        Crops the central 2*Nres pixels from an image.
-
-        Parameters:
-            img (torch.Tensor): Input image tensor of shape (B, C, Npix, Npix)
-            Nres (int): Resolution parameter
-            sampling (int): Sampling factor
-
-        Returns:
-            torch.Tensor: Cropped image of shape (B, C, 2*Nres, 2*Nres)
-        """
-
-        center = img.shape[-1] // 2  # Center index
-
-        # Compute cropping boundaries
-        start = center - (crop_size // 2)
-        end = center + (crop_size // 2)
-
-        # Crop the image
-        return img[..., start:end, start:end]
 
     def GetPSF(self, phase):
         """
@@ -399,49 +366,6 @@ class WFS:
                 self.mask = self.mask * transmisionMask.unsqueeze(0)
             else:
                 self.mask = self.mask * transmisionMask
-
-    def BuildZernikeMask(self):
-        """
-        Builds a Zernike mask and sets it using the SetMask function.
-
-        Args:
-            dot_diameter (float): Diameter of the dot in units of lambda/d
-            dot_depth (float): Depth of the dot in radians
-        Returns:
-            None
-        """
-
-        diameter_in_pixels = self.param[0] * self.sampling
-
-        # this line is not differentiable I use a tanh function to model the mask
-
-        # zernike_mask = self.param[1] * (rho < diameter_in_pixels / 2.)
-
-        if len(self.param) == 2:
-            slope = 10.0
-        else:
-            slope = self.param[2]
-
-        ring_mask = torch.tanh(slope * (diameter_in_pixels / 2.0 - self.rho_mask)) / 2
-        annular = ring_mask + 0.5
-
-        zernike_mask = self.param[1] * annular
-
-        self.SetMask(zernike_mask)
-
-    def BuildPyramidMask(self):
-        """
-        Builds a pyramid phase mask and sets it using the SetMask function.
-
-        Args:
-            None
-        Returns:
-            None
-        """
-
-        pyramid_mask = self.abs_x_mask * self.param[0] + self.abs_y_mask * self.param[1]
-
-        self.SetMask(pyramid_mask)
 
     def BuildReferenceIntensity(self, phaseOffset=0, pupil = None):
         """

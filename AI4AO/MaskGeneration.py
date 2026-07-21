@@ -5,8 +5,8 @@ Created on Thu Mar 13 09:37:06 2025
 @author: franc
 """
 
-import torch
-import torch.nn as nn
+import torch # type: ignore[import]
+import torch.nn as nn # type: ignore[import]
 
 import numpy as np
 import matplotlib.pyplot as plt

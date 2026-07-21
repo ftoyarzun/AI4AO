@@ -46,7 +46,12 @@ source ./venv/bin/activate
 .\venv\Scripts\activate
 ```
 
-After the environment is set up and activated, follow the instructions from Pytorch's website to install the corresponding version for you. Using CUDA is highly recomended.
+After the environment is set up and activated, make sure to update pip to the latest version
+```
+python -m pip install --upgrade pip setuptools wheel typing-extensions
+```
+
+Then, follow the instructions from Pytorch's website to install the corresponding version for you. Using CUDA is highly recomended.
 ```
 https://pytorch.org/get-started/locally/
 ```

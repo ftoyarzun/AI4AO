@@ -63,6 +63,9 @@ class DeformableMirror(nn.Module):
     #     self.tangentialScaling = nn.Parameter(self.tangentialScaling)
     #     self.anamorphosisAngle = nn.Parameter(self.anamorphosisAngle)
 
+    def forward(self, M2C):
+        self.modesComputation()
+        return self.GetModalModes(M2C)
 
     def GetModalModes(self, M2C):
         return torch.einsum('cr,cwh->rwh', M2C, self.modes)
