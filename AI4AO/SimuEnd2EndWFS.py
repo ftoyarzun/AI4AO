@@ -3,7 +3,7 @@
 """
 Created on Thu Jan  2 16:45:31 2025
 
-@author: ptrouve
+@author: foyarzun
 """
 
 from AI4AO.TorchPropagator import WFS

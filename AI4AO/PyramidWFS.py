@@ -51,7 +51,7 @@ class PyramidWFS(WFS):
         )
         frame_center = torch.ones(4, 2, device=self.device) * self.Npix / 2
         pupil_center = frame_center + sign_tensor * self.maskShifts * self.Npix / 4
-        pupil_center = torch.round(pupil_center).to(dtype=torch.int)
+        pupil_center = torch.round(pupil_center).to(dtype=torch.int).cpu().detach().numpy()
         return pupil_center
     
     def PropagateField(self, uin, uin_padded):

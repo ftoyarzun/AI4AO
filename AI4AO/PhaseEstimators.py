@@ -2,7 +2,7 @@
 """
 Created on Thu Apr 10 09:41:35 2025
 
-@author: franc
+@author: foyarzun
 """
 
 from AI4AO.TorchPropagator import WFS

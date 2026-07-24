@@ -7,19 +7,18 @@ class DeformableMirror(nn.Module):
 
         self.device = device
         self.Nres =         WFSDict["Nres"]
-        self.sampling =     WFSDict["sampling"]
         self.D =            WFSDict["D"]
-        self.Nact =         WFSDict["Nactuator"]
         self.wavelength =   WFSDict["Wavelength"]
         self.wavenumber =   2 * torch.pi / self.wavelength
         
         self.totalAct = 241
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
         
+        self.Nact =    DMDict["Nactuator"]
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
+
         self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
-        
 
         self._rotationAngle = nn.Parameter(torch.empty(1, device=self.device))
         self._grid_shift = nn.Parameter(torch.empty((1,2,1,1), device=self.device))
@@ -29,7 +28,6 @@ class DeformableMirror(nn.Module):
         self._moffatParameter = nn.Parameter(torch.empty(1, device=self.device))
         self._sign = nn.Parameter(torch.empty(1, device=self.device))
         self._mechCoupling = nn.Parameter(torch.empty(1, device=self.device))
-
 
         self.moffatParameter = torch.tensor([DMDict["moffatParam"]], device=self.device, dtype=torch.float32)
         self.sign = torch.tensor([DMDict["signedAmplitude"]], device=self.device, dtype=torch.float32)
@@ -42,33 +40,25 @@ class DeformableMirror(nn.Module):
             self.tangentialScaling = torch.tensor([0], device=self.device, dtype=torch.float32)
             self.anamorphosisAngle = torch.tensor([0.], device=self.device, dtype=torch.float32)
         else:
-            self.rotationAngle = torch.tensor([misreg['rotationAngle']], device=self.device, dtype=torch.float32)
-            self.grid_shift = torch.tensor([[misreg['shiftX'] * self.Nres / self.D,misreg['shiftY'] * self.Nres / self.D]], device=self.device, dtype=torch.float32).unsqueeze(dim = -1).unsqueeze(dim = -1)
-            self.radialScaling = torch.tensor([misreg['radialScaling'] / 100], device=self.device, dtype=torch.float32)
-            self.tangentialScaling = torch.tensor([misreg['tangentialScaling'] / 100], device=self.device, dtype=torch.float32)
-            self.anamorphosisAngle = torch.tensor([misreg['anamorphosisAngle']], device=self.device, dtype=torch.float32)
-
+            self.ApplyMisreg(misreg)
 
         self.MakeActGrid()
-        self.modesComputation()
+        self.MakeZonalModes()
 
-    # def MakeDMTrainable(self):
-    #     self.moffatParameter = nn.Parameter(self.moffatParameter)
-    #     self.sign = nn.Parameter(self.sign)
-    #     self.mechCoupling = nn.Parameter(self.mechCoupling)
-        
-    #     self.rotationAngle = nn.Parameter(self.rotationAngle)
-    #     self.grid_shift = nn.Parameter(self.grid_shift)
-    #     self.radialScaling = nn.Parameter(self.radialScaling)
-    #     self.tangentialScaling = nn.Parameter(self.tangentialScaling)
-    #     self.anamorphosisAngle = nn.Parameter(self.anamorphosisAngle)
+    def forward(self, coefs):
+        if self.training:
+            self.MakeZonalModes()
+        return self.GetDMShape(coefs)
 
-    def forward(self, M2C):
-        self.modesComputation()
-        return self.GetModalModes(M2C)
+    def GetDMShape(self, coefs):
+        return torch.einsum('rc,cwh->rwh', coefs, self.IF)
 
-    def GetModalModes(self, M2C):
-        return torch.einsum('cr,cwh->rwh', M2C, self.modes)
+    def ApplyMisreg(self, misreg):
+        self.rotationAngle = torch.tensor([misreg['rotationAngle']], device=self.device, dtype=torch.float32)
+        self.grid_shift = torch.tensor([[misreg['shiftX'] * self.Nres / self.D,misreg['shiftY'] * self.Nres / self.D]], device=self.device, dtype=torch.float32).unsqueeze(dim = -1).unsqueeze(dim = -1)
+        self.radialScaling = torch.tensor([misreg['radialScaling'] / 100], device=self.device, dtype=torch.float32)
+        self.tangentialScaling = torch.tensor([misreg['tangentialScaling'] / 100], device=self.device, dtype=torch.float32)
+        self.anamorphosisAngle = torch.tensor([misreg['anamorphosisAngle']], device=self.device, dtype=torch.float32)
 
     def MakeActGrid(self):
         x = torch.arange(0, self.Nact, device = self.device) - self.Nact/2 + 0.5
@@ -112,7 +102,7 @@ class DeformableMirror(nn.Module):
 
         return actuator_positions @ M.T
 
-    def modesComputation(self):
+    def MakeZonalModes(self):
 
         transformed_positons = self.anamorphosis_coordinates(self.actuator_positions)
         transformed_positons = self.rotate_coordinates(transformed_positons)
@@ -135,7 +125,7 @@ class DeformableMirror(nn.Module):
 
         r2 = (a*X**2 + 2*b*X*Y + c*Y**2)
 
-        self.modes = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
+        self.IF = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
 
 
     def GetMisreg(self):
@@ -163,6 +153,7 @@ class DeformableMirror(nn.Module):
         DMDict["MechCoupling"] = self.mechCoupling.detach().cpu().item()
         DMDict["FlipLeftRight"] = self.flip_lr
         DMDict["FlipTopBottom"] = self.flip_tb
+        DMDict["offset_to_fit_number_of_actuators"] = self.offset_to_fit_number_of_actuators
 
         return misreg, DMDict
     
@@ -191,8 +182,8 @@ class DeformableMirror(nn.Module):
                             self.sign = sign
                             self.rotationAngle = rotation
 
-                            self.modesComputation()
-                            modes = self.GetModalModes(M2C[:,index])
+                            self.MakeZonalModes()
+                            modes = self.GetDMShape(M2C[:,index].T)
 
                             wfs.BuildInteractionMatrix(modes, single_pass = True)
 
@@ -217,6 +208,37 @@ class DeformableMirror(nn.Module):
             self.flip_tb = best_params[3]
             self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
 
+
+    def LoadCalibration(self, file_path):
+        checkpoint = torch.load(file_path)
+
+        model = checkpoint["model"]
+        DMDict = checkpoint["config"]
+        misreg = checkpoint["misreg"]
+
+        self.load_state_dict(model)
+       
+        self.flip_lr = DMDict["FlipLeftRight"]
+        self.flip_tb = DMDict["FlipTopBottom"]
+        self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+        self.offset_to_fit_number_of_actuators = DMDict["offset_to_fit_number_of_actuators"]
+
+        with torch.no_grad():
+            self.ApplyMisreg(misreg)
+            self.MakeActGrid()
+            self.MakeZonalModes()
+
+
+
+    def SaveCalibration(self, file_path):
+
+        misreg, DMDict = self.GetMisreg()
+
+        torch.save({
+        "model": self.state_dict(),
+        "config": DMDict,
+        "misreg": misreg
+            }, file_path)
 
     #### These properties are set such that when optimizing these values they all share the same order of magnitude.
     # ---------- Rotation ----------

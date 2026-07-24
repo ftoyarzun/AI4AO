@@ -2,7 +2,7 @@
 """
 Created on Fri Dec  6 17:02:43 2024
 
-@author: pauline : conversion of propagator to torch
+@author: foyarzun
 """
 
 import torch # type: ignore[import]
@@ -56,12 +56,8 @@ class WFS(nn.Module):
         self.useNoise = ParamsDict["useNoise"]
         self.device = device
         self.reference_intensity = None
-        self.maskType = ParamsDict["MaskType"]
         self.pupil_centers = None
-
-        self.beamSplitProportionForWFSDetector = ParamsDict[
-            "beamSplitProportionForWFSDetector"
-        ]
+        self.beamSplitProportionForWFSDetector = 1 # ParamsDict["beamSplitProportionForWFSDetector"]
 
         self.Nphotons = 1e7
         self.RON = 2
@@ -457,3 +453,15 @@ class WFS(nn.Module):
         )
 
         return temp
+
+    def LoadCalibration(self, file_path):
+        checkpoint = torch.load(file_path)
+        model = checkpoint["model"]
+        self.load_state_dict(model)
+
+        with torch.no_grad():
+            self.BuildMask()
+            self.BuildReferenceIntensity()
+
+    def SaveCalibration(self, file_path):
+        torch.save({"model": self.state_dict()}, file_path)
