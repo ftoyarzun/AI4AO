@@ -5,8 +5,8 @@ Created on Thu Apr 10 09:52:19 2025
 @author: franc
 """
 
-import torch
-import torch.nn as nn
+import torch # type: ignore[import]
+import torch.nn as nn # type: ignore[import]
 
 
 class Custom_Loss_Function(nn.Module):

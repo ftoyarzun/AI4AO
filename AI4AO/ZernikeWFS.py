@@ -17,6 +17,7 @@ class ZernikeWFS(WFS):
 
         self.MTF_focal_upscale = ParamsDict["MTF_upscale"]
         self.use_MTF = ParamsDict["Use_MTF"]
+        self.maskType = ParamsDict["MaskType"]
         self.modulation = 0
 
         if self.maskType.lower() in ["doublezernike", "vzwfs", "v-zwfs", "vectorzwfs", "vector-zwfs"]:

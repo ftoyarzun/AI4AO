@@ -5,20 +5,30 @@ import torch.nn.functional as F # type: ignore[import]
 
 
 class FramePreprocess:
-    def __init__(self, wfsParams, atmosParams, device, maskManager):
+    def __init__(self, wfsParams, wfs, device):
         self.reference = 1.0
         self.normalization = 1.0
-
-        self.maskManager = maskManager
 
         self.device = device
         
         self.Substract_reference = wfsParams["Substract_Reference"]
         self.Extract_pupils = wfsParams["Extract_pupils"]
+        self.Extract_pupils_pad = wfsParams["Extract_pupils_pad"]
         self.bin_factor = wfsParams["Bin_factor"]
-        self.bin_step = nn.AvgPool2d(self.bin_factor)
         self.Nres = wfsParams["Nres"]
         self.Centering_noise = wfsParams["Center_noise"]
+        self.wfs = wfs
+
+        self.Ncrop = self.Nres + self.Extract_pupils_pad
+
+        self.yy, self.xx = np.meshgrid(
+            np.arange(self.Ncrop),
+            np.arange(self.Ncrop),
+            indexing="ij"
+        )
+
+        self.yy = self.yy[None, None]
+        self.xx = self.xx[None, None]
 
     def ProcessReference(self, reference_frame):
 
@@ -53,25 +63,44 @@ class FramePreprocess:
 
     def GetPupils(self, images, isReference = False):
 
-        Ncrop = self.Nres + 2 * int(self.bin_factor)
-        centers = np.copy(self.maskManager.pupil_centers)  # // self.Bin_factor
+        # Ncrop = self.Nres + int(self.Extract_pupils_pad * self.bin_factor)
+        # centers = np.copy(self.wfs.pupil_centers)  # // self.Bin_factor
 
-        if self.Centering_noise > 0 and not isReference:
-            centers += np.random.randint(
-                -self.Centering_noise, self.Centering_noise, centers.shape
-            ) * int(self.bin_factor)
+        # if self.Centering_noise > 0 and not isReference:
+        #     centers += np.random.randint(
+        #         -self.Centering_noise, self.Centering_noise, centers.shape
+        #     ) * int(self.bin_factor)
             
-        out = torch.zeros(
-            (images.shape[0], centers.shape[0], Ncrop, Ncrop), device=self.device
-        )
+        # out = torch.zeros(
+        #     (images.shape[0], centers.shape[0], Ncrop, Ncrop), device=self.device
+        # )
 
-        for i, center in enumerate(centers):
-            out[:, i] = images[
-                ...,
-                center[0] - Ncrop // 2 : center[0] + Ncrop // 2,
-                center[1] - Ncrop // 2 : center[1] + Ncrop // 2,
-            ]
-        return out
+        # for i, center in enumerate(centers):
+        #     out[:, i] = images[
+        #         ...,
+        #         center[0] - Ncrop // 2 : center[0] + Ncrop // 2,
+        #         center[1] - Ncrop // 2 : center[1] + Ncrop // 2,
+        #     ]
+        # return out
+
+        B = images.shape[0]
+        batch = np.arange(B)[:, None, None, None]
+
+        centers = np.copy(self.wfs.pupil_centers)[None,...]
+        pupil_noise = np.random.randint(-self.Centering_noise, self.Centering_noise,(B,*centers.shape[-2:]))
+
+        if isReference:
+            centers = centers + pupil_noise * 0
+        else:
+            centers = centers + pupil_noise
+        
+
+        yy = self.yy + centers[:,:, 0][..., None, None] - self.Ncrop//2   # [B,C,N,N]
+        xx = self.xx + centers[:,:, 1][..., None, None] - self.Ncrop//2   # [B,C,N,N]
+
+        patches = images[batch, yy, xx]
+        return patches
+
     
     def BinImage(self, Image, bin_factor = None):
         

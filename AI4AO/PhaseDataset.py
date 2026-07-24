@@ -3,14 +3,12 @@
 """
 Created on Thu Jan  2 14:21:44 2025
 
-@author: ptrouve
+@author: foyarzun
 """
 import torch # type: ignore[import]
 from torch.utils.data import Dataset # type: ignore[import]
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.io import loadmat
-from pathlib import Path
+
 
 
 def Zernike(pupil, j = 100):
@@ -322,7 +320,6 @@ class PhaseDataset(Dataset):
         windSpeedRange (tuple): Range of wind speed values for each layer.
         pupil (Tensor): Circular aperture mask.
         z_FullRes (Tensor): Precomputed full-resolution modes.
-        invZ (Tensor): Pseudo-inverse of the modes matrix for decomposition.
         testDatasetPath (str): File path for cached static dataset.
         movingTestDatasetPath (str): File path for cached moving dataset.
 
@@ -330,7 +327,7 @@ class PhaseDataset(Dataset):
         dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
         sample = dataset[idx]  # Returns phaseMap, modes coefficients, photons, RON, r0
     """
-    def __init__(self, WFSParams, AtmosParams, LoopParams, device):
+    def __init__(self, WFSParams, AtmosParams, LoopParams, DMParams, device):
         """
         Initialize the PhaseDataset.
     
@@ -344,27 +341,25 @@ class PhaseDataset(Dataset):
         
         self.D = WFSParams['D']
         self.Nres = WFSParams['Nres']
-        self.Nmodes = WFSParams['Nmodes']
         self.photonRange = WFSParams['Nphotons']
         self.RONRange = WFSParams['RON']
         self.wavelength = WFSParams["Wavelength"]
-        self.Nactuator = WFSParams['Nactuator']
                        
         self.L0Range = AtmosParams['L0']
         self.r0Range = AtmosParams['r0']
         self.Nphases = AtmosParams['Nphases']
         self.nLayersRange = AtmosParams["Layers"]
         self.f_slope = AtmosParams["f_slope"]
-        
         self.useScintillation = AtmosParams["Scintillation"]
-                               
-                               
+                                           
         self.levelOfCorrectionRange = LoopParams['levelOfCorrection']
         self.loopFrequency = LoopParams['loopFrequency']
         self.delayFrames = LoopParams['delayFrames']
         self.loopGainRange = LoopParams['loopGain']
         self.loopLeakRange = LoopParams['loopLeak']
         self.windSpeedRange = LoopParams['windSpeedVector']
+
+        self.Nactuator = DMParams['Nactuator']
      
         self.device=device       
 
@@ -401,60 +396,60 @@ class PhaseDataset(Dataset):
 
     # ## Compute the first Nmodes modes and the inverse to obtain the perfect reconstructor
 
-        try:
-            base_dir = Path(__file__).resolve().parent
-        except NameError:
-            # Running in a notebook
-            base_dir = Path.cwd()
+        # try:
+        #     base_dir = Path(__file__).resolve().parent
+        # except NameError:
+        #     # Running in a notebook
+        #     base_dir = Path.cwd()
 
-        data_path = base_dir / 'dm_models'
+        # data_path = base_dir / 'dm_models'
 
-        if WFSParams['ModalBasis'] == "Zernike":
-            [self.z, self.z_FullRes] = Zernike(self.pupil, self.Nmodes)
+        # if WFSParams['ModalBasis'] == "Zernike":
+        #     [self.z, self.z_FullRes] = Zernike(self.pupil, self.Nmodes)
             
-        elif WFSParams['ModalBasis'] == "Papyrus_KL":
-            M2C = torch.from_numpy(loadmat(data_path / r'M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
-            papyrus_dm = torch.from_numpy(np.load(data_path / r"papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-            papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
+        # elif WFSParams['ModalBasis'] == "Papyrus_KL":
+        #     M2C = torch.from_numpy(loadmat(data_path / r'M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
+        #     papyrus_dm = torch.from_numpy(np.load(data_path / r"papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+        #     papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
 
-            self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
-            self.z = self.z_FullRes[self.pupil.bool()]
+        #     self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
+        #     self.z = self.z_FullRes[self.pupil.bool()]
             
-        elif WFSParams['ModalBasis'] == "Papyrus_Zernike":
-            Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nmodes]
-            papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-            papyrus_modal_dm = (papyrus_dm @ Z2C).view(80,80,-1)[1:-1, 1:-1, :]
+        # elif WFSParams['ModalBasis'] == "Papyrus_Zernike":
+        #     Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nmodes]
+        #     papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+        #     papyrus_modal_dm = (papyrus_dm @ Z2C).view(80,80,-1)[1:-1, 1:-1, :]
 
             
-            self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
-            self.z = self.z_FullRes[self.pupil.bool()]
+        #     self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
+        #     self.z = self.z_FullRes[self.pupil.bool()]
             
-        elif WFSParams['ModalBasis'] == "Papyrus_Zonal":
-            # papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-            papyrus_dm = papyrus_dm.view(80,80,-1)[1:-1, 1:-1, :]
+        # elif WFSParams['ModalBasis'] == "Papyrus_Zonal":
+        #     # papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
+        #     papyrus_dm = papyrus_dm.view(80,80,-1)[1:-1, 1:-1, :]
 
-            self.z_FullRes = papyrus_dm * self.pupil.unsqueeze(-1)
-            self.z = self.z_FullRes[self.pupil.bool()]
+        #     self.z_FullRes = papyrus_dm * self.pupil.unsqueeze(-1)
+        #     self.z = self.z_FullRes[self.pupil.bool()]
         
-        elif WFSParams['ModalBasis'] == "Oziriis_KL":
-            oziriis_modal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
-            oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
+        # elif WFSParams['ModalBasis'] == "Oziriis_KL":
+        #     oziriis_modal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
+        #     oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
 
-            self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
-            self.z = self.z_FullRes[self.pupil.bool()]
+        #     self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
+        #     self.z = self.z_FullRes[self.pupil.bool()]
 
-        elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
-            oziriis_zonal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
-            oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
+        # elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
+        #     oziriis_zonal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
+        #     oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
 
-            self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
-            self.z = self.z_FullRes[self.pupil.bool()]
+        #     self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
+        #     self.z = self.z_FullRes[self.pupil.bool()]
 
-        else:
-            raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
+        # else:
+        #     raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
             
         
-        self.invZ = torch.linalg.pinv(self.z_FullRes.flatten(0,1)).to(self.device, dtype=torch.float32).transpose(0, 1)
+        # self.invZ = torch.linalg.pinv(self.z_FullRes.flatten(0,1)).to(self.device, dtype=torch.float32).transpose(0, 1)
         
         
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device)
@@ -540,11 +535,21 @@ class PhaseDataset(Dataset):
             pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
         
         # Compute mode decomposition
-        Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
+        # Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
         
         self.movingCount += 1
          
-        return phaseMap, pupilMap, Ze, self.Nphotons, self.RON, self.r0_moving, torch.stack((self.windSpeedVector_x,self.windSpeedVector_y)), self.fractionalr0
+        return {
+                "phase": phaseMap,
+                "pupil": pupilMap,
+                "nphotons": self.Nphotons,
+                "ron": self.RON,
+                "r0": self.r0_moving.squeeze(),
+                "wind": torch.stack((self.windSpeedVector_x, self.windSpeedVector_y)).squeeze(),
+                "fractional_r0": self.fractionalr0.squeeze(),
+                "loop_gain": self.loopGain.reshape(-1, 1),
+                "loop_leak": self.loopLeak.reshape(-1, 1),
+                }
     
     def RemovePiston(self, phaseMap):
         mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
