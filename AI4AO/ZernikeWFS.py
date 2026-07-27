@@ -1,10 +1,7 @@
 import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
-
 import numpy as np
-
-
-from AI4AO import WFS
+from .TorchPropagator import WFS
 
 class ZernikeWFS(WFS):
     def __init__(self, ParamsDict, device):
