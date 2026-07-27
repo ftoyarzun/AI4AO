@@ -1,13 +1,8 @@
 import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
 
-import math
 import numpy as np
 
-
-np.math = math
-
-from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
 from AI4AO import WFS
 
