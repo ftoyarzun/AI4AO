@@ -9,7 +9,7 @@ np.math = math
 
 from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
-from AI4AO import WFS
+from AI4AO.TorchPropagator import WFS
 
 class PyramidWFS(WFS):
     def __init__(self, ParamsDict, device):
