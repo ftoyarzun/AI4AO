@@ -236,8 +236,3 @@ def imshow(
 
     return fig, axes
 
-if __name__ == "__main__":
-    test = torch.randn((16,4,50,50))
-   
-    imshow(test, max_batch_number=4, max_channel_number=4)
-    plt.show()

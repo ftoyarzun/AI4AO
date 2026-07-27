@@ -5,6 +5,8 @@ class DeformableMirror(nn.Module):
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None):
         super().__init__()
 
+        self.initialized = False
+
         self.device = device
         self.Nres =         WFSDict["Nres"]
         self.D =            WFSDict["D"]
@@ -13,12 +15,11 @@ class DeformableMirror(nn.Module):
         
         self.totalAct = 241
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
-        
+
         self.Nact =    DMDict["Nactuator"]
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
-
-        self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+        self.flip_matrix = torch.tensor([[-1 if self.flip_lr else 1, -1 if self.flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
 
         self._rotationAngle = nn.Parameter(torch.empty(1, device=self.device))
         self._grid_shift = nn.Parameter(torch.empty((1,2,1,1), device=self.device))
@@ -44,6 +45,9 @@ class DeformableMirror(nn.Module):
 
         self.MakeActGrid()
         self.MakeZonalModes()
+
+        self.initialized = True
+        
 
     def forward(self, coefs):
         if self.training:
@@ -71,6 +75,9 @@ class DeformableMirror(nn.Module):
         x = torch.arange(0, self.Nres, device = self.device) - self.Nres/2 + 0.5
         x,y = torch.meshgrid(x,x, indexing = 'xy')
         self.positions = torch.stack((x,y)).repeat(self.totalAct,1,1,1)
+
+        print(f"Total number of actuators: {self.totalAct}")
+
     
     def rotate_coordinates(self, actuator_positions):
         theta = self.rotationAngle * torch.pi / 180
@@ -178,7 +185,7 @@ class DeformableMirror(nn.Module):
                     for flip_lr in flips_lr:
                         for flip_tb in flips_tb:
 
-                            self.flip_matrix = torch.tensor([[-1 if flip_tb else 1, -1 if flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+                            self.flip_matrix = torch.tensor([[-1 if flip_lr else 1, -1 if flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
                             self.sign = sign
                             self.rotationAngle = rotation
 
@@ -206,7 +213,6 @@ class DeformableMirror(nn.Module):
             self.sign = best_params[1]
             self.flip_lr = best_params[2]
             self.flip_tb = best_params[3]
-            self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
 
 
     def LoadCalibration(self, file_path):
@@ -220,7 +226,6 @@ class DeformableMirror(nn.Module):
        
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
-        self.flip_matrix = torch.tensor([[-1 if self.flip_tb else 1, -1 if self.flip_lr else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
         self.offset_to_fit_number_of_actuators = DMDict["offset_to_fit_number_of_actuators"]
 
         with torch.no_grad():
@@ -245,7 +250,6 @@ class DeformableMirror(nn.Module):
     @property
     def rotationAngle(self):
         return self._rotationAngle * 180.0
-
     @rotationAngle.setter
     def rotationAngle(self, value):
         with torch.no_grad():
@@ -255,7 +259,6 @@ class DeformableMirror(nn.Module):
     @property
     def grid_shift(self):
         return self._grid_shift * 5.0      # train around [-1,1], physical ±5 px
-
     @grid_shift.setter
     def grid_shift(self, value):
         with torch.no_grad():
@@ -265,7 +268,6 @@ class DeformableMirror(nn.Module):
     @property
     def sign(self):
         return self._sign * 1e-6            # train around O(1), output in m
-
     @sign.setter
     def sign(self, value):
         with torch.no_grad():
@@ -275,7 +277,6 @@ class DeformableMirror(nn.Module):
     @property
     def radialScaling(self):
         return self._radialScaling / 10
-
     @radialScaling.setter
     def radialScaling(self, value):
         with torch.no_grad():
@@ -285,7 +286,6 @@ class DeformableMirror(nn.Module):
     @property
     def tangentialScaling(self):
         return self._tangentialScaling / 10
-
     @tangentialScaling.setter
     def tangentialScaling(self, value):
         with torch.no_grad():
@@ -295,7 +295,6 @@ class DeformableMirror(nn.Module):
     @property
     def anamorphosisAngle(self):
         return self._anamorphosisAngle * 180.0
-
     @anamorphosisAngle.setter
     def anamorphosisAngle(self, value):
         with torch.no_grad():
@@ -306,7 +305,6 @@ class DeformableMirror(nn.Module):
     @property
     def moffatParameter(self):
         return torch.exp(self._moffatParameter)
-
     @moffatParameter.setter
     def moffatParameter(self, value):
         if torch.any(value <= 0):
@@ -320,14 +318,42 @@ class DeformableMirror(nn.Module):
     @property
     def mechCoupling(self):
         return torch.sigmoid(self._mechCoupling)
-
     @mechCoupling.setter
     def mechCoupling(self, value):
         if torch.any(value <= 0) or torch.any(value >= 1):
             raise ValueError("mechCoupling must be between 0 and 1.")
         value = torch.as_tensor(value, device=self.device)
-
         value = torch.log(value / (1 - value))
-
         with torch.no_grad():
             self._mechCoupling.copy_(value)
+
+    @property
+    def flip_lr(self):
+        return self._flip_lr
+    @flip_lr.setter
+    def flip_lr(self, value):
+        self._flip_lr = value
+        if self.initialized:
+            self.flip_matrix = torch.tensor([[-1 if self._flip_lr else 1, -1 if self._flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+            self.MakeZonalModes()
+
+    @property
+    def flip_tb(self):
+        return self._flip_tb
+    @flip_tb.setter
+    def flip_tb(self, value):
+        self._flip_tb = value
+        if self.initialized:
+            self.flip_matrix = torch.tensor([[-1 if self._flip_lr else 1, -1 if self._flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
+            self.MakeZonalModes()
+
+    @property
+    def offset_to_fit_number_of_actuators(self):
+        return self._offset_to_fit_number_of_actuators
+    @offset_to_fit_number_of_actuators.setter
+    def offset_to_fit_number_of_actuators(self,value):
+        self._offset_to_fit_number_of_actuators = value
+        if self.initialized:
+            self.MakeActGrid()
+            self.MakeZonalModes()
+        
