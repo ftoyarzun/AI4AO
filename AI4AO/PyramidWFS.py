@@ -50,7 +50,7 @@ class PyramidWFS(WFS):
             [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]], device=self.device
         )
         frame_center = torch.ones(4, 2, device=self.device) * self.Npix / 2
-        pupil_center = frame_center + sign_tensor * self.maskShifts * self.Npix / 4
+        pupil_center = frame_center + sign_tensor * self.maskShifts * self.mainSlope * self.Npix / 4 / (torch.pi/2)
         pupil_center = torch.round(pupil_center).to(dtype=torch.int).cpu().detach().numpy()
         return pupil_center
     
