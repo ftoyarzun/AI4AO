@@ -18,23 +18,18 @@ class FramePreprocess:
         self.Nres = wfsParams["Nres"]
         self.Substract_reference = wfsParams["Substract_Reference"]
         self.Bin_factor = wfsParams["Bin_factor"]
-        self.Extract_pupils_pad = wfsParams["Extract_pupils_pad"] * wfsParams["Bin_factor"]
+        self.Extract_pupils_pad = (wfsParams["Extract_pupils_pad"] * wfsParams["Bin_factor"])
         self.Ncrop = self.Nres + self.Extract_pupils_pad
 
-        self.yy, self.xx = np.meshgrid(
-            np.arange(self.Ncrop),
-            np.arange(self.Ncrop),
-            indexing="ij"
-        )
+        self.yy, self.xx = np.meshgrid(np.arange(self.Ncrop), np.arange(self.Ncrop), indexing="ij")
 
         self.yy = self.yy[None]
         self.xx = self.xx[None]
 
         centers = np.copy(centers)
 
-        self.yy = self.yy + centers[:,0][..., None, None] - self.Ncrop//2   # [B,C,N,N]
-        self.xx = self.xx + centers[:,1][..., None, None] - self.Ncrop//2   # [B,C,N,N]
-
+        self.yy = (self.yy + centers[:, 0][..., None, None] - self.Ncrop // 2)  # [B,C,N,N]
+        self.xx = (self.xx + centers[:, 1][..., None, None] - self.Ncrop // 2)  # [B,C,N,N]
 
     def ProcessReference(self, reference_frame):
 
@@ -45,7 +40,6 @@ class FramePreprocess:
         self.normalization = np.std(pupils, axis=(-2, -1), keepdims=True)
         self.reference = pupils
 
-    
     def ProcessFrame(self, input_frame):
 
         frame = self.GetPupils(input_frame)
@@ -56,7 +50,7 @@ class FramePreprocess:
         else:
             frame = frame - frame.mean(axis=(-2, -1), keepdim=True)
             frame = frame / frame.std(axis=(-2, -1), keepdim=True)
-        
+
         return frame
 
     def GetPupils(self, images=None):
@@ -65,23 +59,17 @@ class FramePreprocess:
 
 
 
-def MakeTRTModel(NNModel, size, device, output_file_name, outpul_file_directory):
+def MakeTRTModel(NNModel, size, device, output_file_name, output_file_directory):
     example_input = torch.randn(size, device=device)
 
-    ONNX_PATH = outpul_file_directory + output_file_name + ".onnx"
-    TRT_PATH = outpul_file_directory + output_file_name + ".model"
+    ONNX_PATH = output_file_directory + output_file_name + ".onnx"
+    TRT_PATH = output_file_directory + output_file_name + ".model"
 
     TRT_COMMAND = f"/usr/src/tensorrt/bin/trtexec --onnx={ONNX_PATH} --saveEngine={TRT_PATH} --builderOptimizationLevel=5 --noTF32 --useSpinWait --verbose"
 
-    torch.onnx.export(
-        NNModel,
-        example_input,
-        ONNX_PATH,
-        opset_version=17
-    )
+    torch.onnx.export(NNModel, example_input, ONNX_PATH, opset_version=18)
 
     subprocess.run(TRT_COMMAND, shell=True, check=True)
-
 
 
 class TensorRTInference:
@@ -92,13 +80,9 @@ class TensorRTInference:
         self.context = self.engine.create_execution_context()
 
         # Allocate buffers
-        self.inputs, self.outputs, self.bindings, self.stream = self.allocate_buffers(
-            self.engine
-        )
+        self.inputs, self.outputs, self.bindings, self.stream = self.allocate_buffers(self.engine)
         for i in range(self.engine.num_io_tensors):
-            self.context.set_tensor_address(
-                self.engine.get_tensor_name(i), self.bindings[i]
-            )
+            self.context.set_tensor_address(self.engine.get_tensor_name(i), self.bindings[i])
 
     def load_engine(self, engine_path):
         with open(engine_path, "rb") as f:
@@ -160,3 +144,5 @@ class TensorRTInference:
         # cuda.Context.synchronize()
 
         return self.outputs[0].host
+
+

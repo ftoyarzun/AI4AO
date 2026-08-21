@@ -31,7 +31,6 @@ It is always recommended that you use a virtual environment. First create it:
 
 ```
 python -m venv venv
-
 ```
 
 And finally activate it:
