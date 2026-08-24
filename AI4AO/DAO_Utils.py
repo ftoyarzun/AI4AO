@@ -48,8 +48,8 @@ class FramePreprocess:
             frame = frame - self.reference
             frame = frame / self.normalization
         else:
-            frame = frame - frame.mean(axis=(-2, -1), keepdim=True)
-            frame = frame / frame.std(axis=(-2, -1), keepdim=True)
+            frame = frame - frame.mean(axis=(-2, -1), keepdims=True)
+            frame = frame / self.normalization
 
         return frame
 
