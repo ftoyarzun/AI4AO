@@ -166,6 +166,23 @@ def calibrate_pupil_positions(wfs, target_frame):
     wfs.modulation = modulation
 
 
+def MakePupil(get_frame_function, dm_shm, amp = 0.05, n_iter = 5000):
+
+    frame = get_frame_function() * 0
+
+    for i in range(n_iter):
+        coefs = np.random.randn(*dm_shm.get_data().shape) * amp
+        coefs = coefs.astype(np.float32)
+
+        dm_shm.set_data(coefs)
+        frame += get_frame_function()
+
+    frame /= frame.sum()
+
+    dm_shm.set_data(coefs * 0)
+
+    return frame
+
 class BenchCalibrator:
     def __init__(self):
 
