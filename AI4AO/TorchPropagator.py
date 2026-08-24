@@ -54,6 +54,7 @@ class WFS(nn.Module):
         self.crop_size = self.Npix  # 2 * self.Nres
         self.D = ParamsDict["D"]
         self.useNoise = ParamsDict["useNoise"]
+        self.central_obstruction = ParamsDict["centralObstruction"]
         self.device = device
         self.reference_intensity = None
         self.pupil_centers = None
@@ -63,10 +64,10 @@ class WFS(nn.Module):
         self.RON = 2
         self.focalPlaneRON = 4
 
-        x = torch.linspace(
-            -self.Nres / 2, self.Nres / 2, self.Nres, dtype=torch.float32
-        ).to(device)
-        [self.x, self.y] = torch.meshgrid(x, x)
+        # x = torch.linspace(
+        #     -self.Nres / 2, self.Nres / 2, self.Nres, dtype=torch.float32
+        # ).to(device)
+        # [self.x, self.y] = torch.meshgrid(x, x)
 
         x_mask = torch.linspace(
             -self.Npix / 2, self.Npix / 2 - 1, self.Npix, dtype=torch.float32
@@ -77,9 +78,17 @@ class WFS(nn.Module):
         self.abs_x_mask = torch.abs(self.x_mask)
         self.abs_y_mask = torch.abs(self.y_mask)
 
-        self.pupil = (self.x**2 + self.y**2) <= ((self.Nres + 1) / 2) ** 2
-        self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
+        self.MakePupil()
 
+    def MakePupil(self):
+        pupil_upscale = 6
+        x = torch.linspace(-self.Nres / 2, self.Nres / 2, self.Nres * pupil_upscale, device = self.device, dtype=torch.float32)
+        [x, y] = torch.meshgrid(x, x)
+        outter_pupil = (x**2 + y**2) <= ((self.Nres + 1) / 2) ** 2
+        inner_pupil = (x**2 + y**2) >= ((self.Nres + 1) / 2 * self.central_obstruction) ** 2
+        self.pupil = outter_pupil * inner_pupil
+        self.pupil = self.pupil.view(self.Nres, pupil_upscale, self.Nres, pupil_upscale).sum(dim=(1, 3))
+        self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
 
     def FFTPropagator(self, uin_padded):
         if self.modulation != 0:

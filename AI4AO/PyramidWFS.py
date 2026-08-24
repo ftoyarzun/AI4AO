@@ -48,5 +48,26 @@ class PyramidWFS(WFS):
     
     def PropagateField(self, uin, uin_padded):
         self.FFTPropagator(uin_padded)
+
+    def BuildPrismMask(self, pupil_proportion, Nsamples = 5):
+        self.BuildMask()
+        displacement_size_in_pix = self.Nres * pupil_proportion / self.sampling
+        displacement_array = torch.linspace(
+            -displacement_size_in_pix/2, displacement_size_in_pix/2, Nsamples, 
+            device = self.device, dtype = torch.float32
+            ).view(Nsamples,1,1)
+
+        standard_pupil_displacement_in_pix = self.mainSlope / (2 * torch.pi) * self.Npix
+        samples_pupil_positions_array = displacement_array + standard_pupil_displacement_in_pix
+
+        displacement_factor = samples_pupil_positions_array / self.mainSlope / self.Npix * (2 * torch.pi)
+
+        mask = torch.clone(self.phaseMask).repeat((Nsamples,1,1))
+
+        mask *= displacement_factor
+
+        self.SetMask(phaseMask=mask)
+
+
     
    
