@@ -42,6 +42,22 @@ class FramePreprocess:
         self.normalization = torch.std(frame, dim=(-2, -1), keepdim=True)
         self.reference = frame
 
+    def GetPupilNormalizationFromDataset(self, dataset, wfs, n_iter = 1000):
+
+        for i in range(n_iter):
+            batch = dataset[0]
+            phaseGT = batch["phase"]
+            wfs_frames = wfs(phaseGT)
+            if self.bin_factor != 1:
+                wfs_frames = self.BinImage(wfs_frames) * self.bin_factor ** 2
+            pupils = self.GetPupils(wfs_frames)
+            if i == 0:
+                normalization = torch.std(pupils, dim=(-2, -1), keepdim=True)
+            else:
+                normalization += torch.std(pupils, dim=(-2, -1), keepdim=True)
+
+        self.normalization = normalization / n_iter
+
     def ProcessFrame(self, input_frame, add_pupil_noise = True):
 
         frame = torch.clone(input_frame)
@@ -56,7 +72,7 @@ class FramePreprocess:
             frame = frame / self.normalization
         else:
             frame = frame - frame.mean(dim=(-2, -1), keepdim=True)
-            frame = frame / frame.std(dim=(-2, -1), keepdim=True)
+            frame = frame / self.normalization
 
         return frame
 
