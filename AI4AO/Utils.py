@@ -17,41 +17,80 @@ def imshow(
     cmap="viridis",
     figsize=None,
     colorbar=False,
+    fig=None,
+    axes=None,
     **kwargs
 ):
     """
     Display tensors of shape [WH], [CWH], or [BCWH].
 
+    The function supports three modes:
+
+    1. Standalone:
+        imshow(tensor)
+
+    2. Inside an existing matplotlib subplot:
+        plt.subplot(121)
+        fig, axes = imshow(tensor)
+
+    3. Updating an existing visualization:
+        imshow(tensor, fig=fig, axes=axes)
+
     Parameters
     ----------
     tensor : torch.Tensor or np.ndarray
-        Input image tensor.
+        Input image tensor with shape [W,H], [C,W,H], or [B,C,W,H].
 
-    show_selection : int, optional
-        Number of images/groups to show.
+    max_batch_number : int, optional
+        Maximum number of batches/groups to display.
+
+    max_channel_number : int, optional
+        Maximum number of channels/images per group to display.
 
     same_scale : bool
-        Use common vmin/vmax.
+        If True, use the same vmin/vmax for all images.
 
     group_boxes : bool
-        Draw rectangles around B groups for BCWH input.
+        If True, draw rectangles around each B group for [BCWH] input.
 
     cmap : str
         Matplotlib colormap.
 
+    figsize : tuple, optional
+        Figure size when creating a new standalone figure.
+
+    colorbar : bool
+        Add a colorbar to each image.
+
+    fig : matplotlib.figure.Figure, optional
+        Existing figure for animation/update mode.
+
+    axes : list of matplotlib.axes.Axes, optional
+        Existing image axes for animation/update mode.
+
     kwargs :
-        Passed to plt.imshow.
+        Additional arguments passed to matplotlib's imshow().
     """
 
+    # =========================================================
     # Convert to numpy
+    # =========================================================
+
     if torch.is_tensor(tensor):
         tensor = tensor.detach().cpu().numpy()
+    else:
+        tensor = np.asarray(tensor)
 
-    # Convert dimensions
+    # =========================================================
+    # Convert dimensions to [B,C,W,H]
+    # =========================================================
+
     if tensor.ndim == 2:
-        tensor = tensor[None, None, ...]     # B,C,W,H
+        tensor = tensor[None, None, ...]       # [W,H] -> [1,1,W,H]
+
     elif tensor.ndim == 3:
-        tensor = tensor[None, ...]            # B,C,W,H
+        tensor = tensor[None, ...]             # [C,W,H] -> [1,C,W,H]
+
     elif tensor.ndim != 4:
         raise ValueError(
             f"Tensor must be [WH], [CWH], or [BCWH], got {tensor.shape}"
@@ -59,16 +98,22 @@ def imshow(
 
     B, C, W, H = tensor.shape
 
+    # =========================================================
     # Selection
+    # =========================================================
+
     if max_batch_number is not None:
-        tensor = tensor[:min(B,max_batch_number)]
-        
+        tensor = tensor[:min(B, max_batch_number)]
+
     if max_channel_number is not None:
-        tensor = tensor[:,:min(C,max_channel_number)]
+        tensor = tensor[:, :min(C, max_channel_number)]
 
     B, C, W, H = tensor.shape
 
+    # =========================================================
     # Scaling
+    # =========================================================
+
     if same_scale:
         vmin = tensor.min()
         vmax = tensor.max()
@@ -76,23 +121,277 @@ def imshow(
         vmin = kwargs.pop("vmin", None)
         vmax = kwargs.pop("vmax", None)
 
+    # =========================================================
+    # UPDATE EXISTING FIGURE
+    # =========================================================
+    #
+    # This branch must not create anything.
+    # =========================================================
+
+    if fig is not None and axes is not None:
+
+        # Normalize axes to a list
+        if not isinstance(axes, (list, tuple)):
+            axes = [axes]
+
+        expected = B * C
+
+        if len(axes) != expected:
+            raise ValueError(
+                "The number of existing image axes does not match "
+                f"the current tensor.\n"
+                f"Tensor contains {B} batch group(s) × {C} channel(s) "
+                f"= {expected} images, but {len(axes)} axes were provided."
+            )
+
+        k = 0
+
+        for b in range(B):
+            for c in range(C):
+
+                ax = axes[k]
+
+                if len(ax.images) == 0:
+                    raise ValueError(
+                        f"Axis {k} does not contain an existing AxesImage. "
+                        "The supplied axes must come from a previous "
+                        "imshow() call."
+                    )
+
+                image = ax.images[0]
+
+                # Update the existing image
+                image.set_data(tensor[b, c])
+
+                # ---------------------------------------------
+                # Determine clim for THIS image
+                # ---------------------------------------------
+
+                if same_scale:
+                    # vmin/vmax were calculated globally
+                    # for this imshow() call.
+                    image_vmin = vmin
+                    image_vmax = vmax
+
+                else:
+                    # Each image gets its own scale.
+                    image_vmin = (
+                        tensor[b, c].min()
+                        if vmin is None
+                        else vmin
+                    )
+
+                    image_vmax = (
+                        tensor[b, c].max()
+                        if vmax is None
+                        else vmax
+                    )
+
+                image.set_clim(
+                    vmin=image_vmin,
+                    vmax=image_vmax
+                )
+
+                k += 1
+
+        return fig, axes
+
+    # =========================================================
+    # Helper
+    # =========================================================
 
     def divisor(n):
+        """
+        Return the middle divisor, preserving the layout logic
+        of the original implementation.
+        """
         divs = [1]
-        for i in range(2,n+1):
-            if n%i == 0:
+
+        for i in range(2, n + 1):
+            if n % i == 0:
                 divs.append(i)
-        return divs[len(divs)//2]
-    # -------------------------
-    # Single group [C,W,H]
-    # -------------------------
+
+        return divs[len(divs) // 2]
+
+    # =========================================================
+    # Determine whether an existing subplot is active
+    # =========================================================
+    #
+    # If the user has done:
+    #
+    #     plt.subplot(121)
+    #
+    # then plt.gca() is the parent/container axis.
+    #
+    # We only use it during CREATION.
+    # =========================================================
+
+    current_ax = None
+    parent_ax = None
+    embedded = False
+
+    # Check whether there is already a figure with an axes.
+    # This avoids creating a figure merely to ask for gca().
+    if plt.get_fignums():
+
+        current_fig = plt.gcf()
+
+        if len(current_fig.axes) > 0:
+            current_ax = plt.gca()
+
+            # A subplot created by plt.subplot(), plt.subplots(),
+            # or fig.add_subplot() has a SubplotSpec.
+            if hasattr(current_ax, "get_subplotspec"):
+                try:
+                    current_ax.get_subplotspec()
+                    parent_ax = current_ax
+                    embedded = True
+                except (AttributeError, ValueError):
+                    parent_ax = None
+                    embedded = False
+
+    # =========================================================
+    # SINGLE IMAGE [W,H]
+    # =========================================================
+
+    if B == 1 and C == 1:
+
+        # -----------------------------------------------------
+        # Existing subplot
+        # -----------------------------------------------------
+
+        if embedded:
+
+            fig = parent_ax.figure
+            ax = parent_ax
+
+            ax.imshow(
+                tensor[0, 0],
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="equal",
+                **kwargs
+            )
+
+            ax.axis("off")
+
+            if colorbar:
+                fig.colorbar(ax.images[0], ax=ax)
+
+            return fig, [ax]
+
+        # -----------------------------------------------------
+        # Standalone
+        # -----------------------------------------------------
+
+        if figsize is None:
+            figsize = (5, 5)
+
+        fig, ax = plt.subplots(
+            1,
+            1,
+            figsize=figsize
+        )
+
+        ax.imshow(
+            tensor[0, 0],
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            aspect="equal",
+            **kwargs
+        )
+
+        ax.axis("off")
+
+        if colorbar:
+            fig.colorbar(ax.images[0], ax=ax)
+
+        plt.tight_layout()
+
+        return fig, [ax]
+
+    # =========================================================
+    # SINGLE GROUP [C,W,H]
+    # =========================================================
+
     if B == 1:
 
         ncols = divisor(C)
         nrows = math.ceil(C / ncols)
 
+        # -----------------------------------------------------
+        # Existing subplot
+        #
+        # The current subplot becomes the parent/container.
+        # The actual image axes are created inside its
+        # SubplotSpec.
+        # -----------------------------------------------------
+
+        if embedded:
+
+            fig = parent_ax.figure
+
+            # Hide the container axis. It is only a parent.
+            parent_ax.axis("off")
+
+            parent_spec = parent_ax.get_subplotspec()
+
+            inner = parent_spec.subgridspec(
+                nrows,
+                ncols,
+                wspace=0.05,
+                hspace=0.05
+            )
+
+            axes = []
+
+            for c in range(C):
+
+                ax = fig.add_subplot(
+                    inner[c // ncols, c % ncols]
+                )
+
+                ax.imshow(
+                    tensor[0, c],
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="equal",
+                    **kwargs
+                )
+
+                ax.axis("off")
+
+                axes.append(ax)
+
+                if colorbar:
+                    fig.colorbar(
+                        ax.images[0],
+                        ax=ax
+                    )
+
+            # Remove unused slots
+            for i in range(C, nrows * ncols):
+
+                ax = fig.add_subplot(
+                    inner[i // ncols, i % ncols]
+                )
+
+                ax.axis("off")
+
+            return fig, axes
+
+        # -----------------------------------------------------
+        # Standalone
+        # -----------------------------------------------------
+
         if figsize is None:
-            figsize = (2*ncols, 2*nrows)
+            figsize = (
+                4 * ncols,
+                4 * nrows
+            )
 
         fig = plt.figure(figsize=figsize)
 
@@ -107,10 +406,12 @@ def imshow(
 
         for c in range(C):
 
-            ax = fig.add_subplot(gs[c//ncols, c%ncols])
+            ax = fig.add_subplot(
+                gs[c // ncols, c % ncols]
+            )
 
             ax.imshow(
-                tensor[0,c],
+                tensor[0, c],
                 cmap=cmap,
                 vmin=vmin,
                 vmax=vmax,
@@ -119,31 +420,143 @@ def imshow(
             )
 
             ax.axis("off")
+
             axes.append(ax)
 
             if colorbar:
-                fig.colorbar(ax.images[0], ax=ax)
+                fig.colorbar(
+                    ax.images[0],
+                    ax=ax
+                )
 
         # Remove unused axes
-        for i in range(C, nrows*ncols):
-            ax = fig.add_subplot(gs[i//ncols, i%ncols])
+        for i in range(C, nrows * ncols):
+
+            ax = fig.add_subplot(
+                gs[i // ncols, i % ncols]
+            )
+
             ax.axis("off")
 
         plt.tight_layout()
 
         return fig, axes
 
+    # =========================================================
+    # MULTIPLE GROUPS [BCWH]
+    # =========================================================
 
-    # -------------------------
-    # Multiple groups [BCWH]
-    # -------------------------
-
-    bcols = ncols = divisor(B)
+    bcols = divisor(B)
     brows = math.ceil(B / bcols)
 
-    ncols = ncols = divisor(C)
+    ncols = divisor(C)
     nrows = math.ceil(C / ncols)
 
+    # =========================================================
+    # Existing subplot
+    # =========================================================
+
+    if embedded:
+
+        fig = parent_ax.figure
+
+        # The original subplot is only the container.
+        parent_ax.axis("off")
+
+        parent_spec = parent_ax.get_subplotspec()
+
+        outer = parent_spec.subgridspec(
+            brows,
+            bcols,
+            wspace=0.25,
+            hspace=0.25
+        )
+
+        axes = []
+
+        for b in range(B):
+
+            inner = outer[
+                b // bcols,
+                b % bcols
+            ].subgridspec(
+                nrows,
+                ncols,
+                wspace=0.05,
+                hspace=0.05
+            )
+
+            group_axes = []
+
+            for c in range(C):
+
+                ax = fig.add_subplot(
+                    inner[c // ncols, c % ncols]
+                )
+
+                ax.imshow(
+                    tensor[b, c],
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="equal",
+                    **kwargs
+                )
+
+                ax.axis("off")
+
+                group_axes.append(ax)
+                axes.append(ax)
+
+                if colorbar:
+                    fig.colorbar(
+                        ax.images[0],
+                        ax=ax
+                    )
+
+            # Remove empty slots
+            for i in range(C, nrows * ncols):
+
+                ax = fig.add_subplot(
+                    inner[i // ncols, i % ncols]
+                )
+
+                ax.axis("off")
+
+            # -------------------------------------------------
+            # Draw group rectangle
+            # -------------------------------------------------
+
+            if group_boxes:
+
+                fig.canvas.draw()
+
+                positions = [
+                    ax.get_position()
+                    for ax in group_axes
+                ]
+
+                x0 = min(p.x0 for p in positions)
+                y0 = min(p.y0 for p in positions)
+                x1 = max(p.x1 for p in positions)
+                y1 = max(p.y1 for p in positions)
+
+                rect = Rectangle(
+                    (x0, y0),
+                    x1 - x0,
+                    y1 - y0,
+                    transform=fig.transFigure,
+                    fill=False,
+                    linewidth=2
+                )
+
+                fig.patches.append(rect)
+
+        return fig, axes
+
+    # =========================================================
+    # Standalone [BCWH]
+    # =========================================================
 
     if figsize is None:
         figsize = (
@@ -151,9 +564,7 @@ def imshow(
             brows * nrows * 2
         )
 
-
     fig = plt.figure(figsize=figsize)
-
 
     outer = fig.add_gridspec(
         brows,
@@ -166,7 +577,10 @@ def imshow(
 
     for b in range(B):
 
-        inner = outer[b//bcols, b%bcols].subgridspec(
+        inner = outer[
+            b // bcols,
+            b % bcols
+        ].subgridspec(
             nrows,
             ncols,
             wspace=0.05,
@@ -178,11 +592,11 @@ def imshow(
         for c in range(C):
 
             ax = fig.add_subplot(
-                inner[c//ncols, c%ncols]
+                inner[c // ncols, c % ncols]
             )
 
             ax.imshow(
-                tensor[b,c],
+                tensor[b, c],
                 cmap=cmap,
                 vmin=vmin,
                 vmax=vmax,
@@ -196,18 +610,24 @@ def imshow(
             axes.append(ax)
 
             if colorbar:
-                fig.colorbar(ax.images[0], ax=ax)
-
+                fig.colorbar(
+                    ax.images[0],
+                    ax=ax
+                )
 
         # Remove empty slots
-        for i in range(C, nrows*ncols):
+        for i in range(C, nrows * ncols):
+
             ax = fig.add_subplot(
-                inner[i//ncols, i%ncols]
+                inner[i // ncols, i % ncols]
             )
+
             ax.axis("off")
 
-
+        # -----------------------------------------------------
         # Draw group rectangle
+        # -----------------------------------------------------
+
         if group_boxes:
 
             fig.canvas.draw()
@@ -223,9 +643,9 @@ def imshow(
             y1 = max(p.y1 for p in positions)
 
             rect = Rectangle(
-                (x0,y0),
-                x1-x0,
-                y1-y0,
+                (x0, y0),
+                x1 - x0,
+                y1 - y0,
                 transform=fig.transFigure,
                 fill=False,
                 linewidth=2
@@ -237,6 +657,89 @@ def imshow(
 
     return fig, axes
 
+
+def imshow_multiple(
+    tensors,
+    fig=None,
+    axes=None,
+    figsize=None,
+    return_images=False,
+    titles=None,
+    **kwargs
+):
+    tensors = list(tensors)
+    N = len(tensors)
+
+    # =========================================================
+    # UPDATE
+    # =========================================================
+
+    if fig is not None and axes is not None:
+
+        if len(axes) != N:
+            raise ValueError(
+                f"Received {N} tensors but {len(axes)} "
+                "existing visualizations."
+            )
+
+        for tensor, tensor_axes in zip(tensors, axes):
+
+            imshow(
+                tensor,
+                fig=fig,
+                axes=tensor_axes,
+                **kwargs
+            )
+
+        if return_images:
+            images = [
+                ax.images[0]
+                for tensor_axes in axes
+                for ax in tensor_axes
+            ]
+
+            return fig, axes, images
+
+        return fig, axes
+
+    # =========================================================
+    # CREATE
+    # =========================================================
+
+    if figsize is None:
+        figsize = (5 * N, 5)
+
+    fig = plt.figure(figsize=figsize)
+
+    axes = []
+
+    for i, tensor in enumerate(tensors):
+
+        plt.subplot(1, N, i + 1)
+        if titles is not None:
+            plt.title(titles[i])
+            
+        _, tensor_axes = imshow(
+            tensor,
+            **kwargs
+        )
+
+        axes.append(tensor_axes)
+
+        
+
+    if return_images:
+        images = [
+            ax.images[0]
+            for tensor_axes in axes
+            for ax in tensor_axes
+        ]
+
+        return fig, axes, images
+
+    plt.tight_layout()
+
+    return fig, axes
 
 def get_activations(model, x):
     """

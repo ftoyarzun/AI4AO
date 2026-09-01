@@ -214,7 +214,7 @@ class WFS(nn.Module):
         self.frame_no_noise = torch.abs(psi_zwfs) ** 2
         for i in range(self.frame_no_noise.shape[1]):
             self.frame_no_noise[:, i] = torch.roll(
-                self.frame_no_noise[:, i], shifts=-self.pupil_shifts[i].item(), dims=-2
+                self.frame_no_noise[:, i], shifts=self.pupil_shifts[i].item(), dims=-2
             )  # up
             # self.frame_no_noise[:, 1] = torch.roll(
             #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
@@ -292,19 +292,29 @@ class WFS(nn.Module):
         else:
             self.psf_with_noise = self.psf_no_noise
 
-    def GetPSF(self, phase):
+    def GetPSF(self, phase, pupil = None, sampling = None, fov = None):
         """
         Computes the Point Spread Function (PSF) for a given phase aberration.
 
         Args:
             phase (complex torch tensor): Input phase aberration
+            fov (float, optional): Output field of view, in lambda/D. The frame is
+                center-cropped to fov * sampling pixels. If None, the full frame
+                is returned.
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
-        pad = int(self.Nres * (self.sampling - 1)) // 2
 
+        if sampling is None:
+            sampling = self.sampling
+
+        if pupil is None:
+            pupil = self.pupil.unsqueeze(0)
+
+        pad = int(np.round(self.Nres * (sampling - 1)) // 2)
         uin = (
             self.pupil.unsqueeze(0)
+            * pupil
             * torch.exp(1j * phase)
             / torch.sqrt(self.pupil.sum())
         )
@@ -313,9 +323,18 @@ class WFS(nn.Module):
         ufocal = torch.fft.fft2(
             torch.fft.fftshift(uin_padded, [-2, -1])
         )  # Pad the pupil
-        return (
-            torch.abs(torch.fft.fftshift(ufocal)) ** 2
+        psf = (
+            torch.abs(torch.fft.fftshift(ufocal, [-2, -1])) ** 2
         )  # Propagation of the field to the focal plane
+
+        if fov is None:
+            return psf
+
+        fov_pix = int(np.round(fov * sampling))
+        Ny, Nx = psf.shape[-2], psf.shape[-1]
+        y0 = (Ny - fov_pix) // 2
+        x0 = (Nx - fov_pix) // 2
+        return psf[..., y0 : y0 + fov_pix, x0 : x0 + fov_pix]
 
     def SetMask(self, phaseMask=None, transmisionMask=None):
         """
@@ -474,3 +493,14 @@ class WFS(nn.Module):
 
     def SaveCalibration(self, file_path):
         torch.save({"model": self.state_dict()}, file_path)
+
+    def train(self, mode=True):
+        # Let PyTorch handle the normal train/eval behavior
+        super().train(mode)
+
+        if not mode:
+            self.requires_grad_(False)
+            with torch.no_grad():
+                self.BuildMask()
+                self.BuildReferenceIntensity()
+        return self
