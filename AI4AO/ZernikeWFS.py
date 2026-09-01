@@ -38,7 +38,7 @@ class ZernikeWFS(WFS):
     
     def BuildZernikeMaskFFT(self):
 
-        coords = torch.stack([self.x_mask, self.y_mask], dim=0)
+        coords = torch.stack([-self.x_mask, -self.y_mask], dim=0)
         phaseMask = torch.einsum('ck,kwh->cwh', self.positions, coords).unsqueeze(0)
 
         frame_center = torch.ones(self.number_of_masks, 2, device=self.device) * self.Npix / 2
@@ -67,7 +67,7 @@ class ZernikeWFS(WFS):
         self.MakeMTFMatrices(self.diameters[0])
 
         frame_center = np.ones((self.number_of_masks, 2)) * self.Npix // 2
-        pupil_center = (frame_center + self.positions.detach().cpu().numpy() / 2 / np.pi * self.Npix)
+        pupil_center = (frame_center - self.positions.detach().cpu().numpy() / 2 / np.pi * self.Npix)
         self.pupil_centers = np.round(pupil_center).astype(np.int32)
 
         self.pupil_shifts = (self.pupil_centers - frame_center)[:, 0].astype(np.int32)

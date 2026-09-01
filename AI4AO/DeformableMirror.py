@@ -43,6 +43,10 @@ class DeformableMirror(nn.Module):
         else:
             self.ApplyMisreg(misreg)
 
+        x = torch.arange(0, self.Nres, device = self.device) - self.Nres/2 + 0.5
+        x,y = torch.meshgrid(x,x, indexing = 'xy')
+        self.pupil = (x ** 2 + y ** 2) < (self.Nres/2)**2
+
         self.MakeActGrid()
         self.MakeZonalModes()
 
@@ -133,6 +137,9 @@ class DeformableMirror(nn.Module):
         r2 = (a*X**2 + 2*b*X*Y + c*Y**2)
 
         self.IF = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
+
+        self.IF *= self.pupil
+        self.IF[:, self.pupil] -= self.IF[:, self.pupil].mean(dim=(-1), keepdim=True)
 
 
     def GetMisreg(self):
@@ -244,6 +251,18 @@ class DeformableMirror(nn.Module):
         "config": DMDict,
         "misreg": misreg
             }, file_path)
+
+
+    def train(self, mode=True):
+        # Let PyTorch handle the normal train/eval behavior
+        super().train(mode)
+
+        if not mode:
+            self.requires_grad_(False)
+            with torch.no_grad():
+                self.MakeActGrid()
+                self.MakeZonalModes()
+        return self
 
     #### These properties are set such that when optimizing these values they all share the same order of magnitude.
     # ---------- Rotation ----------
