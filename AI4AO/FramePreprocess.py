@@ -1,6 +1,5 @@
 import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
-import numpy as np
 import torch.nn.functional as F # type: ignore[import]
 
 
@@ -16,56 +15,32 @@ class FramePreprocess:
         self.Nres = wfsParams["Nres"]
         self.Centering_noise = wfsParams["Center_noise"] * wfsParams["Bin_factor"]
         self.Extract_pupils_pad = wfsParams["Extract_pupils_pad"] * wfsParams["Bin_factor"]
+        self.Pupil_size_noise = wfsParams["Pupil_size_noise"]
         self.wfs = wfs
 
         self.Ncrop = self.Nres + self.Extract_pupils_pad
-
-        self.yy, self.xx = np.meshgrid(
-            np.arange(self.Ncrop),
-            np.arange(self.Ncrop),
-            indexing="ij"
-        )
-
-        self.yy = self.yy[None, None]
-        self.xx = self.xx[None, None]
+        self.Nout = self.Ncrop // self.bin_factor
+        self.crop_center_offset = self.Ncrop // 2 - (self.Ncrop - 1) / 2
 
     def ProcessReference(self, reference_frame):
 
         frame = torch.clone(reference_frame)
         frame = frame.unsqueeze(0)
 
-        frame = self.GetPupils(frame, add_pupil_noise = False)
-
-        if self.bin_factor != 1:
-            frame = self.BinImage(frame) * self.bin_factor ** 2
+        frame = self.GetTrainingPupils(frame, add_position_noise=False, add_size_noise=False)
+        frame = frame * self.bin_factor ** 2
 
         self.normalization = torch.std(frame, dim=(-2, -1), keepdim=True)
         self.reference = frame
-
-    def GetPupilNormalizationFromDataset(self, dataset, wfs, n_iter = 1000):
-
-        for i in range(n_iter):
-            batch = dataset[0]
-            phaseGT = batch["phase"]
-            wfs_frames = wfs(phaseGT)
-            if self.bin_factor != 1:
-                wfs_frames = self.BinImage(wfs_frames) * self.bin_factor ** 2
-            pupils = self.GetPupils(wfs_frames)
-            if i == 0:
-                normalization = torch.std(pupils, dim=(-2, -1), keepdim=True)
-            else:
-                normalization += torch.std(pupils, dim=(-2, -1), keepdim=True)
-
-        self.normalization = normalization / n_iter
 
     def ProcessFrame(self, input_frame, add_pupil_noise = True):
 
         frame = torch.clone(input_frame)
 
-        frame = self.GetPupils(frame, add_pupil_noise)
-
-        if self.bin_factor != 1:
-            frame = self.BinImage(frame) * self.bin_factor ** 2
+        frame = self.GetTrainingPupils(
+            frame, add_position_noise=add_pupil_noise, add_size_noise=add_pupil_noise
+        )
+        frame = frame * self.bin_factor ** 2
 
         if self.Substract_reference:
             frame = frame - self.reference
@@ -76,32 +51,43 @@ class FramePreprocess:
 
         return frame
 
-    def GetPupils(self, images, add_pupil_noise = False):
-
+    def GetTrainingPupils(self, images, add_position_noise = True, add_size_noise = True):
+        # Vectorized affine_grid/grid_sample crop+resize: one call for every (batch, pupil) pair, no loop.
         B = images.shape[0]
-        batch = np.arange(B)[:, None, None, None]
+        C = self.wfs.pupil_centers.shape[0]
+        W_in = images.shape[-1]
 
-        centers = np.copy(self.wfs.pupil_centers)[None,...]
-        pupil_noise = np.random.randint(-self.Centering_noise, self.Centering_noise,(B,*centers.shape[-2:]))
+        centers = torch.as_tensor(self.wfs.pupil_centers, device=self.device, dtype=torch.float32)
+        centers = centers[None].expand(B, C, 2).clone()  # (B,C,2) as [y,x]
 
-        if add_pupil_noise:
-            centers = centers + pupil_noise
+        if add_position_noise:
+            pos_noise = (torch.rand(B, C, 2, device=self.device) * 2 - 1) * self.Centering_noise
+            centers = centers + pos_noise
+
+        if add_size_noise:
+            jitter = torch.empty(B, C, device=self.device).uniform_(
+                1 - self.Pupil_size_noise, 1 + self.Pupil_size_noise
+            )
         else:
-            centers = centers + pupil_noise * 0
-        
+            jitter = torch.ones(B, C, device=self.device)
 
-        yy = self.yy + centers[:,:, 0][..., None, None] - self.Ncrop//2   # [B,C,N,N]
-        xx = self.xx + centers[:,:, 1][..., None, None] - self.Ncrop//2   # [B,C,N,N]
+        centers = centers - self.crop_center_offset
+        crop_size = self.Ncrop * jitter  # (B,C) crop window size in raw (unbinned) pixels
 
-        patches = images[batch, yy, xx]
-        return patches
+        scale = (crop_size / W_in).reshape(B * C)
+        ty = ((2 * centers[..., 0] + 1 - W_in) / W_in).reshape(B * C)
+        tx = ((2 * centers[..., 1] + 1 - W_in) / W_in).reshape(B * C)
 
-    
-    def BinImage(self, Image, bin_factor = None):
-        
-        if bin_factor is None: 
-            bin_factor = bin_factor = self.bin_factor
+        theta = torch.zeros(B * C, 2, 3, device=self.device, dtype=torch.float32)
+        theta[:, 0, 0] = scale
+        theta[:, 1, 1] = scale
+        theta[:, 0, 2] = tx
+        theta[:, 1, 2] = ty
 
-        # output_size = int(Image.shape[-1] / bin_factor)
-        out = F.interpolate(Image, scale_factor = 1 / bin_factor)
-        return out
+        images_expanded = images.unsqueeze(1).expand(B, C, *images.shape[-2:])
+        images_expanded = images_expanded.reshape(B * C, 1, *images.shape[-2:])
+
+        grid = F.affine_grid(theta, size=(B * C, 1, self.Nout, self.Nout), align_corners=False)
+        patches = F.grid_sample(images_expanded, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+
+        return patches.reshape(B, C, self.Nout, self.Nout)
