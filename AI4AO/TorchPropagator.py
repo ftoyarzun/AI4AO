@@ -81,7 +81,7 @@ class WFS(nn.Module):
         self.MakePupil()
 
     def MakePupil(self):
-        pupil_upscale = 6
+        pupil_upscale = 1
         x = torch.linspace(-self.Nres / 2, self.Nres / 2, self.Nres * pupil_upscale, device = self.device, dtype=torch.float32)
         [x, y] = torch.meshgrid(x, x)
         outter_pupil = (x**2 + y**2) <= ((self.Nres + 1) / 2) ** 2

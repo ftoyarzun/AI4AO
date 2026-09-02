@@ -13,7 +13,7 @@ def imshow(
     max_batch_number=None,
     max_channel_number=None,
     same_scale=False,
-    group_boxes=True,
+    group_boxes=False,
     cmap="viridis",
     figsize=None,
     colorbar=False,
