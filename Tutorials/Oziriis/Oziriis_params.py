@@ -15,20 +15,22 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
     {
-        "Nres":40,
-        "sampling":120/40,
-        "D": 1.5,
+        "Nres":90,
+        "sampling":250/90,
+        "D": 1.52,
         "centralObstruction": 0.3,
         "useNoise": True,
-        "Modulation": 0,
-        "Wavelength": 635e-9,
+        "Wavelength": 1550e-9,
         "Nphotons": [4.5, 6],  # Log range of number of photons in measurement
         "RON": [1, 3],  # Read-out noise in photons per pixel per frame
         "Substract_Reference": True,  # Substract or not the reference intensity frame
-        "Extract_pupils_pad": 6,
-        "Center_noise": 2,
-        "Pupil_size_noise": 0.05,  # +/-5% pupil size jitter, e.g. 38-42 px for a 40 px pupil
-        "Bin_factor": 1
+        "Extract_pupils_pad": 2,
+        "Center_noise": 1,
+        "Pupil_size_noise": 0.02,  # fraction of nominal pupil size
+        "Bin_factor": 1,
+        "MaskType": "DoubleZernike",
+        "Use_MTF": False,
+        "MTF_upscale": 10,
     }
 )
 
@@ -36,7 +38,7 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {
-        "r0": [0.02, 0.1],  # Fired parameter range (m)
+        "r0": [0.05, 0.2],  # Fired parameter range (m)
         "L0": [20, 30.0000],  # Outter scale range (m)
         "Nphases": 16,  # Number of phases in the batch
         "Layers": [5, 10],  # Number of layers in phase range
@@ -62,9 +64,9 @@ LoopParams = dict(
 DMParams = dict(
     {
         "Nactuator": 11,
-        "Nmodes": 97,
+        "Nmodes": 50,
         "moffatParam": 2,
-        "signedAmplitude": 1e-5,
+        "signedAmplitude": -5e-6,
         "MechCoupling": 0.36,
         "FlipLeftRight": False,
         "FlipTopBottom": False

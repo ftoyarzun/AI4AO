@@ -15,9 +15,9 @@ import numpy as np
 ## WFS and Telescope parameters
 WFSParams = dict(
     {
-        "Nres":40,
-        "sampling":120/40,
-        "D": 1.5,
+        "Nres":34,
+        "sampling":120/34,
+        "D": 0.6,
         "centralObstruction": 0.3,
         "useNoise": True,
         "Modulation": 0,
@@ -27,7 +27,7 @@ WFSParams = dict(
         "Substract_Reference": True,  # Substract or not the reference intensity frame
         "Extract_pupils_pad": 6,
         "Center_noise": 2,
-        "Pupil_size_noise": 0.05,  # +/-5% pupil size jitter, e.g. 38-42 px for a 40 px pupil
+        "Pupil_size_noise": 0.05,  # fraction of nominal pupil size
         "Bin_factor": 1
     }
 )
@@ -62,9 +62,9 @@ LoopParams = dict(
 DMParams = dict(
     {
         "Nactuator": 11,
-        "Nmodes": 97,
+        "Nmodes": 50,
         "moffatParam": 2,
-        "signedAmplitude": 1e-5,
+        "signedAmplitude": -5e-6,
         "MechCoupling": 0.36,
         "FlipLeftRight": False,
         "FlipTopBottom": False
