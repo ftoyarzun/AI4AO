@@ -18,7 +18,7 @@ class ZernikeWFS(WFS):
             self.positions = nn.Parameter(torch.tensor([[-torch.pi * 0.5, 0], [torch.pi * 0.5, 0.0]], device=self.device, dtype=torch.float32))
             self.number_of_masks = 2
 
-        if self.maskType == "Zernike":
+        if self.maskType.lower() in ["zernike", "zwfs"]:
             self.depths = nn.Parameter(torch.tensor([[torch.pi * 0.5]], device=self.device, dtype=torch.float32))
             self.diameters = nn.Parameter(torch.tensor([[2.]], device=self.device, dtype=torch.float32))
             self.positions = nn.Parameter(torch.tensor([[0.0, 0.0]], device=self.device, dtype=torch.float32))

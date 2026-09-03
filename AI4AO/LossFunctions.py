@@ -188,7 +188,7 @@ class LogResidualVarianceLoss(AOLoss):
 
     def __init__(self, pupil, device="cuda"):
         super().__init__()
-        self.pupil = torch.clone(pupil).bool().cpu()
+        self.pupil = torch.clone(pupil).bool()
 
     def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
         """

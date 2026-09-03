@@ -247,8 +247,7 @@ class Trainer:
         torch.save(checkpoint, path)
 
     def load_checkpoint(self, path, load_optimizer = True):
-        """Load the reconstructor (+ optimizer) state from path. Returns the full checkpoint dict
-        (including any extra_state saved by save_checkpoint) or None if no checkpoint exists."""
+        """Load the reconstructor (+ optimizer) state from path. """
         if not os.path.exists(path):
             print(f"No checkpoint found at {path}, starting from scratch")
             return None

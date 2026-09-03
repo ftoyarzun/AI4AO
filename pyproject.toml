@@ -23,3 +23,12 @@ dependencies = [
     "tqdm",
     "mmengine"
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exercises Trainer.train/evaluate or TwinCalibrator fit loops end-to-end; opt out with -m 'not slow'",
+]
