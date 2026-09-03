@@ -35,6 +35,12 @@ class Trainer:
         self.z_inv = torch.linalg.pinv(dm(M2C.T).flatten(start_dim = -2))
 
     def train(self, training_steps = 1000, closed_loop_iterations = 1):
+
+        if self.dm.training:
+            self.dm.eval()
+        if self.wfs.training:
+            self.wfs.eval()
+
         loss_tracker = torch.zeros(training_steps // closed_loop_iterations, device=self.device)
         loss_tracker_ideal = torch.zeros(training_steps // closed_loop_iterations, device=self.device)
 
@@ -125,7 +131,8 @@ class Trainer:
             loss_tracker_ideal[u] = ideal_loss.detach()
             
             if u % (300 // closed_loop_iterations) == 1:
-                progressBar.set_postfix({'Loss': float(loss_tracker[u-100 // closed_loop_iterations:u].mean()), 'Loss_ideal': float(loss_tracker_ideal[u-100 // closed_loop_iterations:u].mean())})
+                lower_lim = max(0, u - 100 // closed_loop_iterations)
+                progressBar.set_postfix({'Loss': float(loss_tracker[lower_lim:u].mean()), 'Loss_ideal': float(loss_tracker_ideal[lower_lim:u].mean())})
 
         return loss_tracker, loss_tracker_ideal
 
@@ -133,6 +140,12 @@ class Trainer:
     def evaluate(self, n_steps = 100, dataset = None, gain = None, leak = None, psf_sampling = 4, psf_fov = 20):
         """Run a closed-loop rollout with no backprop and no pupil noise, for inspection/plotting."""
         dataset = dataset if dataset is not None else self.dataset
+
+        if self.dm.training:
+            self.dm.eval()
+        if self.wfs.training:
+            self.wfs.eval()
+
         M2C_T = self.M2C.T
         Nmodes = self.z_inv.shape[-1]
 
@@ -173,7 +186,7 @@ class Trainer:
 
             z_buffer = torch.clone(z_output)
 
-            z_estimated = z_estimated * 0.999 + 0.3 * z_buffer
+            z_estimated = z_estimated * leak + gain * z_buffer
 
             phase_reconstructed = self.dm(z_estimated @ M2C_T)
 

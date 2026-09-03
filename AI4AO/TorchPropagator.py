@@ -435,7 +435,7 @@ class WFS(nn.Module):
         """
         tempUseNoise = self.useNoise
         self.useNoise = False
-        delta = 1e-5
+        delta = 1e-2
 
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
