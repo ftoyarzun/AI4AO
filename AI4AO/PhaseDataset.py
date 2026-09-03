@@ -8,6 +8,7 @@ Created on Thu Jan  2 14:21:44 2025
 import torch # type: ignore[import]
 from torch.utils.data import Dataset # type: ignore[import]
 import numpy as np
+import math
 
 
 
@@ -66,12 +67,8 @@ def Zernike(pupil, j = 100):
         Returns:
             ndarray: The Zernike radial function
         """
-        try:
-            factorial = np.math.factorial
-        except:
-            import scipy
 
-            factorial = scipy.special.factorial
+        factorial = math.factorial
 
         R = torch.zeros_like(r)
         # Can cast the below to "int", n,m are always *both* either even or odd
@@ -301,8 +298,6 @@ class PhaseDataset(Dataset):
     - Randomized atmospheric parameters such as Fried parameter (r0), outer scale (L0), and wind.
     - Configurable parameters from wavefront sensor (WFS), atmospheric, and control loop settings.
     - PSD-based generation of phase maps using Fourier domain techniques.
-    - Automatic generation and caching of static and dynamic test datasets.
-    - Computation of mode coefficients for phase map reconstruction and analysis.
 
     Attributes:
         D (float): Aperture diameter.
@@ -366,6 +361,8 @@ class PhaseDataset(Dataset):
         self.translationPhase = 1.
         self.movingCount = 0
 
+        self.height_exp_dist_lambda = 0.0003
+
         self.generateClosedLoop = False
         
         self.testDatasetPath = "test_dataset.pth"
@@ -394,63 +391,6 @@ class PhaseDataset(Dataset):
             self.pupilASP = (x**2 + y**2) <= ((self.Nres*upSize+1)/2.2)**2
             self.masterPropagatorPhase = torch.fft.fftshift(torch.exp(-1j * torch.pi * self.wavelength * self.fsqr_moving), dim = (-2, -1))
 
-    # ## Compute the first Nmodes modes and the inverse to obtain the perfect reconstructor
-
-        # try:
-        #     base_dir = Path(__file__).resolve().parent
-        # except NameError:
-        #     # Running in a notebook
-        #     base_dir = Path.cwd()
-
-        # data_path = base_dir / 'dm_models'
-
-        # if WFSParams['ModalBasis'] == "Zernike":
-        #     [self.z, self.z_FullRes] = Zernike(self.pupil, self.Nmodes)
-            
-        # elif WFSParams['ModalBasis'] == "Papyrus_KL":
-        #     M2C = torch.from_numpy(loadmat(data_path / r'M2C_KL_OOPAO_synthetic_IF.mat')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nmodes]
-        #     papyrus_dm = torch.from_numpy(np.load(data_path / r"papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-        #     papyrus_modal_dm = (papyrus_dm @ M2C).view(80,80,-1)[1:-1, 1:-1, :]
-
-        #     self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
-        #     self.z = self.z_FullRes[self.pupil.bool()]
-            
-        # elif WFSParams['ModalBasis'] == "Papyrus_Zernike":
-        #     Z2C = torch.from_numpy(np.load("Z2C.npy").astype(np.float32)).to(device=device).T[:,:self.Nmodes]
-        #     papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-        #     papyrus_modal_dm = (papyrus_dm @ Z2C).view(80,80,-1)[1:-1, 1:-1, :]
-
-            
-        #     self.z_FullRes = papyrus_modal_dm * self.pupil.unsqueeze(-1)
-        #     self.z = self.z_FullRes[self.pupil.bool()]
-            
-        # elif WFSParams['ModalBasis'] == "Papyrus_Zonal":
-        #     # papyrus_dm = torch.from_numpy(np.load("papyrus_dm.npy").astype(np.float32)).to(device=device) * 1e7
-        #     papyrus_dm = papyrus_dm.view(80,80,-1)[1:-1, 1:-1, :]
-
-        #     self.z_FullRes = papyrus_dm * self.pupil.unsqueeze(-1)
-        #     self.z = self.z_FullRes[self.pupil.bool()]
-        
-        # elif WFSParams['ModalBasis'] == "Oziriis_KL":
-        #     oziriis_modal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_KL_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
-        #     oziriis_modal_dm = oziriis_modal_dm.view(-1,90,90).permute(1,2,0)
-
-        #     self.z_FullRes = oziriis_modal_dm * self.pupil.unsqueeze(-1)
-        #     self.z = self.z_FullRes[self.pupil.bool()]
-
-        # elif WFSParams['ModalBasis'] == "Oziriis_Zonal":
-        #     oziriis_zonal_dm = torch.from_numpy(np.load(data_path / r'OZIRIIS_Zonal_90x90.npy')).to(device = device, dtype = torch.float32)[:self.Nmodes]
-        #     oziriis_zonal_dm = oziriis_zonal_dm.view(-1,90,90).permute(1,2,0)
-
-        #     self.z_FullRes = oziriis_zonal_dm * self.pupil.unsqueeze(-1)
-        #     self.z = self.z_FullRes[self.pupil.bool()]
-
-        # else:
-        #     raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
-            
-        
-        # self.invZ = torch.linalg.pinv(self.z_FullRes.flatten(0,1)).to(self.device, dtype=torch.float32).transpose(0, 1)
-        
         
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device)
@@ -465,13 +405,6 @@ class PhaseDataset(Dataset):
         self.loopLeak = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         
-        
-        
-        # if not os.path.exists(self.testDatasetPath):
-        #     self.GenerateTestDataSet(10)
-            
-        # if not os.path.exists(self.movingTestDatasetPath):
-        #     self.GenerateMovingTestDataSet()
         
     def __len__(self):
         
@@ -580,7 +513,7 @@ class PhaseDataset(Dataset):
         scintillationSupport = self.pupilASP.repeat(self.Nphases, 1, 1).to(dtype=torch.complex64)
 
         for i in range(self.nLayers):
-            dist = self.layerHeights[i] - self.layerHeights[i + 1] if i < self.nLayers-1 else self.layerHeights[0]
+            dist = self.layerHeights[i] - self.layerHeights[i + 1] if i < self.nLayers-1 else self.layerHeights[-1]
             scintillationSupport = scintillationSupport * torch.exp(1j * layeredPhase[i])
             scintillationSupport = self.ASP(scintillationSupport, dist)
         
@@ -618,7 +551,7 @@ class PhaseDataset(Dataset):
         self.fractionalr0 = torch.gather(self.fractionalr0, dim=0, index=index_sorted)
         self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0)
 
-        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = 0.001) * 2e0
+        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = self.height_exp_dist_lambda)
         self.layerHeights,_ = torch.sort(self.layerHeights, dim = 0, descending = True)
         
         self.windSpeed = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)

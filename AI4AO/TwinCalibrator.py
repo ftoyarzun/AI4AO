@@ -184,8 +184,6 @@ class TwinCalibrator:
 
         optimizer = torch.optim.AdamW(param_groups, fused=True)
 
-        wfs.reference_intensity = None
-
         final_loss = None
         for u in range(n_iter):
             if offset_group_index is not None:

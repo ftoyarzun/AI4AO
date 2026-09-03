@@ -7,59 +7,22 @@ Created on Thu Apr 10 09:52:19 2025
 
 import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
-
-
-class Custom_Loss_Function(nn.Module):
-    """
-    Custom loss function that penalizes the weighted difference between predicted
-    and ground truth Zernike coefficients. The weights increase with Zernike index
-    to emphasize higher-order modes.
-
-    Args:
-        epsilon (float): Small value for numerical stability (currently unused).
-        degree (int): Power to which the error is raised (e.g., 2 for MSE).
-        Nmodes (int): Number of modes considered in the loss.
-        device (str): Device on which tensors will be allocated ('cuda' or 'cpu').
-    """
-
-    def __init__(self, epsilon=1e-2, degree=2, Nmodes=209, device="cuda"):
-        super().__init__()
-        self.epsilon = epsilon
-        self.degree = degree
-        self.Nmodes = Nmodes
-
-        self.linspace = torch.sqrt(
-            (torch.linspace(1, Nmodes, Nmodes, device=device))
-        )
-        # self.linspace = torch.linspace(1, Nmodes, Nmodes, device=device)
-
-    def forward(self, y_pred, y_true, r0):
-        """
-        Computes the custom weighted loss between predicted and true Zernike coefficients.
-
-        Args:
-            y_pred (Tensor): Predicted Zernike coefficients.
-            y_true (Tensor): Ground truth Zernike coefficients.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
-
-        Returns:
-            Tensor: Scalar loss value.
-        """
-        diff = (y_pred - y_true)[..., : self.Nmodes] * self.linspace
-        return torch.mean(torch.abs(diff) ** self.degree * r0)  # ** (5/3))
+import copy
 
 
 class Relative_Loss_Function(nn.Module):
     """
-    Custom loss function that penalizes the weighted difference between predicted
-    and ground truth Zernike coefficients. The weights increase with Zernike index
-    to emphasize higher-order modes.
+    Loss that normalizes the per-sample error between predicted and true
+    coefficients by the magnitude of the true coefficients, so that the loss
+    scale doesn't depend on the overall amplitude of y_true (e.g. residual
+    Zernike coefficients across different turbulence strengths).
 
     Args:
-        epsilon (float): Small value for numerical stability (currently unused).
-        degree (int): Power to which the error is raised (e.g., 2 for MSE).
-        Nmodes (int): Number of modes considered in the loss.
-        device (str): Device on which tensors will be allocated ('cuda' or 'cpu').
+        epsilon (float): Added to the denominator for numerical stability
+            (avoids division by ~0 when y_true is small).
+        degree (int): Power to which the error/coefficients are raised before
+            averaging (e.g. 2 for an MSE-like norm).
+        device (str): Unused; accepted for interface consistency with other losses.
     """
 
     def __init__(self, epsilon=0.005, degree=2, device="cuda"):
@@ -69,12 +32,12 @@ class Relative_Loss_Function(nn.Module):
 
     def forward(self, y_pred, y_true):
         """
-        Computes the custom weighted loss between predicted and true Zernike coefficients.
+        Computes the relative error between predicted and true coefficients,
+        averaged over all non-batch dimensions and then over the batch.
 
         Args:
-            y_pred (Tensor): Predicted Zernike coefficients.
-            y_true (Tensor): Ground truth Zernike coefficients.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
+            y_pred (Tensor): Predicted coefficients, shape (batch, ...).
+            y_true (Tensor): Ground truth coefficients, same shape as y_pred.
 
         Returns:
             Tensor: Scalar loss value.
@@ -91,103 +54,48 @@ class Relative_Loss_Function(nn.Module):
 
 class Physics_loss(nn.Module):
     """
-    Physics-based loss that penalizes the difference between the observed and
-    simulated wavefront sensor images based on reconstructed Zernike coefficients.
+    Physics-consistency loss: reprojects an input phase through a (noiseless)
+    copy of the WFS forward model and penalizes the difference between the
+    resulting simulated WFS frame and an observed WFS frame.
 
     Args:
-        z_fullRes (Tensor): Matrix used to reconstruct the full phase from Zernike coefficients.
-        phase_template (Tensor): Template phase used for reshaping during reconstruction.
-        degree (int): Power to which the error is raised.
-        device (str): Device on which computations are performed.
+        wfs (nn.Module): WFS forward model to deep-copy; noise is disabled on
+            the copy (`useNoise = False`) so the loss is deterministic.
+        degree (int): Power to which the pixel-wise error is raised.
     """
 
-    def __init__(self, z_fullRes, phase_template, degree=2, device="cuda"):
+    def __init__(self, wfs, degree=2):
         super().__init__()
-        self.z_fullRes = z_fullRes
-        self.phase_shape = phase_template.shape
+        self.wfs = copy.deepcopy(wfs)
+        self.wfs.useNoise = False
         self.degree = degree
 
-    def forward(self, WFSModule, I_WFS, y_pred, r0):
+    def forward(self, I_WFS, input_phase):
         """
-        Computes the physics-based loss between predicted and true wavefront sensor images.
+        Computes the physics-based loss between an observed WFS frame and the
+        frame simulated from input_phase through the internal WFS copy.
 
         Args:
-            WFSModule (nn.Module): Wavefront sensor forward model.
             I_WFS (Tensor): Observed WFS image.
-            y_pred (Tensor): Predicted Zernike coefficients.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
+            input_phase (Tensor): Phase to propagate through the WFS forward
+                model for comparison against I_WFS.
 
         Returns:
             Tensor: Scalar loss value.
         """
-        I_pred = self.ComputeForwardImage(WFSModule, y_pred)
+        I_pred = self.wfs(input_phase)
         return (
-            torch.mean(torch.abs(I_pred - I_WFS) ** self.degree * r0 ** (5 / 3)) * 1e6
+            torch.mean(torch.abs(I_pred - I_WFS) ** self.degree) * 1e6
         )
 
-    def ComputeForwardImage(self, WFSModule, y_pred):
-        """
-        Reconstructs the wavefront sensor image from Zernike coefficients.
-
-        Args:
-            WFSModule (nn.Module): Wavefront sensor forward model.
-            y_pred (Tensor): Predicted Zernike coefficients.
-
-        Returns:
-            Tensor: Simulated WFS image.
-        """
-        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view(
-            *self.phase_shape
-        )
-
-        return WFSModule(reconstructed_phase)
-
-
-class ResidualPhaseLoss(nn.Module):
-    """
-    Loss function based on the residual phase variance over the pupil area.
-
-    Args:
-        z_fullRes (Tensor): Matrix used to reconstruct the full phase from Zernike coefficients.
-        pupil (Tensor): Binary mask indicating the pupil region.
-        device (str): Device for computation.
-    """
-
-    def __init__(self, z_fullRes, pupil, device="cuda"):
-        super().__init__()
-        self.z_fullRes = z_fullRes
-        self.pupil = pupil
-
-    def forward(self, y_pred, phase, r0):
-        """
-        Computes the residual phase loss as the variance over the pupil region.
-
-        Args:
-            y_pred (Tensor): Predicted Zernike coefficients.
-            phase (Tensor): True wavefront phase.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
-
-        Returns:
-            Tensor: Scalar loss value.
-        """
-        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view_as(phase)
-        residual_phase = phase - reconstructed_phase
-        normalization_factor = torch.var(
-            phase[..., self.pupil.bool()], dim=-1, keepdim=True
-        )
-        return torch.mean(
-            residual_phase[..., self.pupil.bool()] ** 2 / normalization_factor
-        )
 
 
 class WFSSignalLoss(nn.Module):
     """
-    Loss function based on generating the most signal in the wfs frame.
+    Loss function that rewards generating more signal (i.e. contrast) in the
+    WFS frame, encouraging e.g. the WFS mask to spread flux across the frame.
 
-    Args:
-        z_fullRes (Tensor): Matrix used to reconstruct the full phase from Zernike coefficients.
-        pupil (Tensor): Binary mask indicating the pupil region.
-        device (str): Device for computation.
+    No constructor arguments.
     """
 
     def __init__(self):
@@ -195,10 +103,11 @@ class WFSSignalLoss(nn.Module):
 
     def forward(self, wfsFrame):
         """
-        Computes the variance of the wfsFrame as a proxy for amount of signal
+        Computes the negative mean per-pixel standard deviation across the
+        batch as a proxy for the amount of signal in the WFS frame.
 
         Args:
-            wfsFrame (Tensor): Frame fromt the wfs.
+            wfsFrame (Tensor): Batch of WFS frames, shape (batch, ...).
 
         Returns:
             Tensor: Scalar loss value.
@@ -209,12 +118,13 @@ class WFSSignalLoss(nn.Module):
 
 class LogResidualVarianceLoss(nn.Module):
     """
-    Loss function based on the residual phase variance over the pupil area.
+    Loss function based on the log-variance of the residual phase over the
+    pupil area; minimizing it drives down residual wavefront error while the
+    log keeps the gradient well-scaled across a wide range of variances.
 
     Args:
-        z_fullRes (Tensor): Matrix used to reconstruct the full phase from Zernike coefficients.
         pupil (Tensor): Binary mask indicating the pupil region.
-        device (str): Device for computation.
+        device (str): Unused; accepted for interface consistency with other losses.
     """
 
     def __init__(self, pupil, device="cuda"):
@@ -223,12 +133,11 @@ class LogResidualVarianceLoss(nn.Module):
 
     def forward(self, residual_phase):
         """
-        Computes the residual phase loss as the variance over the pupil region.
+        Computes the log of the residual phase variance over the pupil region.
 
         Args:
-            y_pred (Tensor): Predicted Zernike coefficients.
-            phase (Tensor): True wavefront phase.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
+            residual_phase (Tensor): Residual wavefront phase, shape
+                (batch, Nres, Nres).
 
         Returns:
             Tensor: Scalar loss value.
@@ -248,53 +157,3 @@ class RMSELoss(nn.Module):
 
     def forward(self, predictions, targets):
         return torch.sqrt(self.mse(predictions, targets))
-
-
-class TestLoss(nn.Module):
-    """
-    Loss function based on the residual phase variance over the pupil area.
-
-    Args:
-        z_fullRes (Tensor): Matrix used to reconstruct the full phase from Zernike coefficients.
-        pupil (Tensor): Binary mask indicating the pupil region.
-        device (str): Device for computation.
-    """
-
-    def __init__(self, z_fullRes, pupil, device="cuda"):
-        super().__init__()
-        self.z_fullRes = z_fullRes
-        self.pupil = pupil
-
-    def forward(self, y_pred, phase):
-        """
-        Computes the residual phase loss as the variance over the pupil region.
-
-        Args:
-            y_pred (Tensor): Predicted Zernike coefficients.
-            phase (Tensor): True wavefront phase.
-            r0 (Tensor): Fried parameter used for atmospheric scaling.
-
-        Returns:
-            Tensor: Scalar loss value.
-        """
-        reconstructed_phase = torch.matmul(y_pred, self.z_fullRes).view_as(phase)
-        residual_phase = phase - reconstructed_phase
-        residual_variance = torch.var(
-            residual_phase[..., self.pupil.bool()], dim=-1, keepdim=True
-        )
-        residual_variance = torch.sqrt(residual_variance)
-        return torch.mean((residual_variance))
-
-
-class EstimatedSignalVarianceLoss(nn.Module):
-    """
-    Loss function based on the residual phase variance over the pupil area.
-
-    """
-
-    def __init__(self, alpha=1e-3):
-        super().__init__()
-        self.alpha = alpha
-
-    def forward(self, y_pred):
-        return self.alpha / y_pred.var()

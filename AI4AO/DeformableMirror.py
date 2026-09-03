@@ -13,7 +13,6 @@ class DeformableMirror(nn.Module):
         self.wavelength =   WFSDict["Wavelength"]
         self.wavenumber =   2 * torch.pi / self.wavelength
         
-        self.totalAct = 241
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
 
         self.Nact =    DMDict["Nactuator"]
