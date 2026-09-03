@@ -14,6 +14,7 @@ class PyramidWFS(WFS):
         self.rooftop = nn.Parameter(torch.tensor(0, device=self.device, dtype=torch.float32))
 
         self.modulation = ParamsDict["Modulation"]
+        self.maxModulationSteps = 32
 
         self.BuildMask()
 
@@ -23,7 +24,7 @@ class PyramidWFS(WFS):
         if self.modulation == 0:
             F = self.PyramidMask()
         else:
-            nSteps = min(32, max(round(6.28 * self.modulation / 4) * 4, 8))
+            nSteps = min(self.maxModulationSteps, max(round(6.28 * self.modulation / 4) * 4, 8))
             steps = torch.linspace(0,2*torch.pi,nSteps, device=self.device, dtype=torch.float32)
             x = self.modulation * self.sampling * torch.cos(steps)
             y = self.modulation * self.sampling * torch.sin(steps)
