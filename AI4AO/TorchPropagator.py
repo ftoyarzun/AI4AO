@@ -91,37 +91,10 @@ class WFS(nn.Module):
         self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
 
     def FFTPropagator(self, uin_padded):
-        if self.modulation != 0:
-            nSteps = max(round(6.28 * self.modulation / 4) * 4, 8)
-
-            for i in range(nSteps):
-                mod_phase = 2 * torch.pi * i / nSteps
-                scale = 2 * torch.pi * self.modulation / self.Npix * self.sampling
-                polar_term = self.x_mask * np.cos(mod_phase) + self.y_mask * np.sin(
-                    mod_phase
-                )
-                tip_tilt_mirror_phase = torch.exp(1j * scale * polar_term)
-                ufocal_step = fft2(
-                    fftshift(uin_padded * tip_tilt_mirror_phase, [-2, -1])
-                )
-                upupil_step = ifft2(ufocal_step * fftshift(self.mask, [-2, -1]))
-                self.frame_no_noise = (
-                    self.frame_no_noise
-                    + torch.abs(fftshift(upupil_step, [-2, -1])) ** 2
-                )
-                self.psf_no_noise = (
-                    self.psf_no_noise + torch.abs(fftshift(ufocal_step, [-2, -1])) ** 2
-                )
-
-        else:
-            ufocal = fft2(fftshift(uin_padded, [-2, -1]))
-            upupil = ifft2(
-                ufocal * fftshift(self.mask, [-2, -1]), norm="forward"
-            )  # Multiplication to the phase mask and propagation to the detector
-            self.frame_no_noise = (
-                torch.abs(fftshift(upupil, [-2, -1])) ** 2
-            )  # Return the noisy image, normalized the the number of counts
-            self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
+        ufocal = fft2(fftshift(uin_padded, [-2, -1]))
+        upupil = ifft2(ufocal * fftshift(self.mask, [-2, -1]), norm="forward")  # Multiplication to the phase mask and propagation to the detector
+        self.frame_no_noise = (torch.abs(fftshift(upupil, [-2, -1])) ** 2)  # Return the noisy image, normalized the the number of counts
+        self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
 
     def MakeMTFMatrices(self, fourier_extension):
         fourier_sampling = self.sampling * self.MTF_focal_upscale
