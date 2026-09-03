@@ -1,74 +1,121 @@
 # AI4AO
 
-Artificial Inteligence for Adaptive Optics (AI4AO) is a project under development to propose a python-based tool to perform end-to-end AO simulations and machine learning for phase reconstruction and control.
-This code is inspired from OOPAO: https://github.com/cheritier/OOPAO developped by C.T. Heritier 
-The project was initially intended for personal use. It is now open to any interested user. 
+AI4AO ("Artificial Intelligence for Adaptive Optics") is a PyTorch-based,
+fully differentiable end-to-end simulation framework for
+adaptive optics (AO): atmospheric turbulence, wavefront sensor (WFS)
+propagation, phase reconstruction, and deformable mirror (DM) response, all
+as a chain of `nn.Module`s. Because gradients flow through the whole chain,
+the framework can be used not just to simulate an AO system but to calibrate
+one via backpropagation, training a neural-network (NN) reconstructor, and also
+fitting the WFS mask shape and DM misregistration parameters.
 
-## FUNCTIONALITIES
+ This code is inspired from OOPAO: https://github.com/cheritier/OOPAO developped by C.T. Heritier.
+The project is under active research development — conventions and module
+APIs still shift, so treat in-repo docstrings/code as more authoritative than
+this README where they disagree. It was initially built for personal use and
+is now intended for outside collaborators too.
 
-	_ Phase Dataset: 		Extremely fast multi-layer phase screen generation, with and without scintillation.
-	_ Wavefront sensor: 	Fully differentiable and parallelized end-to-end WFS simulations
-	_ Mask Generation:      Test classic (Pyramid, Zernike) masks or create/optimize you own design
-	_ Deformable mirror:    Fully differentiable deformable mirror model to compute misregistration
+## Pipeline
 
+Each instrument "twin" is built from these modules, in order:
 
-![WFS animation](Images/wfs_animation.gif)
+- **`PhaseDataset.py`** — synthesizes atmospheric phase screens on the fly
+  from a von Kármán PSD (multi-layer, with optional scintillation).
+- **`TorchPropagator.py` (`WFS`)** — base optical propagator, with optional modulation and noise; also does classical
+  interaction-/reconstruction-matrix calibration.
+- **`PyramidWFS.py` / `ZernikeWFS.py`** — the current WFS-specific mask
+  implementations, subclassing `WFS`.
+- **`FramePreprocess.py`** — crops/bins/normalizes pupil images from the raw
+  detector frame for the NN reconstructor.
+- **`DeformableMirror.py`** — turns command coefficients into a DM phase
+  surface; misregistration is modeled as learnable parameters.
+- **`Trainer.py`** — the closed-loop training loop for a reconstructor, plus
+  checkpointing.
+- **`TwinCalibrator.py`** — fits a constructed WFS/DM twin to reference data
+  (bench or simulated) and saves/loads a calibrated twin's state.
 
-## MODULES REQUIRED
-The code is written for Python 3 and requires the following modules:
-```
-mmengine
-torch
-numpy
-matplotlib
-scipy
-tqdm 
-```
+`MaskGeneration.py` (`MaskManager`) and `PhaseEstimators.py` are older,
+not-currently-wired modules (a generic pre-`PyramidWFS`/`ZernikeWFS` mask
+dispatcher, and a collection of reconstructor architectures) — not where new
+work should start.
 
-## INSTALLATION 
+## Instrument "twin" configuration
 
-### (Recommended) Creating a virtual environment
+Each instrument (Ekarus, Oziriis, Papyrus, Rama, ...) has a params file under
+`Tutorials/` defining five plain Python dicts — `WFSParams`, `AtmosParams`,
+`LoopParams`, `DMParams`, `TrainParams`, used by the
+pipeline constructors. 
+## Getting started
 
-It is always recommended that you use a virtual environment. First create it:
+[`Tutorials/`](Tutorials/README.md) is the primary way this codebase is
+exercised and learned. Start with the `Tutorials/basics/` series, in order:
 
-```
+1. `01_Dataset.ipynb` — generating turbulence with `PhaseDataset`.
+2. `02_WFSAndPreprocessing.ipynb` — the optical propagator and preprocessing.
+3. `03_DeformableMirrorAndClosedLoop.ipynb` — the DM and closed-loop
+   feedback, using a perfect reconstructor.
+4. `04_TrainingAReconstructor.ipynb` — replacing the perfect reconstructor with a trained
+   network via `Trainer`.
+
+These run against a synthetic, uncalibrated instrument and need no real bench
+data. See [`Tutorials/README.md`](Tutorials/README.md) for the per-instrument
+calibration/training notebooks that follow.
+
+## Installation
+
+Python >= 3.10 is required.
+
+### Create a virtual environment (recommended)
+
+```bash
 python -m venv venv
-```
 
-And finally activate it:
-
-```
 # Unix
 source ./venv/bin/activate
-
-# or
 
 # Windows PowerShell
 .\venv\Scripts\activate
 ```
 
-After the environment is set up and activated, make sure to update pip to the latest version
-```
+### Install dependencies
+
+Upgrade packaging tools first:
+
+```bash
 python -m pip install --upgrade pip setuptools wheel typing-extensions
 ```
 
-Then, follow the instructions from Pytorch's website to install the corresponding version for you. Using CUDA is highly recomended.
-```
-https://pytorch.org/get-started/locally/
-```
+Install PyTorch separately, following the instructions for your platform at
+<https://pytorch.org/get-started/locally/> (CUDA is strongly recommended).
 
-Once the Pytorch installation finishes, this package can then be easily installed. Anytime you wish to use this
-package, you should activate the respective environment.
+Then clone and install AI4AO:
 
-### Using `pip`
-
-First clone the repository:
-
-```
-https://github.com/ftoyarzun/AI4AO
-```
-
-And then install the package using `pip`:
-
-```
+```bash
+git clone https://github.com/ftoyarzun/AI4AO.git
 python -m pip install -e AI4AO
+```
+
+## Testing
+
+`tests/` contains a `pytest` suite covering the core modules, differentiability
+regression checks, and an end-to-end training smoke test. Install the test
+extras and run it from the repo root:
+
+```bash
+python -m pip install -e "AI4AO[test]"
+pytest tests/
+```
+
+Tests marked `slow` exercise `Trainer.train`/`evaluate` or
+`TwinCalibrator.fit_*` loops end-to-end; skip them for a faster run:
+
+```bash
+pytest tests/ -m "not slow"
+```
+
+By default tests run on CPU; set `AI4AO_TEST_DEVICE=cuda` to run on GPU
+instead.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
