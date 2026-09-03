@@ -613,9 +613,9 @@ class PhaseDataset(Dataset):
 
     def ASP(self, input_field, distance):
         
-        field_freq = torch.fft.fft2(torch.fft.ifftshift(input_field, dim = (-2,-1)), dim = (-2,-1))
+        field_freq = torch.fft.fft2(torch.fft.fftshift(input_field, dim = (-2,-1)), dim = (-2,-1))
         field_filtered = field_freq * self.masterPropagatorPhase ** distance
-        field_out = torch.fft.fftshift(torch.fft.ifft2(field_filtered, dim = (-2,-1)), dim = (-2,-1))
+        field_out = torch.fft.ifftshift(torch.fft.ifft2(field_filtered, dim = (-2,-1)), dim = (-2,-1))
 
         return field_out
         

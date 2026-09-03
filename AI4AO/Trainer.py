@@ -188,7 +188,9 @@ class Trainer:
 
             z_buffer = torch.clone(z_output)
 
-            z_estimated = z_estimated * leak + gain * z_buffer
+
+            if i > n_steps * 0.3:
+                z_estimated = z_estimated * leak + gain * z_buffer
 
             phase_reconstructed = self.dm(z_estimated @ M2C_T)
 
