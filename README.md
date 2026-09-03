@@ -12,7 +12,7 @@ The project was initially intended for personal use. It is now open to any inter
 	_ Deformable mirror:    Fully differentiable deformable mirror model to compute misregistration
 
 
-![WFS animation](images/wfs_animation.gif)
+![WFS animation](Images/wfs_animation.gif)
 
 ## MODULES REQUIRED
 The code is written for Python 3 and requires the following modules:
