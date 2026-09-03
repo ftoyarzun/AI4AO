@@ -51,13 +51,8 @@ Junk/
 *.lprof
 *.json
 
-# Keep selected PyTorch models (edit these if you want)
-# Example: keep only "Free_Train.pth" and "Papyrus.pth"
-!Free_Train.pth
-!Free_Train2.pth
-!Papyrus.pth
-!Papyrus_Zonal.pth
-# add any others you want to keep
+# Keep selected 
+!Images/wfs_animation.gif
 
 # Ignore all other .pth files
 *.pth
