@@ -15,6 +15,8 @@ np.math = math
 
 from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
+from .Utils import MakePupil
+
 
 def PoissonNoise(x):
     """From M. Dufraisse PhD : differentiable Poisson Noise Model using Gaussian approx for each pixel and reparametrization tricks"""
@@ -55,6 +57,9 @@ class WFS(nn.Module):
         self.D = ParamsDict["D"]
         self.useNoise = ParamsDict["useNoise"]
         self.central_obstruction = ParamsDict["centralObstruction"]
+        self.pupil_shift_x = ParamsDict.get("pupilShiftX", 0.0)
+        self.pupil_shift_y = ParamsDict.get("pupilShiftY", 0.0)
+        self.pupil_upscale = ParamsDict.get("pupilUpscale", 1)
         self.device = device
         self.reference_intensity = None
         self.pupil_centers = None
@@ -81,13 +86,12 @@ class WFS(nn.Module):
         self.MakePupil()
 
     def MakePupil(self):
-        pupil_upscale = 1
-        x = torch.linspace(-self.Nres / 2, self.Nres / 2, self.Nres * pupil_upscale, device = self.device, dtype=torch.float32)
-        [x, y] = torch.meshgrid(x, x)
-        outter_pupil = (x**2 + y**2) <= ((self.Nres + 1) / 2) ** 2
-        inner_pupil = (x**2 + y**2) >= ((self.Nres + 1) / 2 * self.central_obstruction) ** 2
-        self.pupil = outter_pupil * inner_pupil
-        self.pupil = self.pupil.view(self.Nres, pupil_upscale, self.Nres, pupil_upscale).sum(dim=(1, 3))
+        self.pupil = MakePupil(
+            self.Nres, self.device,
+            central_obstruction=self.central_obstruction,
+            shift_x=self.pupil_shift_x, shift_y=self.pupil_shift_y,
+            upscale=self.pupil_upscale,
+        )
         self.pupil_logical = torch.where(self.pupil.reshape(self.Nres * self.Nres) > 0)
 
     def FFTPropagator(self, uin_padded):

@@ -12,6 +12,7 @@ from AI4AO.Utils import (
     get_conv_kernel_gradients,
     get_conv_kernels,
     print_graph,
+    MakePupil,
 )
 
 
@@ -108,3 +109,44 @@ def test_print_graph_handles_diamond_and_terminates(capsys):
     print_graph(y.grad_fn)
     out = capsys.readouterr().out
     assert "AddBackward" in out
+
+
+def test_make_pupil_default_shape_dtype_and_circularity(device):
+    nPx = 16
+    pupil = MakePupil(nPx, device)
+
+    assert pupil.shape == (nPx, nPx)
+    assert pupil.dtype == torch.bool
+    assert 0 < pupil.sum() < nPx * nPx
+
+
+def test_make_pupil_central_obstruction_excludes_center(device):
+    nPx = 16
+    full = MakePupil(nPx, device)
+    annular = MakePupil(nPx, device, central_obstruction=0.3)
+
+    assert annular.sum() < full.sum()
+    center = nPx // 2
+    assert not annular[center, center]
+    assert full[center, center]
+
+
+def test_make_pupil_shift_moves_centroid(device):
+    nPx = 32
+    pupil = MakePupil(nPx, device, shift_x=5.0)
+
+    coords = torch.nonzero(pupil, as_tuple=False)
+    centroid_row = coords[:, 0].float().mean()  # shift_x indexes the first meshgrid axis ("ij" indexing)
+    assert centroid_row > nPx / 2 + 3
+
+
+def test_make_pupil_upscale_soft_edge_matches_hard_edge_transmission(device):
+    nPx = 24
+    hard = MakePupil(nPx, device)
+    soft = MakePupil(nPx, device, upscale=8)
+
+    assert soft.dtype != torch.bool
+    assert soft.min() >= 0 and soft.max() <= 1
+    # Boundary anti-aliasing redistributes mass across the pupil's ~2*pi*Rpx edge
+    # pixels, so hard- vs. soft-edge totals only need to be in the same ballpark.
+    assert torch.allclose(soft.sum(), hard.sum().float(), atol=3 * nPx)

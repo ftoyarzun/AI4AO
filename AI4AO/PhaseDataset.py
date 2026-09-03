@@ -10,6 +10,8 @@ from torch.utils.data import Dataset # type: ignore[import]
 import numpy as np
 import math
 
+from .Utils import MakePupil
+
 
 
 def Zernike(pupil, j = 100):
@@ -369,10 +371,7 @@ class PhaseDataset(Dataset):
         self.movingTestDatasetPath = "moving_test_dataset.pth"
      
   
-        x = torch.linspace(-self.Nres/2, self.Nres/2, self.Nres, device = self.device, dtype = torch.float32)                                          # Build the mesh
-        [x,y] = torch.meshgrid(x,x, indexing='ij') 
-                                       
-        self.pupil = (x**2 + y**2) <= ((self.Nres+1)/2)**2
+        self.pupil = MakePupil(self.Nres, self.device)
         self.pupilSum = self.pupil.sum()
         self.pupil_logical = torch.where(self.pupil.view(-1,1)>0)
 
@@ -385,10 +384,7 @@ class PhaseDataset(Dataset):
         self.fsqr_moving = self.fx_moving**2 + self.fy_moving**2
 
         if self.useScintillation:
-            x = torch.linspace(-self.Nres/2*upSize, self.Nres/2*upSize-1, self.Nres*upSize, device = self.device, dtype = torch.float32)                                          # Build the mesh
-            [x,y] = torch.meshgrid(x,x, indexing='ij') 
-
-            self.pupilASP = (x**2 + y**2) <= ((self.Nres*upSize+1)/2.2)**2
+            self.pupilASP = MakePupil(self.Nres * upSize, self.device, Rpx=(self.Nres * upSize + 1) / 2.2)
             self.masterPropagatorPhase = torch.fft.fftshift(torch.exp(-1j * torch.pi * self.wavelength * self.fsqr_moving), dim = (-2, -1))
 
         

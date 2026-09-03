@@ -12,8 +12,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-from AI4AO.Constants import mask_types_list
 from AI4AO.PhaseDataset import Zernike
+from AI4AO.Utils import MakePupil
 
 from IPython.display import display, clear_output
 
@@ -61,13 +61,7 @@ class MaskManager(nn.Module):
         pupil : ndarray of shape (nPx, nPx)
             Binary circular mask with value 1 inside the pupil and 0 outside.
         """
-        # Create grid of coordinates
-        x = torch.arange(nPx, device=self.device, dtype=torch.float32) - (nPx - 1) / 2
-        x, y = torch.meshgrid(x, x)
-
-        # Circular mask
-        pupil = (x**2 + y**2) <= Rpx**2
-        return pupil
+        return MakePupil(nPx, self.device, Rpx=Rpx)
 
     def _build_uv_grid(self):
         u = torch.linspace(-1, 1 - 2 / self.N, self.N, device=self.device)
@@ -168,8 +162,6 @@ class MaskManager(nn.Module):
                 )
             )
 
-        if self.maskType not in mask_types_list:
-            raise ValueError(f"Unsupported mask type: {self.maskType}")
 
     def update_masks(self):
         if self.maskType == "Pyramid":
@@ -214,8 +206,7 @@ class MaskManager(nn.Module):
         if self.maskType == "ModalMask":
             self.phaseMask = self.phaseMaskGenerator()
 
-        if self.maskType not in mask_types_list:
-            raise ValueError(f"Unsupported mask type: {self.maskType}")
+
 
         self.WFS.SetMask(phaseMask=self.phaseMask, transmisionMask=self.transmisionMask)
 
@@ -226,55 +217,6 @@ class MaskManager(nn.Module):
         ).solution
         tilt_plane = self.UV @ coeffs
         return mask - tilt_plane
-
-    def GetPupilCenter(self):
-        sign_tensor = -torch.tensor(
-            [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]], device=self.device
-        )
-        frame_center = torch.ones(4, 2, device=self.device) * self.N / 2
-        pupil_center = frame_center + sign_tensor * self.maskShifts * self.N / 4
-        pupil_center = torch.round(pupil_center).to(dtype=torch.int)
-        return pupil_center
-
-    def BuildZernikeMask(self):
-        diameter_in_pixels = self.param[0] * self.sampling
-
-        # this line is not differentiable I use a tanh function to model the mask
-        # zernike_mask = self.param[1] * (rho < diameter_in_pixels / 2.)
-
-        if self.param.shape[0] == 2:
-            slope = 10.0
-        else:
-            slope = self.param[2]
-
-        ring_mask = torch.tanh(slope * (diameter_in_pixels / 2.0 - self.rho_mask)) / 2
-        annular = ring_mask + 0.5
-
-        zernike_mask = self.param[1] * annular
-
-        return zernike_mask
-
-    def BuildPyramidMask(self):
-
-        rooftop_in_pixels = self.rooftop * self.sampling / np.sqrt(2)
-
-        P1 = (self.x_mask + rooftop_in_pixels / 2) * self.maskShifts[0, 0] + (
-            self.y_mask + rooftop_in_pixels / 2
-        ) * self.maskShifts[0, 1]
-        P2 = -self.x_mask * self.maskShifts[1, 0] + self.y_mask * self.maskShifts[1, 1]
-        P3 = (
-            -(self.x_mask - rooftop_in_pixels / 2) * self.maskShifts[2, 0]
-            - (self.y_mask - rooftop_in_pixels / 2) * self.maskShifts[2, 1]
-        )
-        P4 = self.x_mask * self.maskShifts[3, 0] - self.y_mask * self.maskShifts[3, 1]
-
-        stacked = torch.stack([P1, P2, P3, P4])  # shape: (4, H, W)
-
-        F = torch.max(stacked * self.mainSlope, dim=0).values  # shape (H, W)
-
-        self.pupil_centers = self.GetPupilCenter()
-
-        return F
 
 
     def BuildBiOEdgeMask(self):
@@ -331,97 +273,6 @@ class MaskManager(nn.Module):
 
         return mask
 
-
-    def DoubleZernikeMask(self):
-        phaseMask = torch.zeros(
-            1, 2, self.N, self.N, device=self.device, dtype=torch.float32
-        )
-        phaseMask[0, 0] = (
-            self.positions[0, 0] * self.x_mask + self.positions[0, 1] * self.y_mask
-        )
-        phaseMask[0, 1] = (
-            self.positions[1, 0] * self.x_mask + self.positions[1, 1] * self.y_mask
-        )
-
-        frame_center = torch.ones(2, 2, device=self.device) * self.N / 2
-        pupil_center = frame_center + self.positions / 2 / torch.pi * self.N
-        self.pupil_centers = torch.round(pupil_center).to(dtype=torch.int).cpu().numpy()
-
-        slope = 10
-        diameters_in_pixels = self.diameters * self.sampling
-
-        ring_mask = (
-            torch.tanh(
-                slope
-                * (
-                    diameters_in_pixels.unsqueeze(1).unsqueeze(1) / 2.0
-                    - self.rho_mask.unsqueeze(0)
-                )
-            )
-            / 2
-        )
-        annular = ring_mask + 0.5
-
-        zernike_mask = self.depths.unsqueeze(1).unsqueeze(1) * annular
-
-        phaseMask[0] = phaseMask[0] + zernike_mask
-
-        return phaseMask
-
-    def BuildZernikeMaskMTF(self):
-        N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
-        transmisionMask = torch.zeros(
-            1, 1, N, N, device=self.device, dtype=torch.float32
-        )
-        phaseMask = torch.ones(1, 1, 1, 1, device=self.device, dtype=torch.float32)
-        transmisionMask[0, 0] = self.make_pupil(
-            self.sampling * self.MTF_focal_upscale * self.diameters[0] / 2, N
-        )
-
-        phaseMask[0, 0] = phaseMask[0, 0] * self.depths[0]
-
-        self.WFS.MakeMTFMatrices(self.diameters[0])
-
-        frame_center = np.ones((1, 1)) * self.N // 2
-        pupil_center = (
-            frame_center + self.positions.detach().cpu().numpy() / 2 / np.pi * self.N
-        )
-        self.pupil_centers = np.round(pupil_center).astype(np.int32)
-
-        self.WFS.pupil_shifts = (self.pupil_centers - frame_center)[:, 0].astype(
-            np.int32
-        )
-
-        return phaseMask, transmisionMask
-
-    def DoubleZernikeMaskMTF(self):
-        N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
-        transmisionMask = torch.zeros(
-            1, 2, N, N, device=self.device, dtype=torch.float32
-        )
-        phaseMask = torch.ones(1, 2, 1, 1, device=self.device, dtype=torch.float32)
-        transmisionMask[0, 0] = self.make_pupil(
-            self.sampling * self.MTF_focal_upscale * self.diameters[0] / 2, N
-        )
-        transmisionMask[0, 1] = self.make_pupil(
-            self.sampling * self.MTF_focal_upscale * self.diameters[1] / 2, N
-        )
-        phaseMask[0, 0] = phaseMask[0, 0] * self.depths[0]
-        phaseMask[0, 1] = phaseMask[0, 1] * self.depths[1]
-
-        self.WFS.MakeMTFMatrices(self.diameters[0])
-
-        frame_center = np.ones((2, 2)) * self.N // 2
-        pupil_center = (
-            frame_center + self.positions.detach().cpu().numpy() / 2 / np.pi * self.N
-        )
-        self.pupil_centers = np.round(pupil_center).astype(np.int32)
-
-        self.WFS.pupil_shifts = (self.pupil_centers - frame_center)[:, 0].astype(
-            np.int32
-        )
-
-        return phaseMask, transmisionMask
 
 
 class ScaledTanh(nn.Module):

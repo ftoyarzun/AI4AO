@@ -1,6 +1,8 @@
 import torch  # type: ignore[import]
 import torch.nn as nn  # type: ignore[import]
 
+from .Utils import MakePupil
+
 class DeformableMirror(nn.Module):
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None):
         super().__init__()
@@ -42,9 +44,7 @@ class DeformableMirror(nn.Module):
         else:
             self.ApplyMisreg(misreg)
 
-        x = torch.arange(0, self.Nres, device = self.device) - self.Nres/2 + 0.5
-        x,y = torch.meshgrid(x,x, indexing = 'xy')
-        self.pupil = (x ** 2 + y ** 2) < (self.Nres/2)**2
+        self.pupil = MakePupil(self.Nres, self.device)
 
         self.MakeActGrid()
         self.MakeZonalModes()

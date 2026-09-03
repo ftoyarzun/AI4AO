@@ -2,6 +2,7 @@ import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
 import numpy as np
 from .TorchPropagator import WFS
+from .Utils import MakePupil
 
 class ZernikeWFS(WFS):
     def __init__(self, ParamsDict, device):
@@ -90,13 +91,7 @@ class ZernikeWFS(WFS):
         pupil : ndarray of shape (nPx, nPx)
             Binary circular mask with value 1 inside the pupil and 0 outside.
         """
-        # Create grid of coordinates
-        x = torch.arange(nPx, device=self.device, dtype=torch.float32) - (nPx - 1) / 2
-        x, y = torch.meshgrid(x, x)
-
-        # Circular mask
-        pupil = (x**2 + y**2) <= Rpx**2
-        return pupil
+        return MakePupil(nPx, self.device, Rpx=Rpx)
     
     def forward(self, phase, pupil = None):
         return self.Propagator(phase,pupil)
