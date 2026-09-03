@@ -7,6 +7,44 @@ from matplotlib.patches import Rectangle
 import math
 
 
+def MakePupil(nPx, device, Rpx=None, central_obstruction=0.0, shift_x=0.0, shift_y=0.0, upscale=1, dtype=torch.float32):
+    """
+    Generate a circular (optionally annular, decentered, and/or soft-edged) pupil mask.
+
+    Parameters
+    ----------
+    nPx : int
+        Size of the square output array (pixels per side).
+    Rpx : float or torch.Tensor, optional
+        Outer radius in pixels. Defaults to (nPx+1)/2.
+    central_obstruction : float
+        Fraction of Rpx defining the inner (obscured) radius; 0 disables the obstruction.
+    shift_x, shift_y : float
+        Pupil center offset in pixels.
+    upscale : int
+        Supersampling factor for the edge. upscale=1 (default) returns a hard-edged
+        boolean mask. upscale>1 thresholds at upscale*nPx resolution and bin-averages
+        back down to nPx, returning a fractional-transmission float mask in [0, 1]
+        with an anti-aliased edge.
+
+    Returns
+    -------
+    pupil : torch.Tensor of shape (nPx, nPx)
+        Boolean mask (upscale=1) or float transmission mask in [0, 1] (upscale>1).
+    """
+    if Rpx is None:
+        Rpx = (nPx + 1) / 2
+    n = nPx * upscale
+    x = torch.linspace(-nPx / 2, nPx / 2, n, device=device, dtype=dtype)
+    x, y = torch.meshgrid(x, x, indexing="ij")
+    r2 = (x + shift_y) ** 2 + (y - shift_x) ** 2
+    pupil = r2 <= Rpx ** 2
+    if central_obstruction:
+        pupil = pupil & (r2 >= (Rpx * central_obstruction) ** 2)
+    if upscale > 1:
+        pupil = pupil.view(nPx, upscale, nPx, upscale).to(dtype).mean(dim=(1, 3))
+    return pupil
+
 
 def imshow(
     tensor,
