@@ -111,11 +111,13 @@ class Trainer:
                 
                 
                 # Compute loss for this iteration
-                total_loss += self.loss((residual_phase - phase_reconstructed_iter)) / closed_loop_iterations
+                corrected_residual_phase = residual_phase - phase_reconstructed_iter
+                total_loss += self.loss(Ze, z_output, residual_phase, corrected_residual_phase, wfs_frames) / closed_loop_iterations
 
                 # Compute ideal loss for comparison
                 with torch.no_grad():
-                    ideal_loss += self.loss((residual_phase - phase_reconstructed_iter_ideal)) / closed_loop_iterations
+                    ideal_corrected_residual_phase = residual_phase - phase_reconstructed_iter_ideal
+                    ideal_loss += self.loss(Ze, Ze, residual_phase, ideal_corrected_residual_phase, wfs_frames) / closed_loop_iterations
 
                 
             # **Backpropagation**
