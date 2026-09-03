@@ -415,7 +415,7 @@ class WFS(nn.Module):
 
         
         if single_pass and self.reference_intensity is None:
-            self.BuildReferenceIntensity(pupil, phaseOffset)
+            self.BuildReferenceIntensity(phaseOffset, pupil)
 
         Nmodes = modes.shape[0]
         iMat_parts = []
