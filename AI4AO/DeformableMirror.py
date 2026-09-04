@@ -225,12 +225,12 @@ class DeformableMirror(nn.Module):
     def MakeZernikeM2C(self, nModes=None):
         if nModes is None:
             nModes = self.nModes
-        z, _ = Zernike(self.pupil, nModes)
+        with torch.no_grad():
+            z, _ = Zernike(self.pupil, nModes)
+            inv_IF = torch.linalg.pinv(self.IF[:, self.pupil])
 
-        inv_IF = torch.linalg.pinv(self.IF[:, self.pupil])
-
-        M2C = z @ inv_IF
-        return M2C.T
+            M2C = z @ inv_IF
+            return M2C.T
 
 
     def LoadCalibration(self, file_path):
@@ -273,6 +273,10 @@ class DeformableMirror(nn.Module):
             with torch.no_grad():
                 self.MakeActGrid()
                 self.MakeZonalModes()
+        else:
+            self.requires_grad_(True)
+            self.MakeActGrid()
+            self.MakeZonalModes()
         return self
 
     #### These properties are set such that when optimizing these values they all share the same order of magnitude.

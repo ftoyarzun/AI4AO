@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from .Utils import imshow_multiple
 from IPython.display import display, clear_output
 
 
@@ -129,14 +130,14 @@ class TwinCalibrator:
         wfs.BuildInteractionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, phaseOffset=self.ref_phase)
         digital_image = wfs.iMat
 
-        plt.figure(figsize=(9, 4))
-        plt.subplot(131)
-        plt.imshow(target[idx].cpu().numpy())
-        plt.subplot(132)
-        plt.imshow(digital_image[idx].cpu().detach().numpy())
-        plt.subplot(133)
-        target_idx = target[idx].cpu().detach().numpy()
-        plt.imshow((target - digital_image)[idx].cpu().detach().numpy(), vmin=target_idx.min(), vmax=target_idx.max())
+        imshow_multiple([
+            {"tensor": target, "title": "Bench iMat"},
+            {"tensor": digital_image, "title": "Starting guess iMat"},
+            {"tensor": (target - digital_image), "title": "Difference"},
+        ],
+        max_channel_number=idx,
+        group_boxes=True
+        )
 
     def fit_dm_and_offsets(self, bench_iMat, M2C, mode_index, n_iter=200, lr_dm=1e-2, lr_wfs=1e-3,
                             lr_offset_start=-10, lr_offset_end=-2, fit_static_offsets=True,
@@ -165,9 +166,14 @@ class TwinCalibrator:
             offset_params = []
 
         if live_plot:
-            fig, ax = plt.subplots(figsize=(6, 6))
-            img = ax.imshow(target[plot_mode_idx].cpu().detach().numpy())
-            fig.colorbar(img)
+            fig, ax = imshow_multiple([
+                        {"tensor": target, "title": "Bench iMat"},
+                        {"tensor": target, "title": "Calibrated iMat"},
+                        {"tensor": (target - target), "title": "Difference"},
+                    ],
+                    max_channel_number=plot_mode_idx,
+                    group_boxes=True
+                    )
 
         original_positions = dm.anamorphosis_coordinates(dm.actuator_positions)
         original_positions = dm.rotate_coordinates(original_positions)
@@ -209,10 +215,17 @@ class TwinCalibrator:
 
             if live_plot and u % 10 == 0:
                 clear_output(wait=True)
-                img.set_data((target - digital_image)[plot_mode_idx].cpu().detach().numpy() * 1e10)
-                img.set_clim(vmin=np.min(img.get_array()), vmax=np.max(img.get_array()))
+                imshow_multiple([
+                        {"tensor": target, "title": "Bench iMat"},
+                        {"tensor": digital_image, "title": "Calibrated iMat"},
+                        {"tensor": (target - digital_image), "title": "Difference"},
+                    ],
+                    fig=fig, axes=ax,
+                    max_channel_number=plot_mode_idx,
+                    group_boxes=True
+                    )
                 display(fig, clear=True)
-                plt.pause(0.5)
+                plt.pause(0.1)
 
                 print("#" * 40)
                 print(f"loss = {l.item():.5f}")

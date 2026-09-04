@@ -480,4 +480,8 @@ class WFS(nn.Module):
             with torch.no_grad():
                 self.BuildMask()
                 self.BuildReferenceIntensity()
+        else:
+            self.requires_grad_(True)
+            self.BuildMask()
+            self.BuildReferenceIntensity()
         return self

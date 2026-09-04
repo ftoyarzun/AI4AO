@@ -381,131 +381,131 @@ def imshow(
     # SINGLE GROUP [C,W,H]
     # =========================================================
 
-    if B == 1:
+    # if B == 1:
 
-        ncols = divisor(C)
-        nrows = math.ceil(C / ncols)
+    #     ncols = divisor(C)
+    #     nrows = math.ceil(C / ncols)
 
-        # -----------------------------------------------------
-        # Existing subplot
-        #
-        # The current subplot becomes the parent/container.
-        # The actual image axes are created inside its
-        # SubplotSpec.
-        # -----------------------------------------------------
+    #     # -----------------------------------------------------
+    #     # Existing subplot
+    #     #
+    #     # The current subplot becomes the parent/container.
+    #     # The actual image axes are created inside its
+    #     # SubplotSpec.
+    #     # -----------------------------------------------------
 
-        if embedded:
+    #     if embedded:
 
-            fig = parent_ax.figure
+    #         fig = parent_ax.figure
 
-            # Hide the container axis. It is only a parent.
-            parent_ax.axis("off")
+    #         # Hide the container axis. It is only a parent.
+    #         parent_ax.axis("off")
 
-            parent_spec = parent_ax.get_subplotspec()
+    #         parent_spec = parent_ax.get_subplotspec()
 
-            inner = parent_spec.subgridspec(
-                nrows,
-                ncols,
-                wspace=0.05,
-                hspace=0.05
-            )
+    #         inner = parent_spec.subgridspec(
+    #             nrows,
+    #             ncols,
+    #             wspace=0.05,
+    #             hspace=0.05
+    #         )
 
-            axes = []
+    #         axes = []
 
-            for c in range(C):
+    #         for c in range(C):
 
-                ax = fig.add_subplot(
-                    inner[c // ncols, c % ncols]
-                )
+    #             ax = fig.add_subplot(
+    #                 inner[c // ncols, c % ncols]
+    #             )
 
-                ax.imshow(
-                    tensor[0, c],
-                    cmap=cmap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    aspect="equal",
-                    **kwargs
-                )
+    #             ax.imshow(
+    #                 tensor[0, c],
+    #                 cmap=cmap,
+    #                 vmin=vmin,
+    #                 vmax=vmax,
+    #                 aspect="equal",
+    #                 **kwargs
+    #             )
 
-                ax.axis("off")
+    #             ax.axis("off")
 
-                axes.append(ax)
+    #             axes.append(ax)
 
-                if colorbar:
-                    fig.colorbar(
-                        ax.images[0],
-                        ax=ax
-                    )
+    #             if colorbar:
+    #                 fig.colorbar(
+    #                     ax.images[0],
+    #                     ax=ax
+    #                 )
 
-            # Remove unused slots
-            for i in range(C, nrows * ncols):
+    #         # Remove unused slots
+    #         for i in range(C, nrows * ncols):
 
-                ax = fig.add_subplot(
-                    inner[i // ncols, i % ncols]
-                )
+    #             ax = fig.add_subplot(
+    #                 inner[i // ncols, i % ncols]
+    #             )
 
-                ax.axis("off")
+    #             ax.axis("off")
 
-            return fig, axes
+    #         return fig, axes
 
-        # -----------------------------------------------------
-        # Standalone
-        # -----------------------------------------------------
+    #     # -----------------------------------------------------
+    #     # Standalone
+    #     # -----------------------------------------------------
 
-        if figsize is None:
-            figsize = (
-                4 * ncols,
-                4 * nrows
-            )
+    #     if figsize is None:
+    #         figsize = (
+    #             4 * ncols,
+    #             4 * nrows
+    #         )
 
-        fig = plt.figure(figsize=figsize)
+    #     fig = plt.figure(figsize=figsize)
 
-        gs = fig.add_gridspec(
-            nrows,
-            ncols,
-            wspace=0.05,
-            hspace=0.05
-        )
+    #     gs = fig.add_gridspec(
+    #         nrows,
+    #         ncols,
+    #         wspace=0.05,
+    #         hspace=0.05
+    #     )
 
-        axes = []
+    #     axes = []
 
-        for c in range(C):
+    #     for c in range(C):
 
-            ax = fig.add_subplot(
-                gs[c // ncols, c % ncols]
-            )
+    #         ax = fig.add_subplot(
+    #             gs[c // ncols, c % ncols]
+    #         )
 
-            ax.imshow(
-                tensor[0, c],
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                aspect="equal",
-                **kwargs
-            )
+    #         ax.imshow(
+    #             tensor[0, c],
+    #             cmap=cmap,
+    #             vmin=vmin,
+    #             vmax=vmax,
+    #             aspect="equal",
+    #             **kwargs
+    #         )
 
-            ax.axis("off")
+    #         ax.axis("off")
 
-            axes.append(ax)
+    #         axes.append(ax)
 
-            if colorbar:
-                fig.colorbar(
-                    ax.images[0],
-                    ax=ax
-                )
+    #         if colorbar:
+    #             fig.colorbar(
+    #                 ax.images[0],
+    #                 ax=ax
+    #             )
 
-        # Remove unused axes
-        for i in range(C, nrows * ncols):
+    #     # Remove unused axes
+    #     for i in range(C, nrows * ncols):
 
-            ax = fig.add_subplot(
-                gs[i // ncols, i % ncols]
-            )
+    #         ax = fig.add_subplot(
+    #             gs[i // ncols, i % ncols]
+    #         )
 
-            ax.axis("off")
+    #         ax.axis("off")
 
-        plt.tight_layout()
+    #     #plt.tight_layout()
 
-        return fig, axes
+    #     return fig, axes
 
     # =========================================================
     # MULTIPLE GROUPS [BCWH]
@@ -718,7 +718,7 @@ def imshow(
 
             fig.patches.append(rect)
 
-    plt.tight_layout()
+    # plt.tight_layout()
 
     return fig, axes
 
@@ -870,7 +870,7 @@ def imshow_multiple(
 
         return fig, axes, images
 
-    plt.tight_layout()
+    #plt.tight_layout()
 
     return fig, axes
 
