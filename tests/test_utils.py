@@ -44,12 +44,134 @@ def test_imshow_update_mode_axis_count_mismatch():
         imshow(torch.randn(1, 1, 8, 8), fig=fig, axes=axes)
 
 
+def test_imshow_scale_reference_uses_reference_clim_not_tensor_clim():
+    tensor = torch.zeros(8, 8)
+    reference = torch.zeros(8, 8)
+    reference[0, 0] = -3.0
+    reference[0, 1] = 7.0
+
+    fig, axes = imshow(tensor, scale_reference=reference)
+
+    assert axes[0].images[0].get_clim() == (-3.0, 7.0)
+
+
+def test_imshow_scale_reference_respects_max_channel_number():
+    tensor = torch.zeros(3, 8, 8)
+    reference = torch.zeros(3, 8, 8)
+    reference[0] = 1.0
+    reference[1] = 5.0  # excluded by max_channel_number=1, below
+    reference[2] = 9.0
+
+    fig, axes = imshow(tensor, scale_reference=reference, max_channel_number=1)
+
+    assert len(axes) == 1
+    assert axes[0].images[0].get_clim() == (1.0, 1.0)
+
+
+def test_imshow_scale_reference_update_mode_applies_shared_clim():
+    tensor = torch.zeros(2, 8, 8)
+    ref1 = torch.zeros(2, 8, 8)
+    ref1[0] = -1.0
+    ref1[1] = 1.0
+
+    fig, axes = imshow(tensor, scale_reference=ref1)
+    assert axes[0].images[0].get_clim() == (-1.0, 1.0)
+    assert axes[1].images[0].get_clim() == (-1.0, 1.0)
+
+    ref2 = torch.zeros(2, 8, 8)
+    ref2[0] = -10.0
+    ref2[1] = 10.0
+    imshow(tensor, fig=fig, axes=axes, scale_reference=ref2)
+
+    assert axes[0].images[0].get_clim() == (-10.0, 10.0)
+    assert axes[1].images[0].get_clim() == (-10.0, 10.0)
+
+
 def test_imshow_multiple_shapes():
     tensors = [torch.randn(8, 8), torch.randn(2, 8, 8)]
     fig, axes = imshow_multiple(tensors)
     assert len(axes) == 2
     assert len(axes[0]) == 1
     assert len(axes[1]) == 2
+
+
+def test_imshow_multiple_per_item_dict_overrides_shared_kwargs():
+    tensors = [
+        torch.randn(8, 8),
+        {"tensor": torch.randn(8, 8), "cmap": "gray", "vmin": 0.0, "vmax": 1.0},
+    ]
+    fig, axes = imshow_multiple(tensors, cmap="viridis")
+
+    shared_image = axes[0][0].images[0]
+    override_image = axes[1][0].images[0]
+
+    assert shared_image.get_cmap().name == "viridis"
+    assert override_image.get_cmap().name == "gray"
+    assert override_image.get_clim() == (0.0, 1.0)
+
+
+def test_imshow_multiple_dict_title_overrides_shared_title():
+    tensors = [
+        torch.randn(8, 8),
+        {"tensor": torch.randn(8, 8), "title": "dict title"},
+    ]
+    fig, axes = imshow_multiple(tensors, title="shared title")
+
+    assert fig.axes[0].get_title() == "shared title"
+    assert fig.axes[1].get_title() == "dict title"
+
+
+def test_imshow_multiple_scale_reference_via_dict_item():
+    phase = torch.zeros(8, 8)
+    phase[0, 0] = -4.0
+    phase[0, 1] = 4.0
+
+    residual = torch.zeros(8, 8)  # own min/max would be (0, 0)
+
+    tensors = [
+        {"tensor": phase, "same_scale": True},
+        {"tensor": residual, "scale_reference": phase},
+    ]
+    fig, axes = imshow_multiple(tensors)
+
+    assert axes[0][0].images[0].get_clim() == (-4.0, 4.0)
+    assert axes[1][0].images[0].get_clim() == (-4.0, 4.0)
+
+
+def test_imshow_multiple_dict_missing_tensor_key_raises():
+    with pytest.raises(ValueError):
+        imshow_multiple([{"cmap": "gray"}])
+
+
+def test_imshow_multiple_subplot_grid_layout():
+    tensors = [torch.randn(8, 8) for _ in range(3)]
+    fig, axes = imshow_multiple(tensors, subplot_grid=(2, 2))
+
+    assert len(axes) == 3
+    geometries = {ax.get_subplotspec().get_geometry()[:2] for ax in fig.axes}
+    assert geometries == {(2, 2)}
+
+
+def test_imshow_multiple_subplot_grid_too_small_raises():
+    tensors = [torch.randn(8, 8) for _ in range(3)]
+    with pytest.raises(ValueError):
+        imshow_multiple(tensors, subplot_grid=(1, 2))
+
+
+def test_imshow_multiple_update_mode_applies_per_item_overrides():
+    tensors = [
+        torch.randn(8, 8),
+        {"tensor": torch.randn(8, 8), "vmin": -2.0, "vmax": 2.0},
+    ]
+    fig, axes = imshow_multiple(tensors)
+
+    updated_tensors = [
+        torch.randn(8, 8),
+        {"tensor": torch.randn(8, 8), "vmin": -3.0, "vmax": 3.0},
+    ]
+    imshow_multiple(updated_tensors, fig=fig, axes=axes)
+
+    assert axes[1][0].images[0].get_clim() == (-3.0, 3.0)
 
 
 class _ToyConvNet(nn.Module):
@@ -133,11 +255,10 @@ def test_make_pupil_central_obstruction_excludes_center(device):
 
 def test_make_pupil_shift_moves_centroid(device):
     nPx = 32
-    pupil = MakePupil(nPx, device, shift_x=5.0)
+    pupil0 = MakePupil(nPx, device)
+    pupil1 = MakePupil(nPx, device, shift_x=1.0)
 
-    coords = torch.nonzero(pupil, as_tuple=False)
-    centroid_row = coords[:, 0].float().mean()  # shift_x indexes the first meshgrid axis ("ij" indexing)
-    assert centroid_row > nPx / 2 + 3
+    assert pupil0[:,:2].sum() > pupil1[:,:2].sum()
 
 
 def test_make_pupil_upscale_soft_edge_matches_hard_edge_transmission(device):
