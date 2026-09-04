@@ -40,15 +40,15 @@ def test_zernike_shapes_and_normalization():
 
     out, out_full_res = Zernike(pupil, j=j)
 
-    assert out.shape == (n_pupil_pix, j)
-    assert out_full_res.shape == (16, 16, j)
+    assert out.shape == (j, n_pupil_pix, )
+    assert out_full_res.shape == (j, 16, 16)
 
     for k in range(j):
-        assert torch.allclose(out[:, k].mean(), torch.tensor(0.0), atol=1e-5)
-        assert torch.allclose(out[:, k].std(), torch.tensor(1.0), atol=1e-4)
+        assert torch.allclose(out[k].mean(), torch.tensor(0.0), atol=1e-5)
+        assert torch.allclose(out[k].std(), torch.tensor(1.0), atol=1e-4)
 
     outside_pupil = ~pupil
-    assert torch.all(out_full_res[outside_pupil] == 0)
+    assert torch.all(out_full_res[:, outside_pupil] == 0)
 
 
 def test_get_spatial_frequencies():

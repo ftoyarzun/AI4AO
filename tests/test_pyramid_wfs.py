@@ -68,8 +68,8 @@ def test_forward_modulated_mask_shape_and_normalization(tiny_wfs_params, device)
 def test_calibration_chain_recovers_reference(pyramid_wfs):
     pyramid_wfs.BuildReferenceIntensity()
 
-    _, modes_full_res = Zernike(pyramid_wfs.pupil, j=3)
-    modes = modes_full_res.permute(2, 0, 1)  # (Nres,Nres,j) -> (j,Nres,Nres)
+    _, modes = Zernike(pyramid_wfs.pupil, j=3)
+
 
     pyramid_wfs.BuildReconstructionMatrix(modes)
 

@@ -100,8 +100,8 @@ def Zernike(pupil, j = 100):
     R = torch.sqrt(X**2 + Y**2)
     R = R / R.max()
     theta = torch.arctan2(Y, X)
-    out = torch.zeros((int(torch.sum(pupil).item()), j), dtype=torch.float32, device = device)
-    outFullRes = torch.zeros((resolution**2, j), dtype=torch.float32, device = device)
+    out = torch.zeros((j, int(torch.sum(pupil).item())), dtype=torch.float32, device = device)
+    outFullRes = torch.zeros((j, resolution**2), dtype=torch.float32, device = device)
 
     for i in range(1, j + 1):
         n, m = zernIndex(i + 1)
@@ -128,11 +128,11 @@ def Zernike(pupil, j = 100):
         Z *= 1 / torch.std(Z)
 
         # clip
-        out[:, i - 1] = Z
+        out[i - 1] = Z
 
-        outFullRes[pupil_logical, i - 1] = Z.to(outFullRes.dtype)
+        outFullRes[i - 1, pupil_logical] = Z.to(outFullRes.dtype)
 
-    outFullRes = torch.reshape(outFullRes, [resolution, resolution, j])
+    outFullRes = torch.reshape(outFullRes, [j, resolution, resolution])
 
     return out, outFullRes
 

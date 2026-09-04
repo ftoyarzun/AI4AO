@@ -3,9 +3,12 @@ import numpy as np
 import subprocess
 
 import numpy as np
-import pycuda.driver as cuda
-import pycuda.autoinit
-import tensorrt as trt
+try:
+    import pycuda.driver as cuda
+    import pycuda.autoinit
+    import tensorrt as trt
+except:
+    print("No TRT support")
 
 
 class FramePreprocess:
