@@ -54,11 +54,17 @@ exercised and learned. Start with the `Tutorials/basics/` series, in order:
 2. `02_WFSAndPreprocessing.ipynb` — the optical propagator and preprocessing.
 3. `03_DeformableMirrorAndClosedLoop.ipynb` — the DM and closed-loop
    feedback, using a perfect reconstructor.
-4. `04_TrainingAReconstructor.ipynb` — replacing the perfect reconstructor with a trained
+4. `04_TwinCalibrationGroundTruth.ipynb` — Calibrating a WFS and DM to a ground-truth bench
+5. `05_TrainingAReconstructor.ipynb` — using the calibrated WFS and DM, and replacing the perfect reconstructor with a trained
    network via `Trainer`.
 
-These run against a synthetic, uncalibrated instrument and need no real bench
-data. See [`Tutorials/README.md`](Tutorials/README.md) for the per-instrument
+Notebooks 1–3 run against a synthetic, uncalibrated instrument; notebook 4
+then calibrates that same instrument against a synthetic "fake bench" with
+deliberately known parameter values, so the fit can be checked against ground
+truth — something no real per-instrument calibration can do — and notebook 5
+trains a reconstructor on the resulting calibrated twin. No real bench data is
+needed anywhere in this series. See
+[`Tutorials/README.md`](Tutorials/README.md) for the per-instrument
 calibration/training notebooks that follow.
 
 ## Installation
