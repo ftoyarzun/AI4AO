@@ -51,6 +51,7 @@ def imshow(
     max_batch_number=None,
     max_channel_number=None,
     same_scale=False,
+    scale_reference=None,
     group_boxes=False,
     cmap="viridis",
     figsize=None,
@@ -86,7 +87,18 @@ def imshow(
         Maximum number of channels/images per group to display.
 
     same_scale : bool
-        If True, use the same vmin/vmax for all images.
+        If True, use the same vmin/vmax (the min/max of `tensor` itself,
+        after max_batch_number/max_channel_number truncation) for all
+        displayed images. Ignored if `scale_reference` is given.
+
+    scale_reference : torch.Tensor or np.ndarray, optional
+        If given, vmin/vmax are computed from this tensor instead of from
+        `tensor` (still after the same max_batch_number/max_channel_number
+        truncation, applied independently to each), and shared by every
+        displayed image -- exactly like `same_scale`, but sourced from a
+        different tensor. Lets `tensor` be displayed on another tensor's
+        color scale, e.g. a residual phase shown on the same scale as the
+        phase it was subtracted from. Takes precedence over `same_scale`.
 
     group_boxes : bool
         If True, draw rectangles around each B group for [BCWH] input.
@@ -111,28 +123,32 @@ def imshow(
     """
 
     # =========================================================
-    # Convert to numpy
-    # =========================================================
-
-    if torch.is_tensor(tensor):
-        tensor = tensor.detach().cpu().numpy()
-    else:
-        tensor = np.asarray(tensor)
-
-    # =========================================================
     # Convert dimensions to [B,C,W,H]
     # =========================================================
 
-    if tensor.ndim == 2:
-        tensor = tensor[None, None, ...]       # [W,H] -> [1,1,W,H]
+    def to_bcwh(arr, label):
+        if torch.is_tensor(arr):
+            arr = arr.detach().cpu().numpy()
+        else:
+            arr = np.asarray(arr)
 
-    elif tensor.ndim == 3:
-        tensor = tensor[None, ...]             # [C,W,H] -> [1,C,W,H]
+        if arr.ndim == 2:
+            return arr[None, None, ...]        # [W,H] -> [1,1,W,H]
 
-    elif tensor.ndim != 4:
-        raise ValueError(
-            f"Tensor must be [WH], [CWH], or [BCWH], got {tensor.shape}"
-        )
+        elif arr.ndim == 3:
+            return arr[None, ...]              # [C,W,H] -> [1,C,W,H]
+
+        elif arr.ndim != 4:
+            raise ValueError(
+                f"{label} must be [WH], [CWH], or [BCWH], got {arr.shape}"
+            )
+
+        return arr
+
+    tensor = to_bcwh(tensor, "tensor")
+
+    if scale_reference is not None:
+        scale_reference = to_bcwh(scale_reference, "scale_reference")
 
     B, C, W, H = tensor.shape
 
@@ -143,8 +159,16 @@ def imshow(
     if max_batch_number is not None:
         tensor = tensor[:min(B, max_batch_number)]
 
+        if scale_reference is not None:
+            rB = scale_reference.shape[0]
+            scale_reference = scale_reference[:min(rB, max_batch_number)]
+
     if max_channel_number is not None:
         tensor = tensor[:, :min(C, max_channel_number)]
+
+        if scale_reference is not None:
+            rC = scale_reference.shape[1]
+            scale_reference = scale_reference[:, :min(rC, max_channel_number)]
 
     B, C, W, H = tensor.shape
 
@@ -152,7 +176,10 @@ def imshow(
     # Scaling
     # =========================================================
 
-    if same_scale:
+    if scale_reference is not None:
+        vmin = scale_reference.min()
+        vmax = scale_reference.max()
+    elif same_scale:
         vmin = tensor.min()
         vmax = tensor.max()
     else:
@@ -205,7 +232,7 @@ def imshow(
                 # Determine clim for THIS image
                 # ---------------------------------------------
 
-                if same_scale:
+                if same_scale or scale_reference is not None:
                     # vmin/vmax were calculated globally
                     # for this imshow() call.
                     image_vmin = vmin
@@ -696,15 +723,71 @@ def imshow(
     return fig, axes
 
 
+def _resolve_imshow_item(item, index, base_kwargs):
+    """
+    Resolve one imshow_multiple() list entry into (tensor, title, kwargs).
+
+    `item` may be a bare tensor/array, in which case only the shared
+    `base_kwargs` apply, or a dict of the form
+    `{"tensor": t, "title": "...", <imshow kwarg overrides>}`, in which case
+    any extra keys are merged on top of `base_kwargs` for this item only.
+    `title` is treated like any other kwarg: it may be supplied globally
+    (same title for every panel) or overridden per item, and is popped out
+    of the merged kwargs before they reach imshow().
+    """
+    if isinstance(item, dict):
+        item = dict(item)  # don't mutate the caller's dict
+
+        if "tensor" not in item:
+            raise ValueError(
+                f"tensors[{index}] is a dict but has no 'tensor' key."
+            )
+
+        tensor = item.pop("tensor")
+        item_kwargs = {**base_kwargs, **item}
+
+    else:
+        tensor = item
+        item_kwargs = dict(base_kwargs)
+
+    title = item_kwargs.pop("title", None)
+
+    return tensor, title, item_kwargs
+
+
 def imshow_multiple(
     tensors,
     fig=None,
     axes=None,
     figsize=None,
     return_images=False,
-    titles=None,
+    subplot_grid=None,
     **kwargs
 ):
+    """
+    Display a list of tensors side by side, each rendered via imshow().
+
+    Parameters
+    ----------
+    tensors : list
+        Each entry is either a tensor/array (uses the shared `kwargs`) or a
+        dict `{"tensor": t, "title": "...", <imshow kwarg overrides>}` whose
+        extra keys override the shared `kwargs` for that panel only. The two
+        forms may be mixed within the same list. `title` (whether shared or
+        per-item) is not forwarded to imshow() -- it sets that panel's title.
+
+    subplot_grid : tuple (nrows, ncols), optional
+        Panel layout in create mode. Defaults to a single row (1, N). Must
+        satisfy nrows * ncols >= len(tensors). Has no effect in update mode
+        (fig/axes given), where the layout is already fixed.
+
+    fig, axes :
+        Existing figure/axes for update mode (see imshow()).
+
+    kwargs :
+        Shared imshow() kwargs applied to every panel, unless overridden by
+        that panel's dict item.
+    """
     tensors = list(tensors)
     N = len(tensors)
 
@@ -720,13 +803,15 @@ def imshow_multiple(
                 "existing visualizations."
             )
 
-        for tensor, tensor_axes in zip(tensors, axes):
+        for i, (item, tensor_axes) in enumerate(zip(tensors, axes)):
+
+            tensor, _, item_kwargs = _resolve_imshow_item(item, i, kwargs)
 
             imshow(
                 tensor,
                 fig=fig,
                 axes=tensor_axes,
-                **kwargs
+                **item_kwargs
             )
 
         if return_images:
@@ -744,27 +829,37 @@ def imshow_multiple(
     # CREATE
     # =========================================================
 
+    if subplot_grid is None:
+        nrows, ncols = 1, N
+    else:
+        nrows, ncols = subplot_grid
+        if nrows * ncols < N:
+            raise ValueError(
+                f"subplot_grid={subplot_grid} provides {nrows * ncols} slots, "
+                f"but {N} tensors were given."
+            )
+
     if figsize is None:
-        figsize = (5 * N, 5)
+        figsize = (5 * ncols, 5 * nrows)
 
     fig = plt.figure(figsize=figsize)
 
     axes = []
 
-    for i, tensor in enumerate(tensors):
+    for i, item in enumerate(tensors):
 
-        plt.subplot(1, N, i + 1)
-        if titles is not None:
-            plt.title(titles[i])
-            
+        tensor, title, item_kwargs = _resolve_imshow_item(item, i, kwargs)
+
+        plt.subplot(nrows, ncols, i + 1)
+        if title is not None:
+            plt.title(title)
+
         _, tensor_axes = imshow(
             tensor,
-            **kwargs
+            **item_kwargs
         )
 
         axes.append(tensor_axes)
-
-        
 
     if return_images:
         images = [
