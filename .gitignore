@@ -35,6 +35,7 @@ MANIFEST
 *.npy
 *.npz
 *.mat
+*.gif
 Data/
 Junk/
 
