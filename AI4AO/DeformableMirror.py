@@ -2,6 +2,7 @@ import torch  # type: ignore[import]
 import torch.nn as nn  # type: ignore[import]
 
 from .Utils import MakePupil
+from .PhaseDataset import Zernike
 
 class DeformableMirror(nn.Module):
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None):
@@ -18,6 +19,7 @@ class DeformableMirror(nn.Module):
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
 
         self.Nact =    DMDict["Nactuator"]
+        self.nModes =  DMDict["Nmodes"]
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
         self.flip_matrix = torch.tensor([[-1 if self.flip_lr else 1, -1 if self.flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
@@ -219,6 +221,16 @@ class DeformableMirror(nn.Module):
             self.sign = best_params[1]
             self.flip_lr = best_params[2]
             self.flip_tb = best_params[3]
+
+    def MakeZernikeM2C(self, nModes=None):
+        if nModes is None:
+            nModes = self.nModes
+        z, _ = Zernike(self.pupil, nModes)
+
+        inv_IF = torch.linalg.pinv(self.IF[:, self.pupil])
+
+        M2C = z @ inv_IF
+        return M2C.T
 
 
     def LoadCalibration(self, file_path):
