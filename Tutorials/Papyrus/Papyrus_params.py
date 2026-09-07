@@ -54,6 +54,7 @@ LoopParams = dict(
 DMParams = dict(
     {
         "Nactuator": 17,
+        "Nmodes": 195,
         "moffatParam": 2,
         "signedAmplitude": -5e-6,
         "MechCoupling": 0.36,
