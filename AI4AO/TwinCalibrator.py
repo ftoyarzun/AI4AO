@@ -15,11 +15,16 @@ class TwinCalibrator:
     """
 
     def __init__(self, wfs, dm, device):
+        self.initialized = False
         self.wfs = wfs
         self.dm = dm
         self.device = device
-        self.ref_pupil = None
-        self.ref_phase = None
+
+        self.init_static_offsets()
+        
+        self.initialized=True
+
+        
 
     def fit_pupil_to_reference(self, reference_frame, params_to_optimize, lr=3e-3, n_iter=200, live_plot=True, loss_fn=None):
         """
@@ -118,16 +123,16 @@ class TwinCalibrator:
 
     def init_static_offsets(self):
         wfs = self.wfs
-        self.ref_phase = torch.nn.Parameter(torch.zeros(*wfs.pupil.shape, device=self.device, dtype=torch.float32))
+        self._ref_opd = torch.nn.Parameter(torch.zeros(*wfs.pupil.shape, device=self.device, dtype=torch.float32))
         self.ref_pupil = torch.nn.Parameter(torch.ones(*wfs.pupil.shape, device=self.device, dtype=torch.float32))
-        return self.ref_pupil, self.ref_phase
+        return self.ref_pupil, self.ref_opd
 
     def sanity_check_plot(self, bench_iMat, M2C, mode_index, idx, batch_size=30):
         wfs, dm = self.wfs, self.dm
         target = bench_iMat[mode_index]
 
         modes = dm(M2C[:, mode_index].T)
-        wfs.BuildInteractionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, phaseOffset=self.ref_phase)
+        wfs.BuildInteractionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, opdOffset=self.ref_opd)
         digital_image = wfs.iMat
 
         imshow_multiple([
@@ -144,7 +149,7 @@ class TwinCalibrator:
                             batch_size=30, live_plot=True, plot_mode_idx=4):
         """
         Jointly optimizes DM misregistration, WFS mask parameters, and
-        (optionally) a static pupil-illumination/phase offset to match a
+        (optionally) a static pupil-illumination/OPD offset to match a
         bench interaction matrix, with a log-space learning-rate warmup on
         the offset parameters. Set `fit_static_offsets=False` to skip the
         offset fit entirely (e.g. Ekarus, where the bench data doesn't
@@ -157,12 +162,12 @@ class TwinCalibrator:
         target = bench_iMat[mode_index]
 
         if fit_static_offsets:
-            if self.ref_pupil is None or self.ref_phase is None:
+            if self.ref_pupil is None or self.ref_opd is None:
                 self.init_static_offsets()
-            offset_params = [self.ref_phase, self.ref_pupil]
+            offset_params = [self._ref_opd, self.ref_pupil]
         else:
             self.ref_pupil = None
-            self.ref_phase = 0
+            self.ref_opd = 0
             offset_params = []
 
         if live_plot:
@@ -205,7 +210,7 @@ class TwinCalibrator:
 
             wfs.BuildMask()
             modes = dm(M2C[:, mode_index].T)
-            wfs.BuildInteractionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, phaseOffset=self.ref_phase)
+            wfs.BuildInteractionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, opdOffset=self.ref_opd)
             digital_image = wfs.iMat
 
             l = ((target - digital_image) ** 2).sum()
@@ -257,16 +262,16 @@ class TwinCalibrator:
             plt.colorbar()
 
         plt.subplot(133)
-        plt.title('Retrieved static phase')
-        if self.ref_phase is not None:
-            plt.imshow(self.ref_phase.cpu().detach())
+        plt.title('Retrieved static OPD')
+        if self.ref_opd is not None:
+            plt.imshow(self.ref_opd.cpu().detach())
             plt.colorbar()
 
     def rebuild_reconstruction_matrix(self, M2C, batch_size=30):
         self.dm.eval()
         modes = self.dm(M2C.T)
         with torch.no_grad():
-            self.wfs.BuildReconstructionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, phaseOffset=self.ref_phase)
+            self.wfs.BuildReconstructionMatrix(modes, pupil=self.ref_pupil, batch_size=batch_size, opdOffset=self.ref_opd)
         return modes
 
     def plot_fit_residual(self, bench_iMat, idx, vmin=None, vmax=None, show_diff=True, reshape_digital=False):
@@ -400,3 +405,12 @@ class TwinCalibrator:
             ] = crop
 
         return full
+
+    @property
+    def ref_opd(self):
+        return self._ref_opd * 1e-6      # train in microns
+    @ref_opd.setter
+    def ref_opd(self, value):
+        if self.initialized:
+            with torch.no_grad():
+                self._ref_opd.copy_(torch.as_tensor(value, device=self.device) / 1e-6)

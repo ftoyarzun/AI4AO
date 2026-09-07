@@ -29,7 +29,7 @@ def PoissonNoise(x):
 class WFS(nn.Module):
     def __init__(self, ParamsDict, device):
         """
-        The wavefront sensor object is in charge of the propagation and reconstruction of the phase aberrations.
+        The wavefront sensor object is in charge of the propagation and reconstruction of the OPD aberrations.
 
         Parameters
         ----------
@@ -50,6 +50,7 @@ class WFS(nn.Module):
 
         """
         super().__init__()
+        self.wavelength = ParamsDict["Wavelength"]
         self.Nres = ParamsDict["Nres"]
         self.sampling = ParamsDict["sampling"]
         self.Npix = int(self.Nres * self.sampling)
@@ -197,21 +198,23 @@ class WFS(nn.Module):
             #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
             # )
 
-    def forward(self, phase, pupil = None):
-        return self.Propagator(phase, pupil)
+    def forward(self, opd, pupil = None):
+        return self.Propagator(opd, pupil)
 
-    def Propagator(self, phase, pupil = None):
+    def Propagator(self, opd, pupil = None):
         """
-        Simulates the propagation considering a input phase aberration and a phase mask
+        Simulates the propagation considering a input OPD aberration and a phase mask
 
         Args:
-           phase (torch tensor): Input phase aberration dim (NphasesxNresxNres)
+           opd (torch tensor): Input optical path difference, in meters, dim (NphasesxNresxNres)
         Returns:
            torch tensor: Sensor measurement NphasesxNresxNres
 
         """
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
+
+        phase = self.wavenumber * opd
 
         pad = int(np.round(self.Nres * (self.sampling - 1)) // 2)
         uin = (
@@ -269,12 +272,12 @@ class WFS(nn.Module):
         else:
             self.psf_with_noise = self.psf_no_noise
 
-    def GetPSF(self, phase, pupil = None, sampling = None, fov = None):
+    def GetPSF(self, opd, pupil = None, sampling = None, fov = None):
         """
-        Computes the Point Spread Function (PSF) for a given phase aberration.
+        Computes the Point Spread Function (PSF) for a given OPD aberration.
 
         Args:
-            phase (complex torch tensor): Input phase aberration
+            opd (torch tensor): Input optical path difference, in meters
             fov (float, optional): Output field of view, in lambda/D. The frame is
                 center-cropped to fov * sampling pixels. If None, the full frame
                 is returned.
@@ -287,6 +290,8 @@ class WFS(nn.Module):
 
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
+
+        phase = self.wavenumber * opd
 
         pad = int(np.round(self.Nres * (sampling - 1)) // 2)
         uin = (
@@ -368,9 +373,9 @@ class WFS(nn.Module):
             else:
                 self.mask = self.mask * transmisionMask
 
-    def BuildReferenceIntensity(self, phaseOffset=0, pupil = None):
+    def BuildReferenceIntensity(self, opdOffset=0, pupil = None):
         """
-        Builds the reference intensity by propagating a zero-phase aberration.
+        Builds the reference intensity by propagating a zero-OPD aberration.
 
         Args:
             None
@@ -382,44 +387,46 @@ class WFS(nn.Module):
         self.reference_intensity = self.Propagator(
             torch.zeros(
                 (1, self.Nres, self.Nres), dtype=torch.float32, device=self.device
-            ) + phaseOffset, pupil
+            ) + opdOffset, pupil
         )
         self.reference_intensity = self.reference_intensity.squeeze()
         self.useNoise = tempUseNoise
 
-    def BuildReconstructionMatrix(self, modes, pupil = None, batch_size=30, phaseOffset=0):
+    def BuildReconstructionMatrix(self, modes, pupil = None, batch_size=30, opdOffset=0):
         """
         Builds the reconstruction matrix as the inverse of the interaction matrix
 
         Args:
-            modes (torch tensor): Modes (3D array with shape (Npix, Npix, Nmodes)) representing different phase aberrations
+            modes (torch tensor): Modes (3D array with shape (Npix, Npix, Nmodes)) representing different OPD aberrations
             mask (torch tensor): Phase mask used in the propagation (not directly used in this function)
         Returns:
             None
         """
-        self.BuildInteractionMatrix(modes, pupil, batch_size, phaseOffset)
+        self.BuildInteractionMatrix(modes, pupil, batch_size, opdOffset)
         self.reconstructionMatrix = torch.linalg.pinv(self.iMat.flatten(start_dim=-2))
 
-    def BuildInteractionMatrix(self, modes, pupil = None, batch_size=30, phaseOffset=0, single_pass = False):
+    def BuildInteractionMatrix(self, modes, pupil = None, batch_size=30, opdOffset=0, single_pass = False):
         """
         Builds the interaction matrix by computing the signals for each mode using finite differences.
 
         Args:
-            modes (torch tensor): Modes (3D array with shape (Npix, Npix, Nmodes)) representing different phase aberrations
+            modes (torch tensor): Modes (3D array with shape (Npix, Npix, Nmodes)) representing different OPD aberrations
             mask (torch tensor): Phase mask used in the propagation (not directly used in this function)
         Returns:
             None
         """
         tempUseNoise = self.useNoise
         self.useNoise = False
-        delta = 1e-2
+        # Small OPD perturbation for the finite difference, scaled to this WFS's own
+        # sensing wavelength so it self-scales sensibly across instruments.
+        delta = 1 / 100
 
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
 
-        
+
         if single_pass and self.reference_intensity is None:
-            self.BuildReferenceIntensity(phaseOffset, pupil)
+            self.BuildReferenceIntensity(opdOffset, pupil)
 
         Nmodes = modes.shape[0]
         iMat_parts = []
@@ -428,12 +435,12 @@ class WFS(nn.Module):
             modes_batch = modes[i : i + batch_size]  # (Npix^2, batch_size)
 
             # reshape to (1, Npix, Npix, batch_size) if needed by Propagator
-            push = self.Propagator(modes_batch * delta + phaseOffset, pupil)
+            push = self.Propagator(modes_batch * delta + opdOffset, pupil)
             if single_pass:
                 pull = self.reference_intensity
                 signal = (push - pull) / (1.0 * delta)
             else:
-                pull = self.Propagator(-modes_batch * delta + phaseOffset, pupil)
+                pull = self.Propagator(-modes_batch * delta + opdOffset, pupil)
                 signal = (push - pull) / (2.0 * delta)
 
             iMat_parts.append(signal)
@@ -441,14 +448,14 @@ class WFS(nn.Module):
         self.iMat = torch.cat(iMat_parts, dim=0).squeeze()  # shape: (Nmodes, Npix^2)
         self.useNoise = tempUseNoise
 
-    def GetReconstructedPhase(self, intensity):
+    def GetReconstructedOPD(self, intensity):
         """
-        Reconstructs the phase aberration from the intensity measurement by applying the reconstruction matrix.
+        Reconstructs the OPD aberration from the intensity measurement by applying the reconstruction matrix.
 
         Args:
             intensity (torch tensor): Measured intensity (with noise, if applicable)
         Returns:
-            torch tensor: Reconstructed phase aberration
+            torch tensor: Reconstructed OPD aberration, in meters
         """
 
         reduced_intensity = intensity - self.reference_intensity
@@ -485,3 +492,11 @@ class WFS(nn.Module):
             self.BuildMask()
             self.BuildReferenceIntensity()
         return self
+
+    @property
+    def wavelength(self):
+        return self._wavelength
+    @wavelength.setter
+    def wavelength(self, value):
+        self._wavelength = value
+        self.wavenumber = 2 * torch.pi / value

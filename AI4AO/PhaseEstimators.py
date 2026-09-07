@@ -251,7 +251,7 @@ class LinearEstimator(nn.Module):
             self.WFS.BuildReferenceIntensity()
             self.WFS.BuildReconstructionMatrix(self.z_FullRes)
 
-        return self.WFS.GetReconstructedPhase(image)
+        return self.WFS.GetReconstructedOPD(image)
 
 
 if __name__ == "__main__":

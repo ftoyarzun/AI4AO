@@ -22,19 +22,19 @@ class AOLoss(nn.Module):
         Ze (Tensor): Ground-truth residual modal coefficients for this iteration.
         z_estimated (Tensor): Predicted modal coefficients for this iteration
             (Trainer's `z_output`, i.e. the reconstructor's raw prediction).
-        residual_phase (Tensor): Residual wavefront *before* this iteration's
-            correction is applied -- the phase that was actually fed into the
-            WFS to produce `wfs_frames`.
-        corrected_residual_phase (Tensor): Residual wavefront *after* this
+        residual_opd (Tensor): Residual wavefront (OPD, in meters) *before*
+            this iteration's correction is applied -- what was actually fed
+            into the WFS to produce `wfs_frames`.
+        corrected_residual_opd (Tensor): Residual wavefront *after* this
             iteration's correction is applied -- the quantity you're actually
             trying to minimize.
         wfs_frames (Tensor): Raw WFS detector frame(s) for this iteration.
     """
 
-    def forward(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
-        return self.compute(Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames)
+    def forward(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
+        return self.compute(Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames)
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         raise NotImplementedError
 
     def _terms(self):
@@ -70,10 +70,10 @@ class WeightedLossSum(AOLoss):
     def _terms(self):
         return list(zip(self.losses, self.weights))
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         total = 0.0
         for loss, weight in zip(self.losses, self.weights):
-            total = total + weight * loss(Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames)
+            total = total + weight * loss(Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames)
         return total
 
 
@@ -97,7 +97,7 @@ class Relative_Loss_Function(AOLoss):
         self.epsilon = epsilon
         self.degree = degree
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         """
         Computes the relative error between predicted and true modal
         coefficients, averaged over all non-batch dimensions and then over
@@ -118,7 +118,7 @@ class Relative_Loss_Function(AOLoss):
 
 class Physics_loss(AOLoss):
     """
-    Physics-consistency loss: reprojects the pre-correction residual phase
+    Physics-consistency loss: reprojects the pre-correction residual OPD
     through a (noiseless) copy of the WFS forward model and penalizes the
     difference between the resulting simulated WFS frame and the observed
     (noisy) WFS frame.
@@ -135,16 +135,16 @@ class Physics_loss(AOLoss):
         self.wfs.useNoise = False
         self.degree = degree
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         """
         Computes the physics-based loss between the observed WFS frame and
-        the frame simulated from residual_phase through the internal WFS copy.
+        the frame simulated from residual_opd through the internal WFS copy.
 
         Returns:
             Tensor: Scalar loss value.
         """
-        reconstructed_phase = residual_phase - corrected_residual_phase
-        I_pred = self.wfs(reconstructed_phase)
+        reconstructed_opd = residual_opd - corrected_residual_opd
+        I_pred = self.wfs(reconstructed_opd)
         return (
             torch.mean(torch.abs(I_pred - wfs_frames) ** self.degree) * 1e6
         )
@@ -162,7 +162,7 @@ class WFSSignalLoss(AOLoss):
     def __init__(self):
         super().__init__()
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         """
         Computes the negative mean per-pixel standard deviation across the
         batch as a proxy for the amount of signal in the WFS frame.
@@ -177,20 +177,26 @@ class WFSSignalLoss(AOLoss):
 class LogResidualVarianceLoss(AOLoss):
     """
     Loss function based on the log-variance of the post-correction residual
-    phase over the pupil area; minimizing it drives down residual wavefront
-    error while the log keeps the gradient well-scaled across a wide range
-    of variances.
+    phase (radians) over the pupil area; minimizing it drives down residual
+    wavefront error while the log keeps the gradient well-scaled across a
+    wide range of variances. Deliberately kept in phase units rather than
+    OPD, since residual phase variance (Strehl-adjacent) is the physically
+    meaningful quantity here -- `corrected_residual_opd` is converted to
+    phase via this WFS's own sensing wavelength before computing the variance.
 
     Args:
         pupil (Tensor): Binary mask indicating the pupil region.
+        wavelength (float): Sensing wavelength (meters) used to convert the
+            incoming OPD (meters) to phase (radians).
         device (str): Unused; accepted for interface consistency with other losses.
     """
 
-    def __init__(self, pupil, device="cuda"):
+    def __init__(self, pupil, wavelength, device="cuda"):
         super().__init__()
         self.pupil = torch.clone(pupil).bool()
+        self.wavenumber = 2 * torch.pi / wavelength
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         """
         Computes the log of the post-correction residual phase variance over
         the pupil region.
@@ -198,6 +204,7 @@ class LogResidualVarianceLoss(AOLoss):
         Returns:
             Tensor: Scalar loss value.
         """
+        corrected_residual_phase = self.wavenumber * corrected_residual_opd
         residual_variance = torch.var(
             corrected_residual_phase[..., self.pupil], dim=-1, keepdim=True
         )
@@ -211,5 +218,5 @@ class RMSELoss(AOLoss):
         super().__init__()
         self.mse = nn.MSELoss()
 
-    def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+    def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
         return torch.sqrt(self.mse(z_estimated, Ze))

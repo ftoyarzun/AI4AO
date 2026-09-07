@@ -93,7 +93,7 @@ class ZernikeWFS(WFS):
         """
         return MakePupil(nPx, self.device, Rpx=Rpx)
     
-    def forward(self, phase, pupil = None):
-        return self.Propagator(phase,pupil)
+    def forward(self, opd, pupil = None):
+        return self.Propagator(opd, pupil)
     
 

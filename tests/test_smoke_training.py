@@ -41,7 +41,7 @@ def test_trainer_train_and_evaluate_end_to_end(pyramid_wfs, deformable_mirror, p
     reconstructor = _TinyReconstructor(in_features, total_act).to(device)
     initial_weight = reconstructor.net.weight.detach().clone()
 
-    loss = LogResidualVarianceLoss(phase_dataset.pupil)
+    loss = LogResidualVarianceLoss(phase_dataset.pupil, phase_dataset.wavelength)
     optimizer = torch.optim.Adam(reconstructor.parameters(), lr=1e-2)
 
     trainer = Trainer(
@@ -66,11 +66,11 @@ def test_trainer_train_and_evaluate_end_to_end(pyramid_wfs, deformable_mirror, p
     result = trainer.evaluate(n_steps=3, dataset=phase_dataset)
 
     n_steps = 3
-    assert result.phase.shape[0] == n_steps
+    assert result.opd.shape[0] == n_steps
     assert result.pupil.shape[0] == n_steps
-    assert result.phase_reconstructed.shape[0] == n_steps
-    assert result.residual_phase.shape[0] == n_steps
+    assert result.opd_reconstructed.shape[0] == n_steps
+    assert result.residual_opd.shape[0] == n_steps
     assert result.wfs_frames.shape[0] == n_steps
     assert result.psfs.shape[0] == n_steps
     assert result.z_output.shape[0] == n_steps
-    assert torch.isfinite(result.residual_phase).all()
+    assert torch.isfinite(result.residual_opd).all()

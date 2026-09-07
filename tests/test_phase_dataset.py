@@ -110,8 +110,8 @@ def test_get_temporal_error_psd_nonnegative():
 # ---------------------------------------------------------------------------
 
 def test_remove_piston_zeroes_pupil_mean(phase_dataset):
-    phase_map = torch.randn(3, phase_dataset.Nres, phase_dataset.Nres)
-    pistoned = phase_dataset.RemovePiston(phase_map)
+    opd_map = torch.randn(3, phase_dataset.Nres, phase_dataset.Nres)
+    pistoned = phase_dataset.RemovePiston(opd_map)
 
     mask = phase_dataset.pupil.unsqueeze(0)
     mean_after = (pistoned * mask).sum(dim=(-2, -1)) / phase_dataset.pupilSum
@@ -126,7 +126,7 @@ def test_getitem_sequential_contract(phase_dataset, tiny_atmos_params):
     for idx in range(3):
         sample = phase_dataset[idx]
 
-        assert sample["phase"].shape == (Nphases, Nres, Nres)
+        assert sample["opd"].shape == (Nphases, Nres, Nres)
         assert sample["pupil"].shape == (Nphases, Nres, Nres)
         assert sample["nphotons"].shape == (Nphases, 1, 1)
         assert sample["ron"].shape == (Nphases, 1, 1)
@@ -136,7 +136,7 @@ def test_getitem_sequential_contract(phase_dataset, tiny_atmos_params):
         assert sample["loop_gain"].shape == (Nphases, 1)
         assert sample["loop_leak"].shape == (Nphases, 1)
 
-        assert torch.isfinite(sample["phase"]).all()
+        assert torch.isfinite(sample["opd"]).all()
 
 
 def test_seeded_construction_is_reproducible(
@@ -152,5 +152,20 @@ def test_seeded_construction_is_reproducible(
     ds2 = PhaseDataset(tiny_wfs_params(), tiny_atmos_params, tiny_loop_params, tiny_dm_params, device)
     sample2 = ds2[0]
 
-    assert torch.allclose(sample1["phase"], sample2["phase"])
+    assert torch.allclose(sample1["opd"], sample2["opd"])
     assert torch.allclose(sample1["r0"], sample2["r0"])
+
+
+def test_build_atmosphere_psd_scales_with_reference_wavelength(phase_dataset):
+    """The Kolmogorov phase PSD (rad^2, quoted at referenceWavelength) is
+    rescaled into an OPD PSD (m^2) by (referenceWavelength / 2*pi)**2, so
+    doubling referenceWavelength must quadruple the returned PSD."""
+    phase_dataset.DrawRandomParameters()
+    total_psd_1, _ = phase_dataset.BuildAtmospherePSD()
+
+    phase_dataset.referenceWavelength = phase_dataset.referenceWavelength * 2
+    total_psd_2, _ = phase_dataset.BuildAtmospherePSD()
+
+    nonzero = total_psd_1 != 0
+    ratio = total_psd_2[nonzero] / total_psd_1[nonzero]
+    assert torch.allclose(ratio, torch.full_like(ratio, 4.0), rtol=1e-4)

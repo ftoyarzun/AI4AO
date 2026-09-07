@@ -15,7 +15,7 @@ class DeformableMirror(nn.Module):
         self.D =            WFSDict["D"]
         self.wavelength =   WFSDict["Wavelength"]
         self.wavenumber =   2 * torch.pi / self.wavelength
-        
+
         self.offset_to_fit_number_of_actuators = offset_to_fit_number_of_actuators
 
         self.Nact =    DMDict["Nactuator"]
@@ -137,7 +137,7 @@ class DeformableMirror(nn.Module):
 
         r2 = (a*X**2 + 2*b*X*Y + c*Y**2)
 
-        self.IF = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter * self.wavenumber
+        self.IF = self.sign * 1 / (1 + r2/self.moffatParameter)**self.moffatParameter
 
         self.IF *= self.pupil
         self.IF[:, self.pupil] -= self.IF[:, self.pupil].mean(dim=(-1), keepdim=True)
@@ -227,6 +227,7 @@ class DeformableMirror(nn.Module):
             nModes = self.nModes
         with torch.no_grad():
             z, _ = Zernike(self.pupil, nModes)
+            z /= self.wavenumber
             inv_IF = torch.linalg.pinv(self.IF[:, self.pupil])
 
             M2C = z @ inv_IF

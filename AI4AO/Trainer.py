@@ -11,10 +11,10 @@ from tqdm import tqdm
 @dataclass
 class EvaluationResult:
     """Trajectories from a closed-loop evaluation rollout, each shaped (n_steps, ...)."""
-    phase: torch.Tensor
+    opd: torch.Tensor
     pupil: torch.Tensor
-    phase_reconstructed: torch.Tensor
-    residual_phase: torch.Tensor
+    opd_reconstructed: torch.Tensor
+    residual_opd: torch.Tensor
     wfs_frames: torch.Tensor
     psfs: torch.Tensor
     z_output: torch.Tensor
@@ -53,25 +53,25 @@ class Trainer:
         for u in progressBar:
             with torch.no_grad():
                 batch = self.dataset[0]
-                phaseGT = batch["phase"]
+                opd_gt = batch["opd"]
                 pupilGT = batch["pupil"]
                 gain = batch["loop_gain"]
                 leak = batch["loop_leak"]
                 photons = batch["nphotons"]
                 ron = batch["ron"]
 
-                modes = torch.matmul(phaseGT.flatten(start_dim = -2), self.z_inv)
+                modes = torch.matmul(opd_gt.flatten(start_dim = -2), self.z_inv)
 
                 self.wfs.SetPhotonsAndRON(photons, ron)
 
                 # Closed-loop correction
-                z_estimated = torch.zeros_like(modes)  # Start with zero correction 
-                z_buffer = torch.zeros_like(modes)  
-                z_output = torch.zeros_like(modes)    
-                phase_reconstructed = torch.zeros_like(phaseGT)
-                phase_reconstructed_iter = torch.zeros_like(phaseGT)
-                phase_reconstructed_ideal = torch.zeros_like(phaseGT)
-                phase_reconstructed_iter_ideal = torch.zeros_like(phaseGT)
+                z_estimated = torch.zeros_like(modes)  # Start with zero correction
+                z_buffer = torch.zeros_like(modes)
+                z_output = torch.zeros_like(modes)
+                opd_reconstructed = torch.zeros_like(opd_gt)
+                opd_reconstructed_iter = torch.zeros_like(opd_gt)
+                opd_reconstructed_ideal = torch.zeros_like(opd_gt)
+                opd_reconstructed_iter_ideal = torch.zeros_like(opd_gt)
 
                 total_loss = 0
                 ideal_loss = 0
@@ -81,43 +81,43 @@ class Trainer:
                     # Get new WFS images after applying the correction
                     if i > 0:
                         batch = self.dataset[i]
-                        phaseGT = batch["phase"]
+                        opd_gt = batch["opd"]
                         pupilGT = batch["pupil"]
 
-                    # modes = torch.matmul(phaseGT.flatten(start_dim = -2), z_inv)
-                    # phaseGT = dm(modes @ M2C.T)
+                    # modes = torch.matmul(opd_gt.flatten(start_dim = -2), z_inv)
+                    # opd_gt = dm(modes @ M2C.T)
 
-                    residual_phase = phaseGT - phase_reconstructed 
+                    residual_opd = opd_gt - opd_reconstructed
 
-                    modes = torch.matmul(phaseGT.flatten(start_dim = -2), self.z_inv)
-                    Ze = torch.matmul(residual_phase.flatten(start_dim = -2), self.z_inv)
+                    modes = torch.matmul(opd_gt.flatten(start_dim = -2), self.z_inv)
+                    Ze = torch.matmul(residual_opd.flatten(start_dim = -2), self.z_inv)
 
 
                     # Predict coefficients and update estimate
                     z_estimated = z_estimated * leak + gain * z_buffer  # Apply correction with gain
                     z_buffer = torch.clone(z_output)
 
-                
-                    wfs_frames = self.wfs(residual_phase, pupilGT)
+
+                    wfs_frames = self.wfs(residual_opd, pupilGT)
                     preprocessed_frames = self.framePreprocessor.ProcessFrame(wfs_frames)
                 z_output = self.phaseReconstructor(preprocessed_frames)
-                
+
                 # Convert modes coefficients to full-resolution wavefront
-                phase_reconstructed = self.dm(z_estimated @ M2C_T)
-                phase_reconstructed_iter = self.dm(z_output @ M2C_T)
-                
-                # phase_reconstructed_ideal = dm(modes @ M2C.T)
-                phase_reconstructed_iter_ideal = self.dm(Ze @ M2C_T)
-                
-                
+                opd_reconstructed = self.dm(z_estimated @ M2C_T)
+                opd_reconstructed_iter = self.dm(z_output @ M2C_T)
+
+                # opd_reconstructed_ideal = dm(modes @ M2C.T)
+                opd_reconstructed_iter_ideal = self.dm(Ze @ M2C_T)
+
+
                 # Compute loss for this iteration
-                corrected_residual_phase = residual_phase - phase_reconstructed_iter
-                total_loss += self.loss(Ze, z_output, residual_phase, corrected_residual_phase, wfs_frames) / closed_loop_iterations
+                corrected_residual_opd = residual_opd - opd_reconstructed_iter
+                total_loss += self.loss(Ze, z_output, residual_opd, corrected_residual_opd, wfs_frames) / closed_loop_iterations
 
                 # Compute ideal loss for comparison
                 with torch.no_grad():
-                    ideal_corrected_residual_phase = residual_phase - phase_reconstructed_iter_ideal
-                    ideal_loss += self.loss(Ze, Ze, residual_phase, ideal_corrected_residual_phase, wfs_frames) / closed_loop_iterations
+                    ideal_corrected_residual_opd = residual_opd - opd_reconstructed_iter_ideal
+                    ideal_loss += self.loss(Ze, Ze, residual_opd, ideal_corrected_residual_opd, wfs_frames) / closed_loop_iterations
 
                 
             # **Backpropagation**
@@ -154,7 +154,7 @@ class Trainer:
         self.phaseReconstructor.eval()
 
         batch = dataset[0]
-        phaseGT = batch["phase"]
+        opd_gt = batch["opd"]
         pupilGT = batch["pupil"]
         gain = gain if gain is not None else batch["loop_gain"]
         leak = leak if leak is not None else batch["loop_leak"]
@@ -163,26 +163,25 @@ class Trainer:
 
         self.wfs.SetPhotonsAndRON(photons, ron)
 
-        z_estimated = torch.zeros(phaseGT.shape[0], Nmodes, device=self.device)
+        z_estimated = torch.zeros(opd_gt.shape[0], Nmodes, device=self.device)
         z_buffer = torch.zeros_like(z_estimated)
         z_output = torch.zeros_like(z_estimated)
-        phase_reconstructed = torch.zeros_like(phaseGT)
+        opd_reconstructed = torch.zeros_like(opd_gt)
 
-        phases, pupils, reconstructed, residuals, frames, psfs, outputs = [], [], [], [], [], [], []
+        opds, pupils, reconstructed, residuals, frames, psfs, outputs = [], [], [], [], [], [], []
 
         for i in range(n_steps):
             if i > 0:
                 batch = dataset[i]
-                phaseGT = batch["phase"]
+                opd_gt = batch["opd"]
                 pupilGT = batch["pupil"]
 
-            residual_phase = phaseGT - phase_reconstructed
+            residual_opd = opd_gt - opd_reconstructed
 
-            
-            
 
-            wfs_frames = self.wfs(residual_phase, pupilGT)
-            psf = self.wfs.GetPSF(residual_phase, pupilGT, psf_sampling, psf_fov)
+
+            wfs_frames = self.wfs(residual_opd, pupilGT)
+            psf = self.wfs.GetPSF(residual_opd, pupilGT, psf_sampling, psf_fov)
             preprocessed_frames = self.framePreprocessor.ProcessFrame(wfs_frames, False)
             z_output = self.phaseReconstructor(preprocessed_frames)
 
@@ -192,21 +191,21 @@ class Trainer:
             if i > n_steps * 0.3:
                 z_estimated = z_estimated * leak + gain * z_buffer
 
-            phase_reconstructed = self.dm(z_estimated @ M2C_T)
+            opd_reconstructed = self.dm(z_estimated @ M2C_T)
 
-            phases.append(phaseGT)
+            opds.append(opd_gt)
             pupils.append(pupilGT)
-            reconstructed.append(phase_reconstructed)
-            residuals.append(residual_phase)
+            reconstructed.append(opd_reconstructed)
+            residuals.append(residual_opd)
             frames.append(wfs_frames)
             psfs.append(psf)
             outputs.append(z_output)
 
         return EvaluationResult(
-            phase = torch.stack(phases),
+            opd = torch.stack(opds),
             pupil = torch.stack(pupils),
-            phase_reconstructed = torch.stack(reconstructed),
-            residual_phase = torch.stack(residuals),
+            opd_reconstructed = torch.stack(reconstructed),
+            residual_opd = torch.stack(residuals),
             wfs_frames = torch.stack(frames),
             psfs = torch.stack(psfs),
             z_output = torch.stack(outputs),

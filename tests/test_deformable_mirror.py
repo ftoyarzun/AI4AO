@@ -132,4 +132,6 @@ def test_save_and_load_calibration_round_trip(deformable_mirror, tiny_wfs_params
     misreg_loaded, dmdict_loaded = fresh.GetMisreg()
 
     assert misreg_orig == pytest.approx(misreg_loaded, abs=1e-4)
-    assert torch.allclose(deformable_mirror.IF, fresh.IF, atol=1e-5)
+    # IF is now pure OPD (meters, no wavenumber factor), so its magnitude is
+    # set directly by `sign` (~1e-5 m here) -- use a tighter atol than that scale.
+    assert torch.allclose(deformable_mirror.IF, fresh.IF, atol=1e-9)

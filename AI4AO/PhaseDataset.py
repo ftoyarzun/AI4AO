@@ -322,7 +322,7 @@ class PhaseDataset(Dataset):
 
     Usage:
         dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
-        sample = dataset[idx]  # Returns phaseMap, modes coefficients, photons, RON, r0
+        sample = dataset[idx]  # Returns opdMap (meters), modes coefficients, photons, RON, r0
     """
     def __init__(self, WFSParams, AtmosParams, LoopParams, DMParams, device):
         """
@@ -341,7 +341,13 @@ class PhaseDataset(Dataset):
         self.photonRange = WFSParams['Nphotons']
         self.RONRange = WFSParams['RON']
         self.wavelength = WFSParams["Wavelength"]
-                       
+        self.wavenumber = 2 * torch.pi / self.wavelength
+
+        # Wavelength at which r0 is conventionally quoted (standard AO literature value).
+        # Used to convert the Kolmogorov phase PSD (rad^2, defined at this wavelength)
+        # into an OPD PSD (m^2), which is wavelength-independent.
+        self.referenceWavelength = 500e-9
+
         self.L0Range = AtmosParams['L0']
         self.r0Range = AtmosParams['r0']
         self.Nphases = AtmosParams['Nphases']
@@ -422,7 +428,7 @@ class PhaseDataset(Dataset):
     
         Returns:
             Tuple of:
-                - phaseMap (torch.Tensor): Current phase map.
+                - opdMap (torch.Tensor): Current OPD map (meters).
                 - Ze (torch.Tensor): Corresponding mode coefficients.
                 - Nphotons (torch.Tensor): Photon count.
                 - RON (torch.Tensor): Read-out noise.
@@ -450,26 +456,26 @@ class PhaseDataset(Dataset):
             phase_factor = (1j * 2 * torch.pi / self.loopFrequency * (self.windSpeedVector_x * self.fx_moving.unsqueeze(0).unsqueeze(0) + self.windSpeedVector_y * self.fy_moving.unsqueeze(0).unsqueeze(0)))
             self.translationPhase = torch.fft.fftshift(torch.exp(phase_factor), dim = (-2, -1))
  
-        self.layeredPhase = self.MakeLayersFromGenerator(idx, self.movingWavefrontGenerator)
-        phaseMap = self.CompressAtmosphere() 
+        self.layeredOPD = self.MakeLayersFromGenerator(idx, self.movingWavefrontGenerator)
+        opdMap = self.CompressAtmosphere()
 
         if self.useScintillation:
-            N = self.layeredPhase.shape[-1]
+            N = self.layeredOPD.shape[-1]
             if self.generateClosedLoop:
-                self.scintillationLayeredPhase = self.MakeLayersFromGenerator(idx, self.movingScintillationWavefrontGenerator)
-                pupilMap = self.ComputeScintillation(self.scintillationLayeredPhase).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+                self.scintillationLayeredOPD = self.MakeLayersFromGenerator(idx, self.movingScintillationWavefrontGenerator)
+                pupilMap = self.ComputeScintillation(self.scintillationLayeredOPD).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
             else:
-                pupilMap = self.ComputeScintillation(self.layeredPhase).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+                pupilMap = self.ComputeScintillation(self.layeredOPD).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
         else:
             pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
-        
+
         # Compute mode decomposition
-        # Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
-        
+        # Ze = torch.matmul(opdMap.flatten(1,2), self.invZ)
+
         self.movingCount += 1
-         
+
         return {
-                "phase": phaseMap,
+                "opd": opdMap,
                 "pupil": pupilMap,
                 "nphotons": self.Nphotons,
                 "ron": self.RON,
@@ -480,37 +486,39 @@ class PhaseDataset(Dataset):
                 "loop_leak": self.loopLeak.reshape(-1, 1),
                 }
     
-    def RemovePiston(self, phaseMap):
+    def RemovePiston(self, opdMap):
         mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
-        masked_mean = (phaseMap * mask).sum(dim=(-2, -1), keepdim=True) / self.pupilSum
-        return phaseMap - masked_mean * mask
-    
+        masked_mean = (opdMap * mask).sum(dim=(-2, -1), keepdim=True) / self.pupilSum
+        return opdMap - masked_mean * mask
+
     def MakeLayersFromGenerator(self, idx, generator):
-        layeredPhase = torch.fft.fft2(generator * self.translationPhase ** idx, dim=(-2, -1), norm="ortho").real
-        layeredPhase *= torch.sqrt(self.fractionalr0)
-        return layeredPhase
-    
+        layeredOPD = torch.fft.fft2(generator * self.translationPhase ** idx, dim=(-2, -1), norm="ortho").real
+        layeredOPD *= torch.sqrt(self.fractionalr0)
+        return layeredOPD
+
     def CompressAtmosphere(self):
         """
-        Compress the multilayer turbulence phase maps into a single wavefront phase.
-    
+        Compress the multilayer turbulence OPD maps into a single wavefront OPD.
+
         Returns:
-            torch.Tensor: Resulting phase map cropped and projected onto the pupil.
+            torch.Tensor: Resulting OPD map (meters) cropped and projected onto the pupil.
         """
-        N = self.layeredPhase.shape[-1]
-        croppedLayeredPhase = self.layeredPhase[:, :, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
-        phaseMap = croppedLayeredPhase.sum(dim=0)
-        phaseMap = self.pupil * phaseMap  # Apply pupil mask
-        phaseMap = self.RemovePiston(phaseMap)
-        return phaseMap
-    
-    def ComputeScintillation(self, layeredPhase):
+        N = self.layeredOPD.shape[-1]
+        croppedLayeredOPD = self.layeredOPD[:, :, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+        opdMap = croppedLayeredOPD.sum(dim=0)
+        opdMap = self.pupil * opdMap  # Apply pupil mask
+        opdMap = self.RemovePiston(opdMap)
+        return opdMap
+
+    def ComputeScintillation(self, layeredOPD):
 
         scintillationSupport = self.pupilASP.repeat(self.Nphases, 1, 1).to(dtype=torch.complex64)
 
         for i in range(self.nLayers):
             dist = self.layerHeights[i] - self.layerHeights[i + 1] if i < self.nLayers-1 else self.layerHeights[-1]
-            scintillationSupport = scintillationSupport * torch.exp(1j * layeredPhase[i])
+            # Convert this layer's OPD (meters) to phase (radians) at the sensing wavelength
+            # before it can act as a complex-field phasor.
+            scintillationSupport = scintillationSupport * torch.exp(1j * self.wavenumber * layeredOPD[i])
             scintillationSupport = self.ASP(scintillationSupport, dist)
         
         scintillationSupport = scintillationSupport#[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
@@ -574,12 +582,15 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Atmospheric PSD with optional closed-loop correction applied.
         """
-        atmosphere_PSD = GetAtmospherePSD(self.fsqr_moving, 
-                                                          self.dF_moving, 
-                                                          self.r0_moving, 
-                                                          self.L0, 
-                                                          self.f_slope)  # Shape: (Nphases, H, W)
-        
+        atmosphere_PSD = GetAtmospherePSD(self.fsqr_moving,
+                                                          self.dF_moving,
+                                                          self.r0_moving,
+                                                          self.L0,
+                                                          self.f_slope)  # Shape: (Nphases, H, W), rad^2 units at self.referenceWavelength
+        # Turbulence-induced OPD is wavelength-independent; rescale the rad^2 phase PSD
+        # (implicitly quoted at self.referenceWavelength) into an OPD^2 (m^2) PSD.
+        atmosphere_PSD = atmosphere_PSD * (self.referenceWavelength / (2 * torch.pi)) ** 2
+
         total_PSD = atmosphere_PSD# * fitting_PSD
         total_PSD = total_PSD.repeat(self.nLayers, 1, 1, 1)
         if not self.generateClosedLoop:

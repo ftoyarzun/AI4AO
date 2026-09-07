@@ -38,9 +38,9 @@ def test_pyramid_mask_scalar_vs_array_offsets(pyramid_wfs):
 
 def test_forward_static_mask_shape_and_normalization(pyramid_wfs, device):
     Nphases = 3
-    phase = torch.randn(Nphases, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)
+    opd = torch.randn(Nphases, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)
 
-    frame = pyramid_wfs(phase)
+    frame = pyramid_wfs(opd)
 
     assert frame.shape == (Nphases, pyramid_wfs.Npix, pyramid_wfs.Npix)
     assert torch.all(frame >= 0)
@@ -51,9 +51,9 @@ def test_forward_static_mask_shape_and_normalization(pyramid_wfs, device):
 def test_forward_modulated_mask_shape_and_normalization(tiny_wfs_params, device):
     wfs = PyramidWFS(tiny_wfs_params(modulation=1.0), device)
     Nphases = 2
-    phase = torch.randn(Nphases, wfs.Nres, wfs.Nres, device=device)
+    opd = torch.randn(Nphases, wfs.Nres, wfs.Nres, device=device)
 
-    frame = wfs(phase)
+    frame = wfs(opd)
 
     assert frame.shape == (Nphases, wfs.Npix, wfs.Npix)
     assert torch.all(frame >= 0)
@@ -73,5 +73,5 @@ def test_calibration_chain_recovers_reference(pyramid_wfs):
 
     pyramid_wfs.BuildReconstructionMatrix(modes)
 
-    reconstructed = pyramid_wfs.GetReconstructedPhase(pyramid_wfs.reference_intensity)
+    reconstructed = pyramid_wfs.GetReconstructedOPD(pyramid_wfs.reference_intensity)
     assert torch.allclose(reconstructed, torch.zeros_like(reconstructed), atol=1e-4)

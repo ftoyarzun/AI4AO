@@ -1,7 +1,7 @@
 """Tests for AI4AO.LossFunctions.
 
 Physics_loss needs a callable WFS-like object, but since it only calls
-`wfs(phase)` and reads `wfs.useNoise`, a minimal duck-typed stub is enough --
+`wfs(opd)` and reads `wfs.useNoise`, a minimal duck-typed stub is enough --
 no full PyramidWFS/ZernikeWFS instance required.
 """
 import copy
@@ -24,17 +24,17 @@ from AI4AO.LossFunctions import (
 def _dummy_forward_args(batch=2, nmodes=3, nres=6):
     Ze = torch.randn(batch, nmodes)
     z_estimated = torch.randn(batch, nmodes, requires_grad=True)
-    residual_phase = torch.randn(batch, nres, nres)
-    corrected_residual_phase = torch.randn(batch, nres, nres)
+    residual_opd = torch.randn(batch, nres, nres)
+    corrected_residual_opd = torch.randn(batch, nres, nres)
     wfs_frames = torch.rand(batch, nres, nres)
-    return Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames
+    return Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames
 
 
 def test_relative_loss_function_scalar_and_gradient():
     loss_fn = Relative_Loss_Function()
-    Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames = _dummy_forward_args()
+    Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames = _dummy_forward_args()
 
-    loss = loss_fn(Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames)
+    loss = loss_fn(Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames)
     assert loss.dim() == 0
     assert torch.isfinite(loss)
 
@@ -79,26 +79,28 @@ def test_log_residual_variance_loss_matches_manual_computation():
     pupil = torch.zeros(6, 6, dtype=torch.bool)
     pupil[1:5, 1:5] = True
 
-    corrected_residual_phase = torch.randn(2, 6, 6)
-    loss_fn = LogResidualVarianceLoss(pupil)
+    wavelength = 635e-9
+    corrected_residual_opd = torch.randn(2, 6, 6) * 1e-7
+    loss_fn = LogResidualVarianceLoss(pupil, wavelength)
 
-    loss = loss_fn(None, None, None, corrected_residual_phase, None)
+    loss = loss_fn(None, None, None, corrected_residual_opd, None)
 
-    expected_var = corrected_residual_phase[..., pupil].var(dim=-1, keepdim=True)
+    wavenumber = 2 * torch.pi / wavelength
+    expected_var = (wavenumber * corrected_residual_opd)[..., pupil].var(dim=-1, keepdim=True)
     expected = torch.log(expected_var).mean()
     assert torch.allclose(loss, expected, atol=1e-5)
 
 
 class _FakeWFS(nn.Module):
     """Minimal duck-typed stand-in for a WFS: Physics_loss only needs
-    `.useNoise` and a callable forward(phase) -> frame."""
+    `.useNoise` and a callable forward(opd) -> frame."""
     def __init__(self):
         super().__init__()
         self.useNoise = True
         self.scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, phase):
-        return self.scale * phase.abs()
+    def forward(self, opd):
+        return self.scale * opd.abs()
 
 
 def test_physics_loss_deep_copies_wfs_and_disables_noise():
@@ -114,14 +116,14 @@ def test_physics_loss_matches_manual_computation():
     wfs = _FakeWFS()
     loss_fn = Physics_loss(wfs, degree=2)
 
-    residual_phase = torch.randn(2, 4, 4)
-    corrected_residual_phase = torch.randn(2, 4, 4)
+    residual_opd = torch.randn(2, 4, 4)
+    corrected_residual_opd = torch.randn(2, 4, 4)
     wfs_frames = torch.rand(2, 4, 4)
 
-    loss = loss_fn(None, None, residual_phase, corrected_residual_phase, wfs_frames)
+    loss = loss_fn(None, None, residual_opd, corrected_residual_opd, wfs_frames)
 
-    reconstructed_phase = residual_phase - corrected_residual_phase
-    expected = torch.mean(torch.abs(loss_fn.wfs(reconstructed_phase) - wfs_frames) ** 2) * 1e6
+    reconstructed_opd = residual_opd - corrected_residual_opd
+    expected = torch.mean(torch.abs(loss_fn.wfs(reconstructed_opd) - wfs_frames) ** 2) * 1e6
     assert torch.allclose(loss, expected, atol=1e-4)
 
 
@@ -131,7 +133,7 @@ def test_weighted_loss_sum_composition():
             super().__init__()
             self.value = value
 
-        def compute(self, Ze, z_estimated, residual_phase, corrected_residual_phase, wfs_frames):
+        def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
             return torch.tensor(self.value)
 
     loss_a = _ConstLoss(2.0)

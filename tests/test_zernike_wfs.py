@@ -47,9 +47,9 @@ def test_unrecognized_mask_type_raises_attribute_error(tiny_zernike_wfs_params, 
 
 def test_forward_fft_path_shape_and_normalization(zernike_wfs, device):
     Nphases = 2
-    phase = torch.randn(Nphases, zernike_wfs.Nres, zernike_wfs.Nres, device=device)
+    opd = torch.randn(Nphases, zernike_wfs.Nres, zernike_wfs.Nres, device=device)
 
-    frame = zernike_wfs(phase)
+    frame = zernike_wfs(opd)
 
     assert frame.shape == (Nphases, zernike_wfs.Npix, zernike_wfs.Npix)
     assert torch.all(frame >= 0)
@@ -60,9 +60,9 @@ def test_forward_fft_path_shape_and_normalization(zernike_wfs, device):
 def test_forward_mft_path_shape_and_normalization(tiny_zernike_wfs_params, device):
     wfs = ZernikeWFS(tiny_zernike_wfs_params(mask_type="Zernike", use_mtf=True), device)
     Nphases = 2
-    phase = torch.randn(Nphases, wfs.Nres, wfs.Nres, device=device)
+    opd = torch.randn(Nphases, wfs.Nres, wfs.Nres, device=device)
 
-    frame = wfs(phase)
+    frame = wfs(opd)
 
     assert frame.shape == (Nphases, wfs.Npix, wfs.Npix)
     assert torch.all(frame >= 0)
