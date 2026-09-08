@@ -40,15 +40,63 @@ def test_gradient_flows_through_zernike_wfs(zernike_wfs, device):
 
 def test_gradient_flows_through_opd_to_phase_conversion(pyramid_wfs, device):
     """Exercises the new WFS-internal OPD->phase conversion (opd * wavenumber)
-    as its own gradient-flow path, distinct from the end-to-end WFS checks above."""
-    opd = (1e-7 * torch.randn(2, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)).requires_grad_()
+    as its own gradient-flow path, distinct from the end-to-end WFS checks above.
+    wavenumber is always a 4-D (1, Nwavelength, 1, 1) tensor (never a bare
+    Python number), so the expected gradient is built by broadcasting rather
+    than torch.full_like -- when opd's own wavelength axis is a broadcast
+    singleton (as here), the gradient at each position is the *sum* over
+    wavenumber's wavelength axis, not a single shared constant."""
+    opd = (1e-7 * torch.randn(2, 1, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)).requires_grad_()
 
     phase = pyramid_wfs.wavenumber * opd
     phase.sum().backward()
 
     assert opd.grad is not None
     assert torch.isfinite(opd.grad).all()
-    assert torch.allclose(opd.grad, torch.full_like(opd.grad, pyramid_wfs.wavenumber))
+    expected = pyramid_wfs.wavenumber.sum(dim=1, keepdim=True).expand_as(opd.grad)
+    assert torch.allclose(opd.grad, expected)
+
+
+def test_gradient_flows_through_multi_wavelength_propagation(pyramid_wfs, device):
+    """Exercises gradient flow through the new batched-wavelength path: a
+    wavelength tensor with requires_grad=True must still produce finite
+    gradients through wfs(opd), since self.wavenumber = 2*pi/wavelength feeds
+    directly into the phase computed inside Propagator."""
+    wavelength = torch.tensor([635e-9, 750e-9], device=device).requires_grad_()
+    pyramid_wfs.wavelength = wavelength
+
+    opd = (1e-7 * torch.randn(2, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)).requires_grad_()
+
+    frame = pyramid_wfs(opd)
+    assert frame.shape == (2, pyramid_wfs.Npix, pyramid_wfs.Npix)
+
+    torch.var(frame, dim=(-2, -1)).sum().backward()
+
+    assert opd.grad is not None
+    assert torch.isfinite(opd.grad).all()
+    assert wavelength.grad is not None
+    assert torch.isfinite(wavelength.grad).all()
+
+
+def test_gradient_flows_through_polychromatic_get_psf(pyramid_wfs, device):
+    """GetPSF's multi-wavelength path resamples via grid_sample using
+    coordinates built from wavelength (scale = wavelength[-1]/wavelength), so
+    gradients w.r.t. wavelength must still flow through that resampling, not
+    just through the plain wavenumber*opd phase conversion."""
+    wavelength = torch.tensor([635e-9, 750e-9], device=device).requires_grad_()
+    pyramid_wfs.wavelength = wavelength
+
+    opd = (1e-7 * torch.randn(2, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)).requires_grad_()
+
+    psf = pyramid_wfs.GetPSF(opd)
+    assert psf.shape == (2, pyramid_wfs.Npix, pyramid_wfs.Npix)
+
+    psf.sum().backward()
+
+    assert opd.grad is not None
+    assert torch.isfinite(opd.grad).all()
+    assert wavelength.grad is not None
+    assert torch.isfinite(wavelength.grad).all()
 
 
 def test_gradient_flows_through_deformable_mirror_to_coefs_and_misreg(deformable_mirror, device):
@@ -88,7 +136,7 @@ def test_gradient_flows_end_to_end_opd_to_reconstructor_loss(
 
     loss_fn = RMSELoss()
     Ze = torch.zeros_like(z_output)
-    loss = loss_fn(Ze, z_output, opd, opd_reconstructed, wfs_frame)
+    loss = loss_fn(Ze, z_output, pyramid_wfs.pupil, opd, opd_reconstructed, wfs_frame)
     loss.backward()
 
     assert opd.grad is not None

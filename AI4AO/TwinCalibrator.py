@@ -136,9 +136,9 @@ class TwinCalibrator:
         digital_image = wfs.iMat
 
         imshow_multiple([
-            {"tensor": target, "title": "Bench iMat"},
-            {"tensor": digital_image, "title": "Starting guess iMat"},
-            {"tensor": (target - digital_image), "title": "Difference"},
+            {"tensor": target, "title": "Bench iMat", "same_scale": True},
+            {"tensor": digital_image, "title": "Starting guess iMat", "same_scale": True},
+            {"tensor": (target - digital_image), "title": "Difference", "scale_reference": target},
         ],
         max_channel_number=idx,
         group_boxes=True
@@ -172,9 +172,9 @@ class TwinCalibrator:
 
         if live_plot:
             fig, ax = imshow_multiple([
-                        {"tensor": target, "title": "Bench iMat"},
-                        {"tensor": target, "title": "Calibrated iMat"},
-                        {"tensor": (target - target), "title": "Difference"},
+                        {"tensor": target, "title": "Bench iMat", "same_scale": True},
+                        {"tensor": target, "title": "Calibrated iMat", "same_scale": True},
+                        {"tensor": (target - target), "title": "Difference", "scale_reference": target},
                     ],
                     max_channel_number=plot_mode_idx,
                     group_boxes=True
@@ -221,9 +221,9 @@ class TwinCalibrator:
             if live_plot and u % 10 == 0:
                 clear_output(wait=True)
                 imshow_multiple([
-                        {"tensor": target, "title": "Bench iMat"},
-                        {"tensor": digital_image, "title": "Calibrated iMat"},
-                        {"tensor": (target - digital_image), "title": "Difference"},
+                        {"tensor": target, "title": "Bench iMat", "same_scale": True},
+                        {"tensor": digital_image, "title": "Calibrated iMat", "same_scale": True},
+                        {"tensor": (target - digital_image), "title": "Difference", "scale_reference": target},
                     ],
                     fig=fig, axes=ax,
                     max_channel_number=plot_mode_idx,

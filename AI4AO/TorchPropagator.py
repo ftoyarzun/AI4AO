@@ -50,6 +50,7 @@ class WFS(nn.Module):
 
         """
         super().__init__()
+        self.device = device
         self.wavelength = ParamsDict["Wavelength"]
         self.Nres = ParamsDict["Nres"]
         self.sampling = ParamsDict["sampling"]
@@ -61,10 +62,8 @@ class WFS(nn.Module):
         self.pupil_shift_x = ParamsDict.get("pupilShiftX", 0.0)
         self.pupil_shift_y = ParamsDict.get("pupilShiftY", 0.0)
         self.pupil_upscale = ParamsDict.get("pupilUpscale", 1)
-        self.device = device
         self.reference_intensity = None
         self.pupil_centers = None
-        self.beamSplitProportionForWFSDetector = 1 # ParamsDict["beamSplitProportionForWFSDetector"]
 
         self.Nphotons = 1e7
         self.RON = 2
@@ -99,7 +98,6 @@ class WFS(nn.Module):
         ufocal = fft2(fftshift(uin_padded, [-2, -1]))
         upupil = ifft2(ufocal * fftshift(self.mask, [-2, -1]), norm="forward")  # Multiplication to the phase mask and propagation to the detector
         self.frame_no_noise = (torch.abs(fftshift(upupil, [-2, -1])) ** 2)  # Return the noisy image, normalized the the number of counts
-        self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
 
     def MakeMTFMatrices(self, fourier_extension):
         fourier_sampling = self.sampling * self.MTF_focal_upscale
@@ -190,9 +188,9 @@ class WFS(nn.Module):
             torch.exp(1j * self.phaseMask) - 1
         ) * self.iMFT_focal_to_pupil(psi_ref)
         self.frame_no_noise = torch.abs(psi_zwfs) ** 2
-        for i in range(self.frame_no_noise.shape[1]):
-            self.frame_no_noise[:, i] = torch.roll(
-                self.frame_no_noise[:, i], shifts=self.pupil_shifts[i].item(), dims=-2
+        for i in range(self.frame_no_noise.shape[-3]):
+            self.frame_no_noise[..., i, :, :] = torch.roll(
+                self.frame_no_noise[..., i, :, :], shifts=self.pupil_shifts[i].item(), dims=-2
             )  # up
             # self.frame_no_noise[:, 1] = torch.roll(
             #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
@@ -201,12 +199,16 @@ class WFS(nn.Module):
     def forward(self, opd, pupil = None):
         return self.Propagator(opd, pupil)
 
-    def Propagator(self, opd, pupil = None):
+    def Propagator(self, opd, pupil = None, collapse_wvl = True):
         """
         Simulates the propagation considering a input OPD aberration and a phase mask
 
         Args:
-           opd (torch tensor): Input optical path difference, in meters, dim (NphasesxNresxNres)
+           opd (torch tensor): Input optical path difference, in meters, dim (NphasesxNresxNres).
+               If `self.wavelength` is a 1-D tensor of Nwavelength sensing wavelengths, propagation
+               for every wavelength is computed in parallel and the wavelength channel is summed
+               away before returning (mirroring how the pre-existing mask/modulation channel is
+               summed), so the return shape is always NphasesxNresxNres regardless of Nwavelength.
         Returns:
            torch tensor: Sensor measurement NphasesxNresxNres
 
@@ -214,31 +216,27 @@ class WFS(nn.Module):
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
 
+        if opd.dim() == 3:
+            opd = opd.unsqueeze(1)
+        if pupil.dim() == 3:
+            pupil = pupil.unsqueeze(1)
+
         phase = self.wavenumber * opd
 
         pad = int(np.round(self.Nres * (self.sampling - 1)) // 2)
-        uin = (
-            self.pupil.unsqueeze(0)
-            * pupil
-            * torch.exp(1j * phase)
-            / torch.sqrt(self.pupil.sum())
-        )
-        uin = uin.unsqueeze(1)
+        uin = (self.pupil.unsqueeze(0) * pupil * torch.exp(1j * phase) / torch.sqrt(self.pupil.sum()))
+        uin = uin.unsqueeze(-3)
         uin_padded = torch.nn.functional.pad(
             uin, (pad, pad, pad, pad)
         )  # Pad the pupil
 
-        self.frame_no_noise = torch.abs(torch.zeros_like(uin_padded))
-        self.psf_no_noise = torch.abs(torch.zeros_like(uin_padded))
-
-        ufocal = fft2(fftshift(uin_padded, [-2, -1]))
-        self.psf_no_noise = torch.abs(ifftshift(ufocal, [-2, -1])) ** 2
-
         self.PropagateField(uin, uin_padded)
 
-        self.frame_no_noise = self.frame_no_noise.sum(dim=1)
+        if collapse_wvl:
+            self.frame_no_noise = self.frame_no_noise.sum(dim=(1, -3))  # collapse mask/modulation channel
+        else:
+            self.frame_no_noise = self.frame_no_noise.sum(dim=(-3)) # Collapse only mask and maintain color info
         self.frame_no_noise /= self.frame_no_noise.sum(dim=(-2, -1), keepdim=True)
-        # self.psf_no_noise /= self.psf_no_noise.sum(dim=(-2, -1), keepdim=True)
 
         if not self.useNoise:
             return self.frame_no_noise
@@ -258,29 +256,32 @@ class WFS(nn.Module):
 
     def AddNoiseToFrame(self):
         self.frame_with_noise = PoissonNoise(
-            self.frame_no_noise * self.Nphotons * self.beamSplitProportionForWFSDetector
+            self.frame_no_noise * self.Nphotons
         ) + self.RON * torch.randn_like(self.frame_no_noise)
         self.frame_with_noise /= self.frame_with_noise.sum(dim=(-2, -1), keepdim=True)
 
-        if self.beamSplitProportionForWFSDetector < 1.0:
-            self.psf_with_noise = PoissonNoise(
-                self.psf_no_noise
-                * self.Nphotons
-                * (1.0 - self.beamSplitProportionForWFSDetector)
-            ) + self.focalPlaneRON * torch.randn_like(self.psf_no_noise)
-            self.psf_with_noise /= self.psf_with_noise.sum(dim=(-2, -1), keepdim=True)
-        else:
-            self.psf_with_noise = self.psf_no_noise
-
-    def GetPSF(self, opd, pupil = None, sampling = None, fov = None):
+    def GetPSF(self, opd, pupil = None, sampling = None, fov = None, wl = None, collapse_wvl = True):
         """
         Computes the Point Spread Function (PSF) for a given OPD aberration.
 
         Args:
-            opd (torch tensor): Input optical path difference, in meters
+            opd (torch tensor): Input optical path difference, in meters. If
+                `self.wavelength` is a 1-D tensor of Nwavelength sensing wavelengths
+                (assumed sorted ascending), the PSF is computed for every wavelength
+                in parallel. Because the physical angular pixel scale of an FFT-based
+                PSF is (1/sampling)*(wavelength/D), different wavelengths are NOT
+                natively on the same physical grid: the shared FFT is run at the
+                oversampling needed for the *longest* wavelength (self.wavelength[-1])
+                so every other channel comes out finer than the target, then each
+                channel is resampled (never upsampled) via grid_sample onto the
+                output grid implied by the *shortest* wavelength (self.wavelength[0])
+                before being summed away. Return shape is always NphasesxNresxNres.
             fov (float, optional): Output field of view, in lambda/D. The frame is
                 center-cropped to fov * sampling pixels. If None, the full frame
                 is returned.
+            wl (float/array, optional): wavelength to use for the PSF computation. It
+                can be a single float, or an array (list, np.array, torch.tensor) for a 
+                polychromatic simulation. If defaults to the same as for the sensing.
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
@@ -291,23 +292,15 @@ class WFS(nn.Module):
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
 
-        phase = self.wavenumber * opd
+        if wl is None:
+            wl = self.wavelength
+        else:
+            # Coerce the same way the wavelength setter does: the docstring
+            # promises a plain float/list/array works, not just a tensor
+            # already shaped the way _GetPolychromaticPSF needs (1-D, indexable).
+            wl = torch.as_tensor(wl, device=self.device, dtype=torch.float32).reshape(-1)
 
-        pad = int(np.round(self.Nres * (sampling - 1)) // 2)
-        uin = (
-            self.pupil.unsqueeze(0)
-            * pupil
-            * torch.exp(1j * phase)
-            / torch.sqrt(self.pupil.sum())
-        )
-        uin_padded = torch.nn.functional.pad(uin, (pad, pad, pad, pad))  # Pad the pupil
-
-        ufocal = torch.fft.fft2(
-            torch.fft.fftshift(uin_padded, [-2, -1])
-        )  # Pad the pupil
-        psf = (
-            torch.abs(torch.fft.fftshift(ufocal, [-2, -1])) ** 2
-        )  # Propagation of the field to the focal plane
+        psf = self._GetPolychromaticPSF(opd, pupil, sampling, wl, collapse_wvl)
 
         if fov is None:
             return psf
@@ -318,13 +311,102 @@ class WFS(nn.Module):
         x0 = (Nx - fov_pix) // 2
         return psf[..., y0 : y0 + fov_pix, x0 : x0 + fov_pix]
 
+    def _GetPolychromaticPSF(self, opd, pupil, sampling, wl, collapse_wvl):
+        """Multi-wavelength branch of GetPSF (see its docstring). Runs one shared
+        FFT oversampled for self.wavelength[-1], then resamples each wavelength
+        channel via grid_sample onto the self.wavelength[0]-scale output grid
+        before summing, since the channels are not natively on the same physical
+        angular grid (see class-level discussion in GetPSF's docstring).
+        """
+
+        assert torch.all(wl[1:] >= wl[:-1]), (
+            "GetPSF's multi-wavelength path assumes self.wavelength is sorted "
+            "ascending (wavelength[0] smallest, wavelength[-1] largest)."
+        )
+
+        if opd.dim() == 3:
+            opd = opd.unsqueeze(1)
+        if pupil.dim() == 3:
+            pupil = pupil.unsqueeze(1)
+
+        # Oversample the shared simulation enough that even the longest
+        # wavelength reaches wavelength[0]'s target physical pixel scale.
+        sim_sampling = float((sampling * wl[-1] / wl[0]).item())
+        pad_sim = int(np.round(self.Nres * (sim_sampling - 1)) // 2)
+        Npix_sim = self.Nres + 2 * pad_sim
+        Npix_out = self.Nres + 2 * int(np.round(self.Nres * (sampling - 1)) // 2)
+
+        phase = 2 * torch.pi / wl.reshape(1,-1,1,1) * opd
+        uin = (
+            self.pupil.unsqueeze(0)
+            * pupil
+            * torch.exp(1j * phase)
+            / torch.sqrt(self.pupil.sum())
+        )
+        uin_padded = torch.nn.functional.pad(uin, (pad_sim, pad_sim, pad_sim, pad_sim))
+
+        ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded, [-2, -1]))
+        psf_sim = torch.abs(torch.fft.fftshift(ufocal, [-2, -1])) ** 2  # (Nphases, Nwavelength, Npix_sim, Npix_sim)
+
+        # sim-pixels per output-pixel, per wavelength: >=1 everywhere, ==1 at
+        # wavelength[-1] (a no-op resample -- that channel already IS the sim grid).
+        scale = wl[-1] / wl
+        grid = self._BuildWavelengthResampleGrid(scale, Npix_sim, Npix_out)  # (Nwavelength, Npix_out, Npix_out, 2)
+
+        Nphases_, Nwave_ = psf_sim.shape[:2]
+        psf_flat = psf_sim.reshape(Nphases_ * Nwave_, 1, Npix_sim, Npix_sim)
+        grid_flat = grid.unsqueeze(0).expand(Nphases_, -1, -1, -1, -1).reshape(
+            Nphases_ * Nwave_, Npix_out, Npix_out, 2
+        )
+        resampled = torch.nn.functional.grid_sample(
+            psf_flat, grid_flat, mode="bilinear", align_corners=True, padding_mode="zeros"
+        )
+        psf = resampled.reshape(Nphases_, Nwave_, Npix_out, Npix_out)
+        if collapse_wvl:
+            psf = psf.sum(dim=1)
+
+        return psf
+
+    def _BuildWavelengthResampleGrid(self, scale, Npix_sim, Npix_out):
+        """Builds grid_sample coordinates (align_corners=True) mapping each of
+        Npix_out centered output pixels to its corresponding location in an
+        Npix_sim x Npix_sim simulation grid, separately for each wavelength's
+        sim-pixels-per-output-pixel factor in `scale` (shape (Nwavelength,)).
+        Returns (Nwavelength, Npix_out, Npix_out, 2), fully vectorized (no loop).
+        """
+        j = torch.arange(Npix_out, device=self.device, dtype=torch.float32)
+        center_out = (Npix_out - 1) / 2
+        center_sim = (Npix_sim - 1) / 2
+        offset = j - center_out  # (Npix_out,)
+
+        p_sim = center_sim + offset.view(1, -1) * scale.view(-1, 1)  # (Nwavelength, Npix_out)
+        norm = 2 * p_sim / (Npix_sim - 1) - 1  # (Nwavelength, Npix_out), in [-1, 1]
+
+        grid_x = norm.unsqueeze(1).expand(-1, Npix_out, -1)  # (Nwavelength, Npix_out, Npix_out)
+        grid_y = norm.unsqueeze(2).expand(-1, -1, Npix_out)  # (Nwavelength, Npix_out, Npix_out)
+        return torch.stack([grid_x, grid_y], dim=-1)
+
     def SetMask(self, phaseMask=None, transmisionMask=None):
         """
         Sets the phase mask by converting the input mask to a complex exponential and normalizing it.
 
         Args:
-            phaseMask (torch tensor): Input phase mask (real-valued)
-            transmisionMask (torch tensor): Input transmision mask (real-valued)
+            phaseMask (torch tensor): Input phase mask (real-valued). 2-D is a single
+                mask; 3-D is always interpreted as (Nmask, H, W) -- several masks
+                sharing one wavelength (e.g. modulation steps), broadcast across
+                whatever wavelength axis Propagator/GetPSF's field carries. A mask
+                that must instead vary *per wavelength* -- even with only one mask --
+                needs an explicit 4-D tensor shaped (Nwavelength, Nmask, H, W), which
+                this method passes through unchanged; ordinary broadcasting against
+                the (Nphases, Nwavelength, Nmask, H, W) propagated field then pairs
+                wavelength indices instead of sharing them. See ZernikeWFS.BuildZernikeMaskFFT
+                for the existing precedent of building such a tensor with an explicit
+                unsqueeze rather than relying on this method's 3-D auto-unsqueeze.
+                Note this derived self.mask only drives the FFT path (FFTPropagator);
+                the MTF path (MTFPropagator) uses self.phaseMask/self.transmisionMask
+                directly and relies on the same broadcasting rules independently.
+            transmisionMask (torch tensor): Input transmision mask (real-valued), same
+                shape convention as phaseMask.
         Returns:
             None
         """
@@ -358,20 +440,24 @@ class WFS(nn.Module):
         if phaseMask is not None:
             if phaseMask.dim() == 2:
                 self.mask = self.mask * torch.exp(
-                    1j * phaseMask.unsqueeze(0).unsqueeze(0)
+                    1j * phaseMask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
                 )
             elif phaseMask.dim() == 3:
+                self.mask = self.mask * torch.exp(1j * phaseMask.unsqueeze(0).unsqueeze(0))
+            elif phaseMask.dim() == 4:
                 self.mask = self.mask * torch.exp(1j * phaseMask.unsqueeze(0))
             else:
-                self.mask = self.mask * torch.exp(1j * phaseMask)
+                raise ValueError(f"Phase mask has too many dimentions: {phaseMask.dim()}")
 
         if transmisionMask is not None:
             if transmisionMask.dim() == 2:
-                self.mask = self.mask * transmisionMask.unsqueeze(0).unsqueeze(0)
+                self.mask = self.mask * transmisionMask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
             elif transmisionMask.dim() == 3:
+                self.mask = self.mask * transmisionMask.unsqueeze(0).unsqueeze(0)
+            elif transmisionMask.dim() == 4:
                 self.mask = self.mask * transmisionMask.unsqueeze(0)
             else:
-                self.mask = self.mask * transmisionMask
+                raise ValueError(f"Transmision mask has too many dimentions: {transmisionMask.dim()}")
 
     def BuildReferenceIntensity(self, opdOffset=0, pupil = None):
         """
@@ -417,8 +503,7 @@ class WFS(nn.Module):
         """
         tempUseNoise = self.useNoise
         self.useNoise = False
-        # Small OPD perturbation for the finite difference, scaled to this WFS's own
-        # sensing wavelength so it self-scales sensibly across instruments.
+        # Small OPD perturbation for the finite difference
         delta = 1 / 100
 
         if pupil is None:
@@ -498,5 +583,16 @@ class WFS(nn.Module):
         return self._wavelength
     @wavelength.setter
     def wavelength(self, value):
-        self._wavelength = value
-        self.wavenumber = 2 * torch.pi / value
+        """Scalar sensing wavelength (meters), or a 1-D tensor of Nwavelength
+        wavelengths for parallel polychromatic propagation (see Propagator/GetPSF).
+        """
+        value = torch.as_tensor(value, device=self.device, dtype=torch.float32)
+        assert not torch.is_complex(value) and torch.all(value > 0), "wavelength must be real and positive"
+        assert value.dim() <= 1, "wavelength must be scalar (0-d) or a 1-D tensor of wavelengths"
+        self._wavelength = value.reshape(-1)
+        self.wavenumber = 2 * torch.pi / value.reshape(1, -1, 1, 1)
+        # if wavenumber.dim() > 0:
+        #     # dim 1 (not dim 0) so it lines up with the batch-first Propagator/GetPSF
+        #     # convention: dim 0 is strictly Nphases, dim 1 is wavelength.
+        #     wavenumber = wavenumber
+        # self.wavenumber = wavenumber

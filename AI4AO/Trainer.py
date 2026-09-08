@@ -112,12 +112,12 @@ class Trainer:
 
                 # Compute loss for this iteration
                 corrected_residual_opd = residual_opd - opd_reconstructed_iter
-                total_loss += self.loss(Ze, z_output, residual_opd, corrected_residual_opd, wfs_frames) / closed_loop_iterations
+                total_loss += self.loss(Ze, z_output, pupilGT, residual_opd, corrected_residual_opd, wfs_frames) / closed_loop_iterations
 
                 # Compute ideal loss for comparison
                 with torch.no_grad():
                     ideal_corrected_residual_opd = residual_opd - opd_reconstructed_iter_ideal
-                    ideal_loss += self.loss(Ze, Ze, residual_opd, ideal_corrected_residual_opd, wfs_frames) / closed_loop_iterations
+                    ideal_loss += self.loss(Ze, Ze, pupilGT, residual_opd, ideal_corrected_residual_opd, wfs_frames) / closed_loop_iterations
 
                 
             # **Backpropagation**

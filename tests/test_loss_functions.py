@@ -27,14 +27,15 @@ def _dummy_forward_args(batch=2, nmodes=3, nres=6):
     residual_opd = torch.randn(batch, nres, nres)
     corrected_residual_opd = torch.randn(batch, nres, nres)
     wfs_frames = torch.rand(batch, nres, nres)
-    return Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames
+    pupil = torch.rand(batch, nres, nres)
+    return Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames
 
 
 def test_relative_loss_function_scalar_and_gradient():
     loss_fn = Relative_Loss_Function()
-    Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames = _dummy_forward_args()
+    Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames = _dummy_forward_args()
 
-    loss = loss_fn(Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames)
+    loss = loss_fn(Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames)
     assert loss.dim() == 0
     assert torch.isfinite(loss)
 
@@ -46,7 +47,7 @@ def test_relative_loss_function_scalar_and_gradient():
 def test_relative_loss_is_zero_when_predictions_match_truth():
     loss_fn = Relative_Loss_Function()
     Ze = torch.randn(2, 3)
-    loss = loss_fn(Ze, Ze.clone(), None, None, None)
+    loss = loss_fn(Ze, Ze.clone(), None, None, None, None)
     assert torch.allclose(loss, torch.zeros_like(loss), atol=1e-6)
 
 
@@ -56,8 +57,8 @@ def test_wfs_signal_loss_rewards_higher_batch_variance():
     low_variance_frames = torch.ones(4, 5, 5) + 0.001 * torch.randn(4, 5, 5)
     high_variance_frames = torch.randn(4, 5, 5) * 5
 
-    low_var_loss = loss_fn(None, None, None, None, low_variance_frames)
-    high_var_loss = loss_fn(None, None, None, None, high_variance_frames)
+    low_var_loss = loss_fn(None, None, None, None, None, low_variance_frames)
+    high_var_loss = loss_fn(None, None, None, None, None, high_variance_frames)
 
     # WFSSignalLoss = -mean(std(...)) * 1e6, so more variance -> more negative (lower) loss
     assert high_var_loss < low_var_loss
@@ -68,11 +69,11 @@ def test_rmse_loss_matches_manual_computation():
     Ze = torch.randn(3, 4)
     z_estimated = torch.randn(3, 4)
 
-    loss = loss_fn(Ze, z_estimated, None, None, None)
+    loss = loss_fn(Ze, z_estimated, None, None, None, None)
     expected = torch.sqrt(torch.mean((z_estimated - Ze) ** 2))
 
     assert torch.allclose(loss, expected, atol=1e-6)
-    assert torch.allclose(loss_fn(Ze, Ze.clone(), None, None, None), torch.zeros_like(loss), atol=1e-6)
+    assert torch.allclose(loss_fn(Ze, Ze.clone(), None, None, None, None), torch.zeros_like(loss), atol=1e-6)
 
 
 def test_log_residual_variance_loss_matches_manual_computation():
@@ -83,7 +84,7 @@ def test_log_residual_variance_loss_matches_manual_computation():
     corrected_residual_opd = torch.randn(2, 6, 6) * 1e-7
     loss_fn = LogResidualVarianceLoss(pupil, wavelength)
 
-    loss = loss_fn(None, None, None, corrected_residual_opd, None)
+    loss = loss_fn(None, None, None, None, corrected_residual_opd, None)
 
     wavenumber = 2 * torch.pi / wavelength
     expected_var = (wavenumber * corrected_residual_opd)[..., pupil].var(dim=-1, keepdim=True)
@@ -99,8 +100,8 @@ class _FakeWFS(nn.Module):
         self.useNoise = True
         self.scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, opd):
-        return self.scale * opd.abs()
+    def forward(self, opd, pupil = None):
+        return self.scale * opd.abs() * pupil.abs()
 
 
 def test_physics_loss_deep_copies_wfs_and_disables_noise():
@@ -119,11 +120,12 @@ def test_physics_loss_matches_manual_computation():
     residual_opd = torch.randn(2, 4, 4)
     corrected_residual_opd = torch.randn(2, 4, 4)
     wfs_frames = torch.rand(2, 4, 4)
+    pupil = torch.randn(2, 4, 4)
 
-    loss = loss_fn(None, None, residual_opd, corrected_residual_opd, wfs_frames)
+    loss = loss_fn(None, None, pupil, residual_opd, corrected_residual_opd, wfs_frames)
 
     reconstructed_opd = residual_opd - corrected_residual_opd
-    expected = torch.mean(torch.abs(loss_fn.wfs(reconstructed_opd) - wfs_frames) ** 2) * 1e6
+    expected = torch.mean(torch.abs(loss_fn.wfs(reconstructed_opd, pupil) - wfs_frames) ** 2) * 1e6
     assert torch.allclose(loss, expected, atol=1e-4)
 
 
@@ -133,7 +135,7 @@ def test_weighted_loss_sum_composition():
             super().__init__()
             self.value = value
 
-        def compute(self, Ze, z_estimated, residual_opd, corrected_residual_opd, wfs_frames):
+        def compute(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):
             return torch.tensor(self.value)
 
     loss_a = _ConstLoss(2.0)
@@ -142,7 +144,7 @@ def test_weighted_loss_sum_composition():
     combined = loss_a * 0.5 + loss_b * 10.0
     assert isinstance(combined, WeightedLossSum)
 
-    args = (None, None, None, None, None)
+    args = (None, None, None, None, None, None)
     result = combined(*args)
     assert torch.allclose(result, torch.tensor(2.0 * 0.5 + 3.0 * 10.0))
 

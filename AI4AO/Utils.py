@@ -52,7 +52,7 @@ def imshow(
     max_channel_number=None,
     same_scale=False,
     scale_reference=None,
-    group_boxes=False,
+    group_boxes=True,
     cmap="viridis",
     figsize=None,
     colorbar=False,
