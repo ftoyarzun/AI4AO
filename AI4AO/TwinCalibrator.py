@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from .Utils import imshow_multiple
+from .Utils import imshow_multiple, fused_optimizer_supported
+from .paths import get_data_dir
 from IPython.display import display, clear_output
 
 
@@ -37,7 +40,7 @@ class TwinCalibrator:
             loss_fn = lambda ref, dig: (torch.abs(ref - dig) ** 2).sum()
 
         wfs = self.wfs
-        optimizer = torch.optim.AdamW(params_to_optimize, lr, fused=True)
+        optimizer = torch.optim.AdamW(params_to_optimize, lr, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         if live_plot:
@@ -79,7 +82,7 @@ class TwinCalibrator:
         """
         wfs = self.wfs
         loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.AdamW([wfs.rooftop], lr, fused=True)
+        optimizer = torch.optim.AdamW([wfs.rooftop], lr, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         half = reference_frame.shape[-1] // 2
@@ -193,7 +196,7 @@ class TwinCalibrator:
             offset_group_index = len(param_groups)
             param_groups.append({"params": offset_params, "lr": 10 ** lr_offset_start})
 
-        optimizer = torch.optim.AdamW(param_groups, fused=True)
+        optimizer = torch.optim.AdamW(param_groups, fused=fused_optimizer_supported(self.device))
 
         final_loss = None
         for u in range(n_iter):
@@ -307,16 +310,23 @@ class TwinCalibrator:
 
         return cov
 
-    def save(self, instrument_name, data_dir="../Data"):
-        wfs_path = f"{data_dir}/{instrument_name}/{instrument_name}WFS.pth"
-        dm_path = f"{data_dir}/{instrument_name}/{instrument_name}DM.pth"
-        self.wfs.SaveCalibration(wfs_path)
-        self.dm.SaveCalibration(dm_path)
-        return wfs_path, dm_path
+    def _twin_paths(self, instrument_name, data_dir):
+        """`(wfs_path, dm_path)` for an instrument. `data_dir` defaults to the
+        AI4AO data directory (see AI4AO.paths); pass a path to override."""
+        base = Path(data_dir) if data_dir is not None else get_data_dir()
+        inst = base / instrument_name
+        return inst / f"{instrument_name}WFS.pth", inst / f"{instrument_name}DM.pth"
 
-    def load(self, instrument_name, data_dir="../Data"):
-        wfs_path = f"{data_dir}/{instrument_name}/{instrument_name}WFS.pth"
-        dm_path = f"{data_dir}/{instrument_name}/{instrument_name}DM.pth"
+    def save(self, instrument_name, data_dir=None):
+        wfs_path, dm_path = self._twin_paths(instrument_name, data_dir)
+        wfs_path.parent.mkdir(parents=True, exist_ok=True)
+        self.wfs.SaveCalibration(str(wfs_path))
+        self.dm.SaveCalibration(str(dm_path))
+        return str(wfs_path), str(dm_path)
+
+    def load(self, instrument_name, data_dir=None):
+        wfs_path, dm_path = self._twin_paths(instrument_name, data_dir)
+        wfs_path, dm_path = str(wfs_path), str(dm_path)
         self.wfs.LoadCalibration(wfs_path)
         self.wfs.eval()
         self.dm.LoadCalibration(dm_path)

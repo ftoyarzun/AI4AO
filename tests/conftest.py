@@ -1,9 +1,9 @@
 """
 Shared fixtures for the AI4AO test suite.
 
-Running the suite requires `torch` to be installed separately (per the
-project README/CLAUDE.md convention -- it is intentionally not listed in
-pyproject.toml's `dependencies`). Install the test extras with:
+Running the suite requires `torch`. It is intentionally not a hard dependency
+(so you can pick the CUDA/CPU build -- see the README), but the `test` extra
+pulls in a default wheel. Install the test extras with:
 
     pip install -e ".[test]"
 

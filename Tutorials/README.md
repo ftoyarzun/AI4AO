@@ -37,3 +37,5 @@ Each params file (`wfs_params_exp.py`, `<Instrument>_params.py`) defines five pl
 ## Trained/calibrated artifacts
 
 Interaction matrices, M2C bases, and DM/WFS/CNN checkpoints produced by the calibration and training notebooks are read from and written to `Data/<Instrument>/` — the `basics/` series uses `Data/Tutorials/` the same way, `"Tutorials"` standing in for an instrument name.
+
+Notebooks locate that directory through `AI4AO.paths` (`from AI4AO.paths import DATA_DIR`), which defaults to `<repo root>/Data` regardless of where Jupyter was launched, and is overridable with `export AI4AO_DATA_DIR=/somewhere/else`. The per-instrument bench files you need to supply (they aren't in the repo) are listed in [`Data/README.md`](../Data/README.md).

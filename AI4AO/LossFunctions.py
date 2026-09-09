@@ -92,7 +92,7 @@ class Relative_Loss_Function(AOLoss):
         device (str): Unused; accepted for interface consistency with other losses.
     """
 
-    def __init__(self, epsilon=0.005, degree=2, device="cuda"):
+    def __init__(self, epsilon=0.005, degree=2, device=None):
         super().__init__()
         self.epsilon = epsilon
         self.degree = degree
@@ -191,7 +191,7 @@ class LogResidualVarianceLoss(AOLoss):
         device (str): Unused; accepted for interface consistency with other losses.
     """
 
-    def __init__(self, pupil, wavelength, device="cuda"):
+    def __init__(self, pupil, wavelength, device=None):
         super().__init__()
         self.pupil = torch.clone(pupil).bool()
         wavelength = torch.as_tensor(wavelength, device=self.pupil.device, dtype=torch.float32).reshape(-1)

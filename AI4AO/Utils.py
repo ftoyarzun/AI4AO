@@ -7,6 +7,16 @@ from matplotlib.patches import Rectangle
 import math
 
 
+def fused_optimizer_supported(device):
+    """Whether the `fused=True` fast path (AdamW, ...) can be used on `device`.
+
+    torch's fused optimizer kernels require every parameter to live on CUDA;
+    passing `fused=True` with CPU tensors raises. Callers should gate the flag
+    on this so the same code runs on a CPU-only machine.
+    """
+    return torch.device(device).type == "cuda"
+
+
 def MakePupil(nPx, device, Rpx=None, central_obstruction=0.0, shift_x=0.0, shift_y=0.0, upscale=1, dtype=torch.float32):
     """
     Generate a circular (optionally annular, decentered, and/or soft-edged) pupil mask.

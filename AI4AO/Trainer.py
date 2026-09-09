@@ -7,6 +7,8 @@ import torch.nn as nn # type: ignore[import]
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+from .paths import ensure_parent
+
 
 @dataclass
 class EvaluationResult:
@@ -243,6 +245,7 @@ class Trainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
         checkpoint.update(extra_state)
+        ensure_parent(path)
         torch.save(checkpoint, path)
 
     def load_checkpoint(self, path, load_optimizer = True):

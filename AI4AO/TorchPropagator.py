@@ -16,6 +16,7 @@ np.math = math
 from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
 from .Utils import MakePupil
+from .paths import ensure_parent
 
 
 def PoissonNoise(x):
@@ -595,7 +596,8 @@ class WFS(nn.Module):
         return temp
 
     def LoadCalibration(self, file_path):
-        checkpoint = torch.load(file_path)
+        # map_location so a checkpoint saved on CUDA still loads on a CPU-only machine
+        checkpoint = torch.load(file_path, map_location=self.device)
         model = checkpoint["model"]
         self.load_state_dict(model)
 
@@ -604,6 +606,7 @@ class WFS(nn.Module):
             self.BuildReferenceIntensity()
 
     def SaveCalibration(self, file_path):
+        ensure_parent(file_path)
         torch.save({"model": self.state_dict()}, file_path)
 
     def train(self, mode=True):

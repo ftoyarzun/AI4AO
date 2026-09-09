@@ -36,7 +36,9 @@ MANIFEST
 *.npz
 *.mat
 *.gif
-Data/
+# Ignore the data tree's contents but keep its manifest tracked
+Data/*
+!Data/README.md
 Junk/
 Ideas/
 prototyping/

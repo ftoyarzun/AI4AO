@@ -15,6 +15,9 @@ readme = "README.md"
 
 requires-python = ">=3.10"
 
+# torch is intentionally NOT here: install it separately so you pick the build
+# that matches your CUDA/CPU setup (see README), or `pip install -e ".[torch]"`
+# for a plain default wheel.
 dependencies = [
     "ipython",
     "numpy",
@@ -25,7 +28,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+# Plain default torch wheel, for when you don't need a specific CUDA build.
+torch = ["torch>=2.1"]
+# TensorRT deployment path (AI4AO/DAO_Utils.py); needs a matching CUDA/TensorRT
+# toolchain on the machine.
+trt = ["pycuda", "tensorrt"]
+test = ["AI4AO[torch]", "pytest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

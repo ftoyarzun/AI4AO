@@ -47,9 +47,8 @@ def test_save_and_load_round_trip(pyramid_wfs, deformable_mirror, device, tmp_pa
     deformable_mirror.rotationAngle = torch.tensor([9.0])
     deformable_mirror.MakeZonalModes()
 
-    (tmp_path / "TestInstrument").mkdir()  # save() does not create its own output directory
-
     calibrator = TwinCalibrator(pyramid_wfs, deformable_mirror, device)
+    # save() creates the <data_dir>/<instrument>/ directory itself
     wfs_path, dm_path = calibrator.save("TestInstrument", data_dir=str(tmp_path))
 
     assert (tmp_path / "TestInstrument" / "TestInstrumentWFS.pth").exists()

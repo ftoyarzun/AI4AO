@@ -1,8 +1,10 @@
-import torch
-import numpy as np
+import os
+import shutil
 import subprocess
 
+import torch
 import numpy as np
+
 try:
     import pycuda.driver as cuda
     import pycuda.autoinit
@@ -62,17 +64,41 @@ class FramePreprocess:
 
 
 
+def _find_trtexec():
+    """Locate the `trtexec` binary: $AI4AO_TRTEXEC, then $PATH, then the
+    default TensorRT install location."""
+    candidates = [
+        os.environ.get("AI4AO_TRTEXEC"),
+        shutil.which("trtexec"),
+        "/usr/src/tensorrt/bin/trtexec",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    raise FileNotFoundError(
+        "trtexec not found. Install TensorRT or set AI4AO_TRTEXEC to its path."
+    )
+
+
 def MakeTRTModel(NNModel, size, device, output_file_name, output_file_directory):
     example_input = torch.randn(size, device=device)
 
-    ONNX_PATH = output_file_directory + output_file_name + ".onnx"
-    TRT_PATH = output_file_directory + output_file_name + ".model"
+    ONNX_PATH = os.path.join(output_file_directory, output_file_name + ".onnx")
+    TRT_PATH = os.path.join(output_file_directory, output_file_name + ".model")
 
-    TRT_COMMAND = f"/usr/src/tensorrt/bin/trtexec --onnx={ONNX_PATH} --saveEngine={TRT_PATH} --builderOptimizationLevel=5 --noTF32 --useSpinWait --verbose"
+    trt_command = [
+        _find_trtexec(),
+        f"--onnx={ONNX_PATH}",
+        f"--saveEngine={TRT_PATH}",
+        "--builderOptimizationLevel=5",
+        "--noTF32",
+        "--useSpinWait",
+        "--verbose",
+    ]
 
     torch.onnx.export(NNModel, example_input, ONNX_PATH, opset_version=18)
 
-    subprocess.run(TRT_COMMAND, shell=True, check=True)
+    subprocess.run(trt_command, check=True)
 
 
 class TensorRTInference:

@@ -3,6 +3,7 @@ import torch.nn as nn  # type: ignore[import]
 
 from .Utils import MakePupil
 from .PhaseDataset import Zernike
+from .paths import ensure_parent
 
 class DeformableMirror(nn.Module):
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None, per_actuator_calibration = False):
@@ -260,7 +261,8 @@ class DeformableMirror(nn.Module):
 
 
     def LoadCalibration(self, file_path):
-        checkpoint = torch.load(file_path)
+        # map_location so a checkpoint saved on CUDA still loads on a CPU-only machine
+        checkpoint = torch.load(file_path, map_location=self.device)
 
         model = checkpoint["model"]
         DMDict = checkpoint["config"]
@@ -283,6 +285,7 @@ class DeformableMirror(nn.Module):
 
     def SaveCalibration(self, file_path):
 
+        ensure_parent(file_path)
         misreg, DMDict = self.GetMisreg()
 
         torch.save({

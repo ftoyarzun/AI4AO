@@ -44,7 +44,14 @@ work should start.
 Each instrument (Ekarus, Oziriis, Papyrus, Rama, ...) has a params file under
 `Tutorials/` defining five plain Python dicts — `WFSParams`, `AtmosParams`,
 `LoopParams`, `DMParams`, `TrainParams`, used by the
-pipeline constructors. 
+pipeline constructors.
+
+Bench interaction matrices and the calibrated/trained artifacts the notebooks
+produce live under `Data/<Instrument>/`, resolved via `AI4AO.paths`
+(`<repo root>/Data` by default, or `$AI4AO_DATA_DIR`). The bench files you need
+to supply are listed in [`Data/README.md`](Data/README.md); the `basics/`
+series needs none of them.
+
 ## Getting started
 
 [`Tutorials/`](Tutorials/README.md) is the primary way this codebase is
@@ -91,8 +98,14 @@ Upgrade packaging tools first:
 python -m pip install --upgrade pip setuptools wheel typing-extensions
 ```
 
-Install PyTorch separately, following the instructions for your platform at
-<https://pytorch.org/get-started/locally/> (CUDA is strongly recommended).
+Install PyTorch. For a specific CUDA build, install it first following the
+instructions for your platform at
+<https://pytorch.org/get-started/locally/> (CUDA is strongly recommended):
+
+```bash
+# example -- pick the command for your platform/CUDA from the link above
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
 
 Then clone and install AI4AO:
 
@@ -100,6 +113,47 @@ Then clone and install AI4AO:
 git clone https://github.com/ftoyarzun/AI4AO.git
 python -m pip install -e AI4AO
 ```
+
+`torch` is not a hard dependency (so the step above stays in your control). If
+you don't need a specific CUDA build, skip it and let pip pull a default wheel:
+
+```bash
+python -m pip install -e "AI4AO[torch]"
+```
+
+The TensorRT deployment path (`AI4AO/DAO_Utils.py`) needs extra packages and a
+matching CUDA/TensorRT toolchain on the machine:
+
+```bash
+python -m pip install -e "AI4AO[trt]"   # pycuda, tensorrt
+```
+
+### Updating an existing checkout
+
+If you already had AI4AO installed from an earlier version:
+
+```bash
+git pull                       # or: git checkout <branch>
+python -m pip install -e .     # re-run: picks up new modules (AI4AO.paths),
+                               # clears any stale editable registration
+```
+
+What changed that you may need to act on:
+
+- **Data directory.** Bench files and saved twins/checkpoints are now found
+  through `AI4AO.paths` — `<repo root>/Data` by default (the same place the
+  notebooks' old `../../Data` resolved to, so nothing to do if you kept data
+  there). If yours lives elsewhere, `export AI4AO_DATA_DIR=/path/to/data`
+  instead of moving it. See [`Data/README.md`](Data/README.md).
+- **`TwinCalibrator.save()` / `load()`** now default `data_dir` to that data
+  directory (was `"../Data"`, relative to the working directory). Pass
+  `data_dir=...` explicitly if you relied on the old default.
+- **CPU.** The simulation, calibration and training now run without a GPU with
+  no code edits — `device` auto-selects, and CUDA-only optimizer paths are
+  gated. (`AI4AO/DAO_Utils.py`'s TensorRT inference is still GPU-only.)
+- **Notebooks.** The tutorial notebooks' `device = ...` and `PATH = ...` cells
+  were rewritten; if you have local edits to them, expect merge conflicts
+  there.
 
 ## Testing
 
@@ -111,6 +165,9 @@ extras and run it from the repo root:
 python -m pip install -e "AI4AO[test]"
 pytest tests/
 ```
+
+The `test` extra pulls in `pytest` and a default `torch` wheel. If you already
+installed a specific CUDA build of torch, that one is kept.
 
 Tests marked `slow` exercise `Trainer.train`/`evaluate` or
 `TwinCalibrator.fit_*` loops end-to-end; skip them for a faster run:

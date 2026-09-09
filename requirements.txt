@@ -1,5 +1,12 @@
+# Core runtime dependencies -- mirrors [project].dependencies in pyproject.toml.
+# Prefer `pip install -e .` (or `pip install -e ".[torch,test]"`); this file is
+# kept only for quick `pip install -r requirements.txt` use.
+#
+# torch is intentionally NOT listed: install it separately so you get the build
+# that matches your CUDA/CPU setup (see README), or `pip install -e ".[torch]"`.
 ipython
 matplotlib
+mmengine
 numpy
 scipy
 tqdm
