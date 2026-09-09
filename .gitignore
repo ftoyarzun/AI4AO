@@ -38,6 +38,7 @@ MANIFEST
 *.gif
 Data/
 Junk/
+Ideas/
 
 # Jupyter notebooks
 *.ipynb_checkpoints/
