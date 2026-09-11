@@ -187,14 +187,57 @@ class WFS(nn.Module):
         psi_zwfs = uin_padded + (
             torch.exp(1j * self.phaseMask) - 1
         ) * self.iMFT_focal_to_pupil(psi_ref)
-        self.frame_no_noise = torch.abs(psi_zwfs) ** 2
-        for i in range(self.frame_no_noise.shape[-3]):
-            self.frame_no_noise[..., i, :, :] = torch.roll(
-                self.frame_no_noise[..., i, :, :], shifts=self.pupil_shifts[i].item(), dims=-2
-            )  # up
-            # self.frame_no_noise[:, 1] = torch.roll(
-            #     self.frame_no_noise[:, 1], shifts=-self.pupil_shifts[1], dims=-2
-            # )
+        self.frame_no_noise = self.ShiftPupilImages(torch.abs(psi_zwfs) ** 2)
+
+    def BuildShiftGrid(self, pupil_shift_row, pupil_shift_col):
+        """
+        Precomputes and caches the per-mask-channel grid_sample sampling grid used
+        by ShiftPupilImages (self.shift_grid, shape (Nmask, Npix, Npix, 2)), so it
+        isn't rebuilt on every forward call -- only when the mask geometry (hence
+        the per-channel pixel shift) changes. Call this once at mask-build time
+        (e.g. from BuildZernikeMaskMFT, alongside MakeMTFMatrices), after the row/
+        col pixel shifts for each mask channel are known.
+
+        Args:
+            pupil_shift_row (array-like): shape (Nmask,), row (dims=-2) pixel offset per mask channel.
+            pupil_shift_col (array-like): shape (Nmask,), col (dims=-1) pixel offset per mask channel.
+        Returns:
+            None
+        """
+        H = W = self.Npix
+        ys = torch.linspace(-1, 1, H, device=self.device, dtype=torch.float32)
+        xs = torch.linspace(-1, 1, W, device=self.device, dtype=torch.float32)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")  # (H, W)
+
+        row_shift = torch.as_tensor(pupil_shift_row, device=self.device, dtype=torch.float32)  # (Nmask,)
+        col_shift = torch.as_tensor(pupil_shift_col, device=self.device, dtype=torch.float32)  # (Nmask,)
+        grid_y = grid_y.unsqueeze(0) - (2 * row_shift / (H - 1)).view(-1, 1, 1)  # (Nmask, H, W)
+        grid_x = grid_x.unsqueeze(0) - (2 * col_shift / (W - 1)).view(-1, 1, 1)  # (Nmask, H, W)
+        self.shift_grid = torch.stack([grid_x, grid_y], dim=-1)  # (Nmask, H, W, 2), grid_sample wants (x, y) last
+
+    def ShiftPupilImages(self, frame):
+        """
+        Shifts each mask channel of a (..., Nmask, H, W) frame to its own detector
+        position with a single batched grid_sample call, using the per-channel
+        grid cached by BuildShiftGrid. Replaces a per-channel torch.roll loop that
+        only ever applied the row component and rounded the shift to whole pixels.
+
+        Args:
+            frame (torch tensor): real-valued frame, shape (..., Nmask, H, W).
+        Returns:
+            torch tensor: same shape, each mask channel independently shifted.
+        """
+        lead_shape = frame.shape[:-3]
+        Nmask, H, W = frame.shape[-3:]
+        flat = frame.reshape(-1, Nmask, H, W).movedim(1, 0)  # (Nmask, B, H, W)
+        B = flat.shape[1]
+
+        grid = self.shift_grid.unsqueeze(1).expand(-1, B, -1, -1, -1).reshape(Nmask * B, H, W, 2)
+        shifted = torch.nn.functional.grid_sample(
+            flat.reshape(Nmask * B, 1, H, W), grid, mode="bilinear",
+            padding_mode="zeros", align_corners=True,
+        )
+        return shifted.reshape(Nmask, B, H, W).movedim(0, 1).reshape(*lead_shape, Nmask, H, W)
 
     def forward(self, opd, pupil = None):
         return self.Propagator(opd, pupil)

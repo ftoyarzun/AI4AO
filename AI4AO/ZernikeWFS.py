@@ -62,36 +62,25 @@ class ZernikeWFS(WFS):
     def BuildZernikeMaskMFT(self):
         N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
         phaseMask = torch.ones(1, self.number_of_masks, 1, 1, device=self.device, dtype=torch.float32)
-        transmisionMask = self.make_pupil(self.sampling * self.MTF_focal_upscale * self.diameters / 2, N)
+        transmisionMask = MakePupil(N, self.device)
         transmisionMask = transmisionMask.repeat(1, self.number_of_masks, 1, 1)
         phaseMask= phaseMask * self.depths.view(1, self.number_of_masks, 1, 1)
         self.MakeMTFMatrices(self.diameters[0])
 
-        frame_center = np.ones((self.number_of_masks, 2)) * self.Npix // 2
-        pupil_center = (frame_center - self.positions.detach().cpu().numpy() / 2 / np.pi * self.Npix)
-        self.pupil_centers = np.round(pupil_center).astype(np.int32)
+        frame_center = torch.ones((self.number_of_masks, 2), device=self.device, dtype=torch.float32) * self.Npix // 2
+        pupil_center = (frame_center + self.positions / 2 / np.pi * self.Npix)
+        self.pupil_centers = np.round(pupil_center.detach().cpu().numpy()).astype(np.int32)
 
-        self.pupil_shifts = (self.pupil_centers - frame_center)[:, 0].astype(np.int32)
+        # Unrounded (row, col) pixel offset from frame center, used by
+        # WFS.ShiftPupilImages for a sub-pixel, both-axes pupil-image shift --
+        # column 0 is the row (dims=-2) component, column 1 the col (dims=-1)
+        # component, matching BuildZernikeMaskFFT's positions/coords pairing.
+        pupil_shift = pupil_center - frame_center
+        self.pupil_shift_row = pupil_shift[:, 0]
+        self.pupil_shift_col = pupil_shift[:, 1]
+        self.BuildShiftGrid(self.pupil_shift_row, self.pupil_shift_col)
 
         return phaseMask, transmisionMask
-
-    def make_pupil(self, Rpx, nPx):
-        """
-        Generate a circular pupil mask.
-
-        Parameters
-        ----------
-        Rpx : float
-            Radius of the pupil in pixels.
-        nPx : int
-            Size of the square output array (number of pixels per side).
-
-        Returns
-        -------
-        pupil : ndarray of shape (nPx, nPx)
-            Binary circular mask with value 1 inside the pupil and 0 outside.
-        """
-        return MakePupil(nPx, self.device, Rpx=Rpx)
     
     def forward(self, opd, pupil = None):
         return self.Propagator(opd, pupil)

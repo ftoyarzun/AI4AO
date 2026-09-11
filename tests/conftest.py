@@ -68,10 +68,10 @@ def tiny_wfs_params():
 
 @pytest.fixture
 def tiny_zernike_wfs_params(tiny_wfs_params):
-    def _make(mask_type="Zernike", use_mtf=False):
+    def _make(mask_type="Zernike", use_mtf=False, mtf_upscale=4):
         params = tiny_wfs_params(modulation=0.0)
         params.update({
-            "MTF_upscale": 4,
+            "MTF_upscale": mtf_upscale,
             "Use_MTF": use_mtf,
             "MaskType": mask_type,
         })

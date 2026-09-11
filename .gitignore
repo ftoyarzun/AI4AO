@@ -39,6 +39,8 @@ MANIFEST
 Data/
 Junk/
 Ideas/
+prototyping/
+.claude/
 
 # Jupyter notebooks
 *.ipynb_checkpoints/
