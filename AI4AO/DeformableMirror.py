@@ -267,13 +267,14 @@ class DeformableMirror(nn.Module):
         model = checkpoint["model"]
         DMDict = checkpoint["config"]
         misreg = checkpoint["misreg"]
-
+        
         # Geometry must be restored (which resizes _sign/_moffatParameter/
         # _mechCoupling to match) BEFORE load_state_dict, since their shape
         # now depends on totalAct.
         self.flip_lr = DMDict["FlipLeftRight"]
         self.flip_tb = DMDict["FlipTopBottom"]
         self.offset_to_fit_number_of_actuators = DMDict["offset_to_fit_number_of_actuators"]
+        self.per_actuator_calibration = checkpoint.get("per_actuator_calibration", False)
 
         self.load_state_dict(model)
 
@@ -291,7 +292,8 @@ class DeformableMirror(nn.Module):
         torch.save({
         "model": self.state_dict(),
         "config": DMDict,
-        "misreg": misreg
+        "misreg": misreg,
+        "per_actuator_calibration": self.per_actuator_calibration
             }, file_path)
 
 

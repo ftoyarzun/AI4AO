@@ -239,7 +239,7 @@ def test_offset_change_rebroadcasts_mean_into_new_vector(deformable_mirror):
     assert torch.allclose(deformable_mirror._moffatParameter, expected_raw_mean.expand(new_total_act), atol=1e-5)
 
 
-def test_load_calibration_preserves_per_actuator_vector(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
+def test_load_calibration_preserves_per_actuator_vector_and_flag(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
     deformable_mirror.per_actuator_calibration = True
     total_act = int(deformable_mirror.totalAct.item())
     deformable_mirror.sign = torch.linspace(1e-5, 2e-5, total_act)
@@ -249,13 +249,28 @@ def test_load_calibration_preserves_per_actuator_vector(deformable_mirror, tiny_
     deformable_mirror.SaveCalibration(str(path))
 
     fresh = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
-    # per_actuator_calibration is pure runtime state and is never touched by
-    # LoadCalibration -- it stays whatever the fresh object already had.
+    # per_actuator_calibration is saved as a top-level checkpoint key (not in
+    # DMDict) and restored on load -- a fresh object starts False...
     assert fresh.per_actuator_calibration is False
     fresh.LoadCalibration(str(path))
-    assert fresh.per_actuator_calibration is False
+    # ...but picks up the source's True after loading its checkpoint.
+    assert fresh.per_actuator_calibration is True
 
     assert torch.allclose(fresh.sign, deformable_mirror.sign, atol=1e-9)
+
+
+def test_load_calibration_defaults_flag_false_for_old_checkpoint_without_it(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
+    # A checkpoint saved without the "per_actuator_calibration" key (e.g. from
+    # before this key existed) must still load cleanly, defaulting to False.
+    misreg, DMDict = deformable_mirror.GetMisreg()
+    path = tmp_path / "dm_legacy_checkpoint.pth"
+    torch.save({"model": deformable_mirror.state_dict(), "config": DMDict, "misreg": misreg}, path)
+
+    fresh = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
+    fresh.per_actuator_calibration = True
+    fresh.LoadCalibration(str(path))
+
+    assert fresh.per_actuator_calibration is False
 
 
 def test_load_calibration_with_mismatched_construction_offset(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
