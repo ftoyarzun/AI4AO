@@ -135,3 +135,145 @@ def test_save_and_load_calibration_round_trip(deformable_mirror, tiny_wfs_params
     # IF is now pure OPD (meters, no wavenumber factor), so its magnitude is
     # set directly by `sign` (~1e-5 m here) -- use a tighter atol than that scale.
     assert torch.allclose(deformable_mirror.IF, fresh.IF, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Per-actuator calibration (moffatParameter/sign/mechCoupling are always
+# length-totalAct vectors; per_actuator_calibration gates only how
+# MakeZonalModes uses them -- see Ideas/09-per-actuator-dm-calibration.md).
+# ---------------------------------------------------------------------------
+
+def test_scalar_assignment_broadcasts_to_full_vector(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.sign = torch.tensor([4e-6])
+    assert deformable_mirror.sign.shape == (total_act,)
+    assert torch.allclose(deformable_mirror.sign, torch.full((total_act,), 4e-6), atol=1e-9)
+
+
+def test_per_actuator_vector_stored_exactly(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    vector = torch.linspace(1.0, 2.0, total_act)
+    deformable_mirror.moffatParameter = vector
+    assert torch.allclose(deformable_mirror.moffatParameter, vector, atol=1e-4)
+
+
+def test_wrong_length_vector_raises(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    with pytest.raises(RuntimeError):
+        deformable_mirror.sign = torch.ones(total_act + 1)
+
+
+def test_if_differs_per_actuator_when_flag_true(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.per_actuator_calibration = True
+    deformable_mirror.sign = torch.linspace(0.8e-5, 1.2e-5, total_act)
+    deformable_mirror.MakeZonalModes()
+
+    peak = deformable_mirror.IF.reshape(total_act, -1).abs().max(dim=-1).values
+    assert not torch.allclose(peak, peak.mean().expand(total_act), atol=1e-9)
+
+
+def test_if_depends_only_on_mean_sign_when_flag_false(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.per_actuator_calibration = False
+
+    vector = torch.linspace(0.8e-5, 1.2e-5, total_act)
+    deformable_mirror.sign = vector
+    # Setter stores the non-uniform vector regardless of the flag...
+    assert not torch.allclose(deformable_mirror.sign, deformable_mirror.sign.mean().expand(total_act))
+    deformable_mirror.MakeZonalModes()
+    if_a = deformable_mirror.IF.clone()
+
+    # ...but while per_actuator_calibration is False, only the MEAN feeds into
+    # IF -- reassigning a different vector with the same mean (here, the same
+    # values under a different actuator-to-value assignment) must leave IF
+    # unchanged, since which actuator nominally "owns" which raw value is
+    # irrelevant to the collapsed, tied value actually used.
+    deformable_mirror.sign = torch.flip(vector, dims=[0])
+    deformable_mirror.MakeZonalModes()
+    if_b = deformable_mirror.IF.clone()
+
+    assert torch.allclose(if_a, if_b, atol=1e-9)
+
+
+def test_gradient_independent_per_actuator_when_flag_true(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.per_actuator_calibration = True
+    deformable_mirror.MakeZonalModes()
+
+    weights = torch.arange(1, total_act + 1, dtype=torch.float32)
+    loss = (deformable_mirror.IF.reshape(total_act, -1).pow(2).sum(dim=-1) * weights).sum()
+    loss.backward()
+
+    grad = deformable_mirror._sign.grad
+    assert grad is not None
+    assert torch.isfinite(grad).all()
+    assert grad.unique().numel() > 1
+
+
+def test_gradient_tied_per_actuator_when_flag_false(deformable_mirror):
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.per_actuator_calibration = False
+    deformable_mirror.MakeZonalModes()
+
+    weights = torch.arange(1, total_act + 1, dtype=torch.float32)
+    loss = (deformable_mirror.IF.reshape(total_act, -1).pow(2).sum(dim=-1) * weights).sum()
+    loss.backward()
+
+    grad = deformable_mirror._sign.grad
+    assert grad is not None
+    assert torch.isfinite(grad).all()
+    assert torch.allclose(grad, grad[0].expand(total_act), atol=1e-6)
+
+
+def test_offset_change_rebroadcasts_mean_into_new_vector(deformable_mirror):
+    deformable_mirror.per_actuator_calibration = True
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.moffatParameter = torch.linspace(1.0, 2.0, total_act)
+    expected_raw_mean = deformable_mirror._moffatParameter.detach().mean()
+
+    deformable_mirror.offset_to_fit_number_of_actuators = 0.5
+
+    new_total_act = int(deformable_mirror.totalAct.item())
+    assert deformable_mirror._moffatParameter.shape == (new_total_act,)
+    assert torch.allclose(deformable_mirror._moffatParameter, expected_raw_mean.expand(new_total_act), atol=1e-5)
+
+
+def test_load_calibration_preserves_per_actuator_vector(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
+    deformable_mirror.per_actuator_calibration = True
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.sign = torch.linspace(1e-5, 2e-5, total_act)
+    deformable_mirror.MakeZonalModes()
+
+    path = tmp_path / "dm_per_actuator.pth"
+    deformable_mirror.SaveCalibration(str(path))
+
+    fresh = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
+    # per_actuator_calibration is pure runtime state and is never touched by
+    # LoadCalibration -- it stays whatever the fresh object already had.
+    assert fresh.per_actuator_calibration is False
+    fresh.LoadCalibration(str(path))
+    assert fresh.per_actuator_calibration is False
+
+    assert torch.allclose(fresh.sign, deformable_mirror.sign, atol=1e-9)
+
+
+def test_load_calibration_with_mismatched_construction_offset(deformable_mirror, tiny_wfs_params, tiny_dm_params, device, tmp_path):
+    deformable_mirror.per_actuator_calibration = True
+    total_act = int(deformable_mirror.totalAct.item())
+    deformable_mirror.sign = torch.linspace(1e-5, 2e-5, total_act)
+    deformable_mirror.MakeZonalModes()
+
+    path = tmp_path / "dm_mismatched_offset.pth"
+    deformable_mirror.SaveCalibration(str(path))
+
+    # Constructed with a different offset_to_fit_number_of_actuators than what
+    # was saved (0.5 vs. the default 0.2), so totalAct differs from the
+    # checkpoint's until LoadCalibration restores geometry before load_state_dict.
+    fresh = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device, offset_to_fit_number_of_actuators=0.5)
+    assert fresh.totalAct != deformable_mirror.totalAct
+
+    fresh.LoadCalibration(str(path))
+
+    assert fresh.totalAct == deformable_mirror.totalAct
+    assert torch.allclose(fresh.sign, deformable_mirror.sign, atol=1e-9)
