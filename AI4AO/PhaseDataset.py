@@ -162,7 +162,7 @@ def GetSpatialFrequencies(D, resolution, device="cpu"):
         )
         * dF
     )
-    [fx, fy] = torch.meshgrid(fx, fx)
+    [fx, fy] = torch.meshgrid(fx, fx, indexing="ij")
     return dF, fx, fy
 
 
@@ -217,7 +217,8 @@ def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection=1):
     Returns:
         torch array: High-pass filter for the fitting PSD
     """
-    fc = Nactuator / 2 / D
+    # DM pitch is D / (Nactuator - 1) (see DeformableMirror.MakeActGrid)
+    fc = (Nactuator - 1) / 2 / D
 
     low_pass_filter = (fx < fc) & (fy > -fc) & (fy < fc) & (fx > -fc)
     high_pass_filter = 1 - low_pass_filter * levelOfCorrection
@@ -445,7 +446,7 @@ class PhaseDataset(Dataset):
             
             resolution = total_PSD.shape[-1]
             sqrt_fftshift_PSD = torch.sqrt(torch.fft.fftshift(total_PSD, dim=(-2, -1)))  # FFT shift along spatial dims
-            randMap = torch.randn(self.nLayers, self.Nphases, resolution, resolution, dtype=torch.complex64, device=self.device) 
+            randMap = torch.randn(self.nLayers, self.Nphases, resolution, resolution, dtype=torch.complex64, device=self.device) * math.sqrt(2)
             self.movingWavefrontGenerator = sqrt_fftshift_PSD * randMap 
             
             if self.useScintillation:
@@ -537,7 +538,7 @@ class PhaseDataset(Dataset):
         Updates r0, L0, correction level, photon/RON noise, fractional layer weights,
         and wind speed vectors for each atmospheric layer.
         """
-        self.nLayers = np.random.randint(*self.nLayersRange)
+        self.nLayers = int(torch.randint(*self.nLayersRange, (1,)))
         self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.r0Range)
         self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.L0Range)
 

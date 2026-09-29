@@ -7,7 +7,6 @@ Created on Thu Apr 10 09:52:19 2025
 
 import torch # type: ignore[import]
 import torch.nn as nn # type: ignore[import]
-import copy
 
 
 class AOLoss(nn.Module):
@@ -118,33 +117,50 @@ class Relative_Loss_Function(AOLoss):
 
 class Physics_loss(AOLoss):
     """
-    Physics-consistency loss: reprojects the pre-correction residual OPD
-    through a (noiseless) copy of the WFS forward model and penalizes the
+    Physics-consistency loss: reprojects the reconstructed (predicted) OPD
+    through the (noise-free) WFS forward model and penalizes the
     difference between the resulting simulated WFS frame and the observed
     (noisy) WFS frame.
 
     Args:
-        wfs (nn.Module): WFS forward model to deep-copy; noise is disabled on
-            the copy (`useNoise = False`) so the loss is deterministic.
+        wfs (nn.Module): WFS forward model. Held by reference (not copied, and
+            not registered as a submodule, so its parameters don't show up in
+            this loss's `.parameters()`), so the loss always uses the WFS's
+            current mask/calibration -- including a mask being learned. Noise
+            is switched off only for the duration of this loss's own forward
+            call (`useNoise` is restored afterwards) so the loss is
+            deterministic. Note the call still refreshes the WFS's cached
+            `frame_no_noise`, like any forward.
         degree (int): Power to which the pixel-wise error is raised.
     """
 
     def __init__(self, wfs, degree=2):
         super().__init__()
-        self.wfs = copy.deepcopy(wfs)
-        self.wfs.useNoise = False
+        # A tuple keeps nn.Module from registering the WFS as a submodule.
+        self._wfs_ref = (wfs,)
         self.degree = degree
+
+    @property
+    def wfs(self):
+        return self._wfs_ref[0]
 
     def compute(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):
         """
         Computes the physics-based loss between the observed WFS frame and
-        the frame simulated from residual_opd through the internal WFS copy.
+        the frame simulated, noise-free, from the reconstructed OPD
+        (residual_opd - corrected_residual_opd) through the WFS.
 
         Returns:
             Tensor: Scalar loss value.
         """
         reconstructed_opd = residual_opd - corrected_residual_opd
-        I_pred = self.wfs(reconstructed_opd, pupil)
+        wfs = self.wfs
+        use_noise = wfs.useNoise
+        wfs.useNoise = False
+        try:
+            I_pred = wfs(reconstructed_opd, pupil)
+        finally:
+            wfs.useNoise = use_noise
         return (
             torch.mean(torch.abs(I_pred - wfs_frames) ** self.degree) * 1e6
         )

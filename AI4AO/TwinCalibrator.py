@@ -40,7 +40,9 @@ class TwinCalibrator:
             loss_fn = lambda ref, dig: (torch.abs(ref - dig) ** 2).sum()
 
         wfs = self.wfs
-        optimizer = torch.optim.AdamW(params_to_optimize, lr, fused=fused_optimizer_supported(self.device))
+        # weight_decay=0: decay would pull physical parameters (mask slopes/shifts,
+        # DM amplitude, pupil offsets...) toward 0 for no physical reason
+        optimizer = torch.optim.AdamW(params_to_optimize, lr, weight_decay=0, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         if live_plot:
@@ -82,7 +84,7 @@ class TwinCalibrator:
         """
         wfs = self.wfs
         loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.AdamW([wfs.rooftop], lr, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.AdamW([wfs.rooftop], lr, weight_decay=0, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         half = reference_frame.shape[-1] // 2
@@ -187,16 +189,21 @@ class TwinCalibrator:
         original_positions = dm.rotate_coordinates(original_positions)
 
         warmup_iters = n_iter // 2
+        # Only parameters left trainable are fit, so a caller can exclude one by
+        # freezing it (e.g. `wfs.rooftop.requires_grad_(False)`) while the module is
+        # in train mode; the train() calls above keep that choice. (Freezing it while
+        # in eval mode is a no-op: train() restores the flags from before eval().)
         param_groups = [
-            {"params": dm.parameters(), "lr": lr_dm},
-            {"params": wfs.parameters(), "lr": lr_wfs},
+            {"params": [p for p in dm.parameters() if p.requires_grad], "lr": lr_dm},
+            {"params": [p for p in wfs.parameters() if p.requires_grad], "lr": lr_wfs},
         ]
+        param_groups = [g for g in param_groups if g["params"]]
         offset_group_index = None
         if offset_params:
             offset_group_index = len(param_groups)
             param_groups.append({"params": offset_params, "lr": 10 ** lr_offset_start})
 
-        optimizer = torch.optim.AdamW(param_groups, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=0, fused=fused_optimizer_supported(self.device))
 
         final_loss = None
         for u in range(n_iter):

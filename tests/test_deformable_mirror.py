@@ -292,3 +292,88 @@ def test_load_calibration_with_mismatched_construction_offset(deformable_mirror,
 
     assert fresh.totalAct == deformable_mirror.totalAct
     assert torch.allclose(fresh.sign, deformable_mirror.sign, atol=1e-9)
+
+
+@pytest.mark.parametrize("attr,value", [
+    ("rotationAngle", 10.0),
+    ("grid_shift", [[[[0.7]], [[-0.4]]]]),
+    ("radialScaling", 0.05),
+    ("tangentialScaling", -0.03),
+    ("anamorphosisAngle", 20.0),
+    ("sign", 2e-5),
+    ("moffatParameter", 3.0),
+    ("mechCoupling", 0.2),
+])
+def test_setter_rebuilds_influence_functions_in_eval_mode(deformable_mirror, device, attr, value):
+    """In eval mode forward() doesn't rebuild the IFs, so every geometry/shape
+    setter must do it itself -- otherwise the DM silently keeps its old shape."""
+    if attr == "anamorphosisAngle":  # only has an effect once the two scalings differ
+        deformable_mirror.radialScaling = torch.tensor(0.05, device=device)
+    deformable_mirror.eval()
+    IF_before = deformable_mirror.IF.clone()
+
+    setattr(deformable_mirror, attr, torch.tensor(value, device=device))
+
+    assert not torch.allclose(deformable_mirror.IF, IF_before)
+    IF_after_setter = deformable_mirror.IF.clone()
+    deformable_mirror.MakeZonalModes()
+    assert torch.allclose(deformable_mirror.IF, IF_after_setter)
+
+
+def test_eval_train_round_trip_keeps_manually_frozen_parameter(deformable_mirror):
+    deformable_mirror._anamorphosisAngle.requires_grad_(False)
+
+    deformable_mirror.eval()
+    assert not any(p.requires_grad for p in deformable_mirror.parameters())
+
+    deformable_mirror.train()
+    assert not deformable_mirror._anamorphosisAngle.requires_grad
+    assert deformable_mirror._rotationAngle.requires_grad
+
+
+def test_influence_function_couples_at_one_actuator_pitch(tiny_wfs_params, tiny_dm_params, device):
+    """In the Gaussian limit of the Moffat profile (large moffatParam) the
+    influence function must equal MechCoupling one actuator pitch away, with
+    the pitch being the actual actuator spacing Nres / (Nact - 1)."""
+    # beta = 1e3: Gaussian to ~3e-4 of the amplitude, yet small enough that
+    # (1 + r2 / beta) ** beta stays accurate in float32
+    params = dict(tiny_dm_params, moffatParam=1e3, MechCoupling=0.3)
+    dm = DeformableMirror(tiny_wfs_params(), params, device)
+    dm.eval()
+
+    pitch = dm.Nres / (dm.Nact - 1)
+    spacing = torch.cdist(dm.actuator_positions, dm.actuator_positions)
+    assert torch.isclose(spacing[spacing > 0].min(), torch.tensor(pitch, device=device))
+
+    # Independent Gaussian model exp(-d^2 ln(1/m) / pitch^2), then the same
+    # pupil masking + per-IF piston removal as the DM applies.
+    d2 = ((dm.actuator_positions[:, :, None, None] - dm.positions) ** 2).sum(dim=1)
+    expected = params["signedAmplitude"] * torch.exp(-d2 * torch.log(torch.tensor(1 / 0.3)) / pitch**2)
+    expected = expected * dm.pupil
+    expected[:, dm.pupil] -= expected[:, dm.pupil].mean(dim=-1, keepdim=True)
+
+    assert torch.allclose(dm.IF, expected, atol=1e-3 * params["signedAmplitude"])
+
+
+def test_load_calibration_converts_legacy_pitch_convention(tiny_wfs_params, tiny_dm_params, device, tmp_path):
+    """Calibration files saved before the IF width used the Nres/(Nact-1)
+    pitch must load to the same influence functions they were fit with, by
+    re-expressing the coupling as m ** (Nact / (Nact - 1)) ** 2."""
+    dm = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
+    path = tmp_path / "dm.pth"
+    dm.SaveCalibration(str(path))
+
+    checkpoint = torch.load(path)
+    assert checkpoint.pop("if_width_pitch") == "Nres/(Nact-1)"
+    legacy_path = tmp_path / "legacy_dm.pth"
+    torch.save(checkpoint, legacy_path)
+
+    new_format = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
+    new_format.LoadCalibration(str(path))
+    assert torch.allclose(new_format.mechCoupling, dm.mechCoupling, atol=1e-6)
+
+    legacy = DeformableMirror(tiny_wfs_params(), tiny_dm_params, device)
+    legacy.LoadCalibration(str(legacy_path))
+    Nact = tiny_dm_params["Nactuator"]
+    expected = dm.mechCoupling ** ((Nact / (Nact - 1)) ** 2)
+    assert torch.allclose(legacy.mechCoupling, expected, atol=1e-6)

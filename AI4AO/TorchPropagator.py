@@ -8,14 +8,11 @@ Created on Fri Dec  6 17:02:43 2024
 import torch # type: ignore[import]
 import torch.nn as nn  # type: ignore[import]
 
-import math
 import numpy as np
-
-np.math = math
 
 from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
-from .Utils import MakePupil
+from .Utils import MakePupil, set_frozen
 from .paths import ensure_parent
 
 
@@ -79,7 +76,7 @@ class WFS(nn.Module):
         x_mask = torch.linspace(
             -self.Npix / 2, self.Npix / 2 - 1, self.Npix, dtype=torch.float32
         ).to(device)
-        [self.x_mask, self.y_mask] = torch.meshgrid(x_mask, x_mask)
+        [self.x_mask, self.y_mask] = torch.meshgrid(x_mask, x_mask, indexing="ij")
 
         self.rho_mask = torch.sqrt(self.x_mask**2 + self.y_mask**2)
         self.abs_x_mask = torch.abs(self.x_mask)
@@ -241,7 +238,12 @@ class WFS(nn.Module):
         )
         return shifted.reshape(Nmask, B, H, W).movedim(0, 1).reshape(*lead_shape, Nmask, H, W)
 
+    def BuildMask(self):
+        pass
+
     def forward(self, opd, pupil = None):
+        if self.training: 
+            self.BuildMask()
         return self.Propagator(opd, pupil)
 
     def Propagator(self, opd, pupil = None, collapse_wvl = True):
@@ -321,7 +323,7 @@ class WFS(nn.Module):
                 natively on the same physical grid: the shared FFT is run at the
                 oversampling needed for the *longest* wavelength (self.wavelength[-1])
                 so every other channel comes out finer than the target, then each
-                channel is resampled (never upsampled) via grid_sample onto the
+                channel is area-integrated (never upsampled; flux-conserving) onto the
                 output grid implied by the *shortest* wavelength (self.wavelength[0])
                 before being summed away. Return shape is always NphasesxNresxNres.
             fov (float, optional): Output field of view, in lambda/D. The frame is
@@ -361,9 +363,9 @@ class WFS(nn.Module):
 
     def _GetPolychromaticPSF(self, opd, pupil, sampling, wl, collapse_wvl):
         """Multi-wavelength branch of GetPSF (see its docstring). Runs one shared
-        FFT oversampled for self.wavelength[-1], then resamples each wavelength
-        channel via grid_sample onto the self.wavelength[0]-scale output grid
-        before summing, since the channels are not natively on the same physical
+        FFT oversampled for self.wavelength[-1], then area-integrates each
+        wavelength channel onto the self.wavelength[0]-scale output grid
+        (_AreaResample, flux-conserving) before summing, since the channels are not natively on the same physical
         angular grid (see class-level discussion in GetPSF's docstring).
         """
 
@@ -396,43 +398,76 @@ class WFS(nn.Module):
         ufocal = torch.fft.fft2(torch.fft.fftshift(uin_padded, [-2, -1]))
         psf_sim = torch.abs(torch.fft.fftshift(ufocal, [-2, -1])) ** 2  # (Nphases, Nwavelength, Npix_sim, Npix_sim)
 
-        # sim-pixels per output-pixel, per wavelength: >=1 everywhere, ==1 at
-        # wavelength[-1] (a no-op resample -- that channel already IS the sim grid).
-        scale = wl[-1] / wl
-        grid = self._BuildWavelengthResampleGrid(scale, Npix_sim, Npix_out)  # (Nwavelength, Npix_out, Npix_out, 2)
+        if wl.numel() == 1:
+            # Single wavelength: sim_sampling == sampling, so the sim grid already
+            # is the output grid -- nothing to resample.
+            return psf_sim if not collapse_wvl else psf_sim.sum(dim=1)
 
-        Nphases_, Nwave_ = psf_sim.shape[:2]
-        psf_flat = psf_sim.reshape(Nphases_ * Nwave_, 1, Npix_sim, Npix_sim)
-        grid_flat = grid.unsqueeze(0).expand(Nphases_, -1, -1, -1, -1).reshape(
-            Nphases_ * Nwave_, Npix_out, Npix_out, 2
-        )
-        resampled = torch.nn.functional.grid_sample(
-            psf_flat, grid_flat, mode="bilinear", align_corners=True, padding_mode="zeros"
-        )
-        psf = resampled.reshape(Nphases_, Nwave_, Npix_out, Npix_out)
+        # Sim pixels per output pixel, per wavelength (>= ~1; ~1 at wavelength[-1]).
+        # An FFT pixel at wavelength w spans w * Nres / (D * Npix) radians, so
+        # use the actual (pad-rounded) grid sizes rather than wl[-1] / wl.
+        scale = (wl[0] * Npix_sim) / (wl * Npix_out)
+        psf = self._AreaResample(psf_sim, scale, Npix_out)  # (Nphases, Nwavelength, Npix_out, Npix_out)
+        # _AreaResample returns each output pixel's integral over scale**2 sim
+        # pixels; divide by wavelength[0]'s footprint so the result keeps
+        # GetPSF's monochromatic units (a wavelength[0] channel matches a
+        # monochromatic GetPSF on the same grid). Longer wavelengths then come
+        # out (wl[0] / w)**2 dimmer per pixel -- same energy spread over a
+        # larger angular PSF -- and every channel carries equal flux, up to what
+        # its wider wings lose outside the field of view.
+        psf = psf * (Npix_out / Npix_sim) ** 2
         if collapse_wvl:
             psf = psf.sum(dim=1)
 
         return psf
 
-    def _BuildWavelengthResampleGrid(self, scale, Npix_sim, Npix_out):
-        """Builds grid_sample coordinates (align_corners=True) mapping each of
-        Npix_out centered output pixels to its corresponding location in an
-        Npix_sim x Npix_sim simulation grid, separately for each wavelength's
-        sim-pixels-per-output-pixel factor in `scale` (shape (Nwavelength,)).
-        Returns (Nwavelength, Npix_out, Npix_out, 2), fully vectorized (no loop).
+    def _AreaResample(self, psf_sim, scale, Npix_out):
+        """Area-integrating resample of each wavelength channel of psf_sim
+        (..., Nwavelength, Npix_sim, Npix_sim) onto a centered Npix_out grid whose
+        pixels are `scale` (shape (Nwavelength,), >= 1) sim pixels wide.
+
+        Each output pixel gets the integral of the sim image over its footprint
+        (treating sim pixels as constant-valued squares), so every channel keeps
+        its flux and decimation doesn't alias -- unlike bilinear point-sampling,
+        which picks up one sim pixel's worth of intensity per output pixel.
+        Implemented with a summed-area table: bilinear interpolation of the
+        cumulative integral is exact for piecewise-constant pixels, so one
+        grid_sample at the output pixel *edges* plus a 2x2 difference gives the
+        exact footprint integrals, fully vectorized and differentiable w.r.t.
+        both the image and `scale`. The table is built in float64 because the
+        corner differences of a cumulative sum would otherwise lose the faint
+        PSF wings to float32 cancellation.
         """
-        j = torch.arange(Npix_out, device=self.device, dtype=torch.float32)
-        center_out = (Npix_out - 1) / 2
-        center_sim = (Npix_sim - 1) / 2
-        offset = j - center_out  # (Npix_out,)
+        lead_shape = psf_sim.shape[:-3]
+        Nwave, Npix_sim = psf_sim.shape[-3], psf_sim.shape[-1]
+        flat = psf_sim.reshape(-1, Nwave, Npix_sim, Npix_sim).double()
+        B = flat.shape[0]
 
-        p_sim = center_sim + offset.view(1, -1) * scale.view(-1, 1)  # (Nwavelength, Npix_out)
-        norm = 2 * p_sim / (Npix_sim - 1) - 1  # (Nwavelength, Npix_out), in [-1, 1]
+        # sat[..., a, b] = sum of pixels [0, a) x [0, b): the integral up to sim
+        # coordinate a - 0.5 (pixel i spans [i - 0.5, i + 0.5]).
+        sat = torch.nn.functional.pad(flat.cumsum(dim=-2).cumsum(dim=-1), (1, 0, 1, 0))
 
-        grid_x = norm.unsqueeze(1).expand(-1, Npix_out, -1)  # (Nwavelength, Npix_out, Npix_out)
-        grid_y = norm.unsqueeze(2).expand(-1, -1, Npix_out)  # (Nwavelength, Npix_out, Npix_out)
-        return torch.stack([grid_x, grid_y], dim=-1)
+        # Output pixel edges, in sim coordinates. fftshift puts the optical axis
+        # (zero frequency) at index N // 2, not the geometric center (N - 1) / 2,
+        # so scale about N // 2 on both grids to keep every channel on-axis.
+        k = torch.arange(Npix_out + 1, device=psf_sim.device, dtype=torch.float64)
+        edges = Npix_sim // 2 + (k.view(1, -1) - Npix_out // 2 - 0.5) * scale.double().view(-1, 1)  # (Nwavelength, Npix_out + 1)
+        # sat index a = edge + 0.5; align_corners=True maps index 0..Npix_sim to [-1, 1].
+        # Border padding is exact outside the table: the integral stops growing.
+        norm = 2 * (edges + 0.5) / Npix_sim - 1
+        grid = torch.stack([
+            norm.unsqueeze(1).expand(-1, Npix_out + 1, -1),  # x varies along the last axis
+            norm.unsqueeze(2).expand(-1, -1, Npix_out + 1),  # y varies along rows
+        ], dim=-1)  # (Nwavelength, Npix_out + 1, Npix_out + 1, 2)
+
+        corners = torch.nn.functional.grid_sample(
+            sat.reshape(B * Nwave, 1, Npix_sim + 1, Npix_sim + 1),
+            grid.unsqueeze(0).expand(B, -1, -1, -1, -1).reshape(B * Nwave, Npix_out + 1, Npix_out + 1, 2),
+            mode="bilinear", align_corners=True, padding_mode="border",
+        ).reshape(B, Nwave, Npix_out + 1, Npix_out + 1)
+
+        out = corners[..., 1:, 1:] - corners[..., :-1, 1:] - corners[..., 1:, :-1] + corners[..., :-1, :-1]
+        return out.to(psf_sim.dtype).reshape(*lead_shape, Nwave, Npix_out, Npix_out)
 
     def SetMask(self, phaseMask=None, transmisionMask=None):
         """
@@ -617,13 +652,14 @@ class WFS(nn.Module):
         # Let PyTorch handle the normal train/eval behavior
         super().train(mode)
 
+        # eval() freezes every parameter; train() restores the per-parameter
+        # requires_grad flags from before the freeze rather than forcing all True
+        set_frozen(self, not mode)
         if not mode:
-            self.requires_grad_(False)
             with torch.no_grad():
                 self.BuildMask()
                 self.BuildReferenceIntensity()
         else:
-            self.requires_grad_(True)
             self.BuildMask()
             self.BuildReferenceIntensity()
         return self

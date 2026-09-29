@@ -1,7 +1,7 @@
 import torch  # type: ignore[import]
 import torch.nn as nn  # type: ignore[import]
 
-from .Utils import MakePupil
+from .Utils import MakePupil, set_frozen
 from .PhaseDataset import Zernike
 from .paths import ensure_parent
 
@@ -86,7 +86,11 @@ class DeformableMirror(nn.Module):
         self.grid = (x**2 + y**2) < ((self.Nact/2 + self.offset_to_fit_number_of_actuators)**2)
         self.totalAct = self.grid.sum()
         self.actuator_positions = torch.stack((x,y))[:, self.grid].permute(1,0)
-        self.actuator_positions = self.actuator_positions * self.Nres / (self.Nact - 1)
+        # Actuator pitch in pupil pixels: the outermost actuators of a row sit on
+        # the pupil edge (OOPAO convention), so Nact actuators span Nact - 1 pitches.
+        # The influence-function width in MakeZonalModes uses this same pitch.
+        self.pitch = self.Nres / (self.Nact - 1)
+        self.actuator_positions = self.actuator_positions * self.pitch
 
         x = torch.arange(0, self.Nres, device = self.device) - self.Nres/2 + 0.5
         x,y = torch.meshgrid(x,x, indexing = 'xy')
@@ -148,8 +152,10 @@ class DeformableMirror(nn.Module):
         effective_moffat = self._CollapseIfGlobal(self._moffatParameter, torch.exp).view(-1, 1, 1)
         effective_mech = self._CollapseIfGlobal(self._mechCoupling, torch.sigmoid).view(-1, 1, 1)
 
-        cx = (1+self.radialScaling)*(self.Nres / self.Nact)/torch.sqrt(2*torch.log(1./effective_mech))
-        cy = (1+self.tangentialScaling)*(self.Nres / self.Nact)/torch.sqrt(2*torch.log(1./effective_mech))
+        # Width chosen so the IF equals mechCoupling one pitch away from its actuator
+        # (exactly so in the Gaussian limit of the Moffat profile).
+        cx = (1+self.radialScaling)*self.pitch/torch.sqrt(2*torch.log(1./effective_mech))
+        cy = (1+self.tangentialScaling)*self.pitch/torch.sqrt(2*torch.log(1./effective_mech))
 
         # Radial direction of the anamorphosis
         theta = self.anamorphosisAngle*torch.pi/180
@@ -278,6 +284,15 @@ class DeformableMirror(nn.Module):
 
         self.load_state_dict(model)
 
+        if checkpoint.get("if_width_pitch") != "Nres/(Nact-1)":
+            # Calibrations saved before the IF width switched from a Nres/Nact to
+            # the actual Nres/(Nact-1) pitch: re-express the fitted coupling so
+            # the loaded influence functions stay exactly the ones that were fit.
+            with torch.no_grad():
+                self._mechCoupling.copy_(torch.logit(
+                    self.mechCoupling ** ((self.Nact / (self.Nact - 1)) ** 2)
+                ))
+
         with torch.no_grad():
             self.ApplyMisreg(misreg)
             self.MakeZonalModes()
@@ -293,7 +308,8 @@ class DeformableMirror(nn.Module):
         "model": self.state_dict(),
         "config": DMDict,
         "misreg": misreg,
-        "per_actuator_calibration": self.per_actuator_calibration
+        "per_actuator_calibration": self.per_actuator_calibration,
+        "if_width_pitch": "Nres/(Nact-1)",
             }, file_path)
 
 
@@ -301,16 +317,29 @@ class DeformableMirror(nn.Module):
         # Let PyTorch handle the normal train/eval behavior
         super().train(mode)
 
+        # eval() freezes every parameter; train() restores the per-parameter
+        # requires_grad flags from before the freeze rather than forcing all True
+        set_frozen(self, not mode)
         if not mode:
-            self.requires_grad_(False)
             with torch.no_grad():
                 self.MakeActGrid()
                 self.MakeZonalModes()
         else:
-            self.requires_grad_(True)
             self.MakeActGrid()
             self.MakeZonalModes()
         return self
+
+    def _RebuildAfterSet(self):
+        """Refresh self.IF after a geometry/shape setter. In train mode forward()
+        already rebuilds on every call, but GetDMShape()/MakeZernikeM2C() read
+        self.IF directly, so rebuild in both modes (graph-free when frozen)."""
+        if not self.initialized:
+            return
+        if self.training:
+            self.MakeZonalModes()
+        else:
+            with torch.no_grad():
+                self.MakeZonalModes()
 
     #### These properties are set such that when optimizing these values they all share the same order of magnitude.
     # ---------- Rotation ----------
@@ -321,6 +350,7 @@ class DeformableMirror(nn.Module):
     def rotationAngle(self, value):
         with torch.no_grad():
             self._rotationAngle.copy_(torch.as_tensor(value, device=self.device) / 180.0)
+        self._RebuildAfterSet()
 
     # ---------- Shift ----------
     @property
@@ -330,6 +360,7 @@ class DeformableMirror(nn.Module):
     def grid_shift(self, value):
         with torch.no_grad():
             self._grid_shift.copy_(torch.as_tensor(value, device=self.device) / 5.0)
+        self._RebuildAfterSet()
 
     # ---------- Amplitude ----------
     # Always stored as a length-totalAct vector: a scalar assignment is just
@@ -342,6 +373,7 @@ class DeformableMirror(nn.Module):
         value = torch.broadcast_to(torch.as_tensor(value, device=self.device), (self.totalAct,)).clone()
         with torch.no_grad():
             self._sign.copy_(value / 1e-6)
+        self._RebuildAfterSet()
 
     # ---------- Radial Scaling ----------
     @property
@@ -351,6 +383,7 @@ class DeformableMirror(nn.Module):
     def radialScaling(self, value):
         with torch.no_grad():
             self._radialScaling.copy_(torch.as_tensor(value, device=self.device) * 10)
+        self._RebuildAfterSet()
 
     # ---------- Tangential Scaling ----------
     @property
@@ -360,6 +393,7 @@ class DeformableMirror(nn.Module):
     def tangentialScaling(self, value):
         with torch.no_grad():
             self._tangentialScaling.copy_(torch.as_tensor(value, device=self.device) * 10)
+        self._RebuildAfterSet()
 
     # ---------- Anamorphosis Angle ----------
     @property
@@ -369,6 +403,7 @@ class DeformableMirror(nn.Module):
     def anamorphosisAngle(self, value):
         with torch.no_grad():
             self._anamorphosisAngle.copy_(torch.as_tensor(value, device=self.device) / 180.0)
+        self._RebuildAfterSet()
 
 
     # ---------- Moffat Parameter ----------
@@ -384,6 +419,7 @@ class DeformableMirror(nn.Module):
         value = torch.log(value)
         with torch.no_grad():
             self._moffatParameter.copy_(value)
+        self._RebuildAfterSet()
 
     # ---------- Mechanical Coupling ----------
     # Always stored as a length-totalAct vector -- see `sign` above.
@@ -398,6 +434,7 @@ class DeformableMirror(nn.Module):
         value = torch.log(value / (1 - value))
         with torch.no_grad():
             self._mechCoupling.copy_(value)
+        self._RebuildAfterSet()
 
     # ---------- Per-actuator calibration flag ----------
     # Gates only how moffatParameter/sign/mechCoupling are USED in
@@ -412,8 +449,7 @@ class DeformableMirror(nn.Module):
     @per_actuator_calibration.setter
     def per_actuator_calibration(self, value):
         self._per_actuator_calibration = value
-        if self.initialized:
-            self.MakeZonalModes()
+        self._RebuildAfterSet()
 
     @property
     def flip_lr(self):
@@ -423,7 +459,7 @@ class DeformableMirror(nn.Module):
         self._flip_lr = value
         if self.initialized:
             self.flip_matrix = torch.tensor([[-1 if self._flip_lr else 1, -1 if self._flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
-            self.MakeZonalModes()
+            self._RebuildAfterSet()
 
     @property
     def flip_tb(self):
@@ -433,7 +469,7 @@ class DeformableMirror(nn.Module):
         self._flip_tb = value
         if self.initialized:
             self.flip_matrix = torch.tensor([[-1 if self._flip_lr else 1, -1 if self._flip_tb else 1]], device = self.device).unsqueeze(dim = -1).unsqueeze(dim = -1)
-            self.MakeZonalModes()
+            self._RebuildAfterSet()
 
     @property
     def offset_to_fit_number_of_actuators(self):

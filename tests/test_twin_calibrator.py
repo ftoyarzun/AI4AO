@@ -121,3 +121,19 @@ def test_fit_dm_and_offsets_smoke(pyramid_wfs, deformable_mirror, device):
     assert final_loss is not None
     assert np.isfinite(final_loss)
     assert original_positions.shape == transformed_positions.shape
+
+
+def test_fit_does_not_decay_parameters_without_gradient_signal(pyramid_wfs, deformable_mirror, device):
+    """With a loss that carries no gradient, fitted physical parameters must
+    not move: AdamW's default weight_decay=0.01 would otherwise pull them
+    toward zero (e.g. maskShifts, initialized at 1)."""
+    calibrator = TwinCalibrator(pyramid_wfs, deformable_mirror, device)
+    before = pyramid_wfs.maskShifts.detach().clone()
+
+    calibrator.fit_pupil_to_reference(
+        torch.zeros(pyramid_wfs.Npix, pyramid_wfs.Npix, device=device), [pyramid_wfs.maskShifts],
+        lr=0.1, n_iter=5, live_plot=False,
+        loss_fn=lambda ref, dig: 0.0 * dig.sum(),
+    )
+
+    assert torch.equal(pyramid_wfs.maskShifts.detach(), before)

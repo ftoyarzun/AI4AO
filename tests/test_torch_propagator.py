@@ -226,8 +226,8 @@ def test_propagator_multi_wavelength_normalization_sums_to_one(tiny_wfs_params, 
 
 def _manual_polychromatic_psf_reference(wfs, params, opd):
     """Replicates _GetPolychromaticPSF's per-channel steps (shared FFT
-    oversampled for the longest wavelength, then grid_sample resampling onto
-    the shortest wavelength's output grid) using independent, non-batched
+    oversampled for the longest wavelength, then flux-conserving area
+    resampling onto the shortest wavelength's output grid) using independent, non-batched
     scalar-wavelength WFS instances, to check the batched implementation
     isn't just a naive same-grid sum (the physically wrong behavior it
     replaces) and isn't mis-pairing wavelengths with the wrong resample scale."""
@@ -235,7 +235,6 @@ def _manual_polychromatic_psf_reference(wfs, params, opd):
 
     wl = wfs.wavelength
     sim_sampling = float((wfs.sampling * wl[-1] / wl[0]).item())
-    scale_all = wl[-1] / wl
 
     reference = None
     for i in range(wl.shape[0]):
@@ -243,11 +242,10 @@ def _manual_polychromatic_psf_reference(wfs, params, opd):
         p["Wavelength"] = float(wl[i].item())
         wfs_i = PyramidWFS(p, wfs.device)
         psf_sim = wfs_i.GetPSF(opd, sampling=sim_sampling)  # raw, un-resampled, on the shared sim grid
-        grid = wfs._BuildWavelengthResampleGrid(scale_all[i].reshape(1), psf_sim.shape[-1], wfs.Npix)
-        resampled = torch.nn.functional.grid_sample(
-            psf_sim.unsqueeze(1), grid.expand(psf_sim.shape[0], -1, -1, -1),
-            mode="bilinear", align_corners=True, padding_mode="zeros",
-        ).squeeze(1)
+        Npix_sim = psf_sim.shape[-1]
+        scale = (wl[0] * Npix_sim) / (wl[i] * wfs.Npix)
+        resampled = wfs._AreaResample(psf_sim.unsqueeze(1), scale.reshape(1), wfs.Npix).squeeze(1)
+        resampled = resampled * (wfs.Npix / Npix_sim) ** 2
         reference = resampled if reference is None else reference + resampled
     return reference
 
@@ -431,3 +429,70 @@ def test_build_interaction_matrix_delta_scales_with_wavelength(tiny_wfs_params, 
     assert wfs.iMat.shape[0] == 4
     assert torch.isfinite(wfs.iMat).all()
     assert not torch.allclose(wfs.iMat, torch.zeros_like(wfs.iMat))
+
+
+def _flat_polychromatic_psf(tiny_wfs_params, device, wavelengths):
+    from AI4AO.PyramidWFS import PyramidWFS
+
+    params = tiny_wfs_params()
+    params["centralObstruction"] = 0.0
+    wfs = PyramidWFS(params, device)
+    wfs.wavelength = torch.tensor(wavelengths, device=device)
+    opd = torch.zeros(1, wfs.Nres, wfs.Nres, device=device)
+    return wfs.GetPSF(opd, sampling=4, collapse_wvl=False)[0]  # (Nwavelength, H, W)
+
+
+def test_get_psf_multi_wavelength_conserves_flux_per_channel(tiny_wfs_params, device):
+    """Equal input energy per wavelength must reach the common output grid as
+    equal flux (up to the wider red wings leaving the field of view), so the
+    more compact blue PSF peaks higher by (lambda / lambda_0)**2 -- rather than
+    short wavelengths being down-weighted by (lambda / lambda_max)**2. The
+    shortest channel must match a monochromatic GetPSF on the same grid."""
+    from AI4AO.PyramidWFS import PyramidWFS
+
+    wavelengths = [500e-9, 700e-9, 1000e-9]
+    psf = _flat_polychromatic_psf(tiny_wfs_params, device, wavelengths)
+
+    params = dict(tiny_wfs_params(), centralObstruction=0.0, Wavelength=wavelengths[0])
+    opd = torch.zeros(1, params["Nres"], params["Nres"], device=device)
+    mono = PyramidWFS(params, device).GetPSF(opd, sampling=4)[0]
+
+    flux = psf.sum(dim=(-2, -1))
+    assert torch.allclose(flux[0], mono.sum(), rtol=1e-3)
+    assert torch.all(flux[1:] <= flux[0]) and torch.all(flux[1:] > 0.9 * flux[0])
+
+    # area-integrating the pixel footprint shaves a few % off the sampled peak
+    assert torch.allclose(psf[0].max(), mono.max(), rtol=0.05)
+    peak_ratio = psf[0].max() / psf[1:].amax(dim=(-2, -1))
+    expected = (torch.tensor(wavelengths[1:], device=device) / wavelengths[0]) ** 2
+    assert torch.allclose(peak_ratio, expected, rtol=0.05)
+
+
+def test_get_psf_multi_wavelength_channels_share_optical_axis(tiny_wfs_params, device):
+    """Every wavelength's flat-wavefront PSF must be centred on the same pixel
+    as a monochromatic PSF (the fftshift optical axis, index N // 2), not
+    displaced by the resampling."""
+    psf = _flat_polychromatic_psf(tiny_wfs_params, device, [500e-9, 700e-9, 1000e-9])
+
+    H, W = psf.shape[-2:]
+    y = torch.arange(H, device=device, dtype=psf.dtype).view(-1, 1)
+    x = torch.arange(W, device=device, dtype=psf.dtype).view(1, -1)
+    total = psf.sum(dim=(-2, -1))
+    cy = (psf * y).sum(dim=(-2, -1)) / total
+    cx = (psf * x).sum(dim=(-2, -1)) / total
+
+    assert torch.allclose(cy, torch.full_like(cy, H // 2), atol=0.05)
+    assert torch.allclose(cx, torch.full_like(cx, W // 2), atol=0.05)
+
+
+def test_eval_train_round_trip_keeps_manually_frozen_parameter(pyramid_wfs):
+    """eval() freezes everything, but train() must restore each parameter's own
+    requires_grad flag instead of forcing all of them back to True."""
+    pyramid_wfs.rooftop.requires_grad_(False)
+
+    pyramid_wfs.eval()
+    assert not any(p.requires_grad for p in pyramid_wfs.parameters())
+
+    pyramid_wfs.train()
+    assert not pyramid_wfs.rooftop.requires_grad
+    assert pyramid_wfs.mainSlope.requires_grad and pyramid_wfs.maskShifts.requires_grad

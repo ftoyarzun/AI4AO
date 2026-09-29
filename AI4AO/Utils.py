@@ -17,6 +17,30 @@ def fused_optimizer_supported(device):
     return torch.device(device).type == "cuda"
 
 
+def set_frozen(module, frozen):
+    """Freeze/unfreeze every parameter of `module` for its train()/eval() override
+    without clobbering per-parameter choices the caller made.
+
+    Freezing (frozen=True) remembers each parameter's current requires_grad flag
+    and then disables all of them; unfreezing restores those remembered flags, so
+    a parameter the caller froze by hand (e.g. `wfs.rooftop.requires_grad_(False)`)
+    stays frozen across an eval()/train() round trip. Repeated freezes keep the
+    first remembered state. Parameters replaced since the freeze (e.g. the DM's
+    per-actuator vectors after its actuator grid is rebuilt) default to trainable.
+    """
+    saved = getattr(module, "_requires_grad_before_freeze", None)
+    if frozen:
+        if saved is None:
+            module._requires_grad_before_freeze = {
+                name: p.requires_grad for name, p in module.named_parameters()
+            }
+        module.requires_grad_(False)
+    elif saved is not None:
+        for name, p in module.named_parameters():
+            p.requires_grad_(saved.get(name, True))
+        module._requires_grad_before_freeze = None
+
+
 def MakePupil(nPx, device, Rpx=None, central_obstruction=0.0, shift_x=0.0, shift_y=0.0, upscale=1, dtype=torch.float32):
     """
     Generate a circular (optionally annular, decentered, and/or soft-edged) pupil mask.

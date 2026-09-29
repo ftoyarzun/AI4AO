@@ -4,6 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
+# Only ship the package itself -- without this, namespace discovery also picks up
+# Data/, dm_models/, Tutorials/, tests/, ... as top-level packages.
+include = ["AI4AO*"]
 
 [project]
 name = "AI4AO"

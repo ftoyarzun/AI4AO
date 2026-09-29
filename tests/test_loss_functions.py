@@ -121,13 +121,35 @@ class _FakeWFS(nn.Module):
         return self.scale * opd.abs() * pupil.abs()
 
 
-def test_physics_loss_deep_copies_wfs_and_disables_noise():
-    wfs = _FakeWFS()
+def test_physics_loss_uses_live_wfs_noise_free_and_restores_noise_flag():
+    class _RecordingWFS(_FakeWFS):
+        def forward(self, opd, pupil = None):
+            self.noise_seen = self.useNoise
+            return super().forward(opd, pupil)
+
+    wfs = _RecordingWFS()
     loss_fn = Physics_loss(wfs)
 
-    assert loss_fn.wfs is not wfs  # deep-copied, not aliased
-    assert loss_fn.wfs.useNoise is False
-    assert wfs.useNoise is True  # original untouched
+    assert loss_fn.wfs is wfs  # a reference, not a stale snapshot
+    assert list(loss_fn.parameters()) == []  # WFS not registered as a submodule
+
+    x = torch.randn(2, 4, 4)
+    loss_fn(None, None, x, x, torch.zeros_like(x), x)
+    assert wfs.noise_seen is False  # simulated frame is noise-free
+    assert wfs.useNoise is True  # caller's setting restored afterwards
+
+
+def test_physics_loss_accepts_train_mode_pyramid_wfs(pyramid_wfs, device):
+    """Regression: the old deepcopy raised on a freshly built (train-mode) WFS,
+    whose cached mask is a non-leaf tensor. Gradients must also reach the mask
+    parameters through the loss."""
+    loss_fn = Physics_loss(pyramid_wfs)
+    opd = 1e-8 * torch.randn(2, pyramid_wfs.Nres, pyramid_wfs.Nres, device=device)
+    frames = torch.rand(2, pyramid_wfs.Npix, pyramid_wfs.Npix, device=device)
+
+    loss = loss_fn(None, None, None, opd, torch.zeros_like(opd), frames)
+    loss.backward()
+    assert pyramid_wfs.mainSlope.grad is not None and torch.isfinite(pyramid_wfs.mainSlope.grad)
 
 
 def test_physics_loss_matches_manual_computation():

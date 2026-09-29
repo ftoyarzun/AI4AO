@@ -82,7 +82,4 @@ class ZernikeWFS(WFS):
 
         return phaseMask, transmisionMask
     
-    def forward(self, opd, pupil = None):
-        return self.Propagator(opd, pupil)
-    
 

@@ -30,8 +30,8 @@ class FramePreprocess:
         frame = self.GetTrainingPupils(frame, add_position_noise=False, add_size_noise=False)
         frame = frame * self.bin_factor ** 2
 
-        self.normalization = torch.std(frame, dim=(-2, -1), keepdim=True)
-        self.reference = frame
+        self.normalization = torch.std(frame, dim=(-2, -1), keepdim=True).detach()
+        self.reference = frame.detach()
 
     def ProcessFrame(self, input_frame, add_pupil_noise = True):
 
