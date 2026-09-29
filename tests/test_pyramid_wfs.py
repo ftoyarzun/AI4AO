@@ -219,3 +219,91 @@ def test_gradients_flow_through_chromatic_pyramid_mask(tiny_wfs_params, device):
     assert wavelength.grad is not None
     assert torch.isfinite(wavelength.grad).all()
     assert torch.any(wavelength.grad != 0)
+
+
+# ---------------------------------------------------------------------------
+# Prism (per-wavelength pupil displacement)
+# ---------------------------------------------------------------------------
+
+def test_prism_mask_requires_several_wavelengths(pyramid_wfs):
+    with pytest.raises(ValueError):
+        pyramid_wfs.BuildPrismMask(0.5)
+
+
+def _prism_reference_mask(wfs, pupil_proportion):
+    """The pre-polychromatic BuildPrismMask algorithm, one sample per wavelength:
+    the chromatic mask scaled by a factor built from a linspace of displacements."""
+    n = wfs.wavelength.numel()
+    d = wfs.Nres * pupil_proportion / wfs.sampling
+    displacement = torch.linspace(-d / 2, d / 2, n, device=wfs.device).view(n, 1, 1, 1)
+    standard = wfs.mainSlope / (2 * torch.pi) * wfs.Npix
+    factor = (displacement + standard) / wfs.mainSlope / wfs.Npix * (2 * torch.pi)
+    return wfs.phaseMask * factor
+
+
+@pytest.mark.parametrize("modulation", [0.0, 1.0])
+def test_prism_mask_matches_linspace_algorithm_for_even_band(tiny_wfs_params, device, modulation):
+    wfs = _pyramid(tiny_wfs_params, device, 635e-9, modulation, rooftop=0.5)
+    wfs.wavelength = torch.tensor(_BAND, device=device)
+    expected = _prism_reference_mask(wfs, 0.5)
+
+    wfs.BuildPrismMask(0.5)
+
+    assert wfs.phaseMask.shape == expected.shape
+    assert torch.allclose(wfs.phaseMask, expected, rtol=1e-5, atol=1e-4)
+
+
+def test_prism_survives_mask_rebuilds(tiny_wfs_params, device):
+    wfs = _pyramid(tiny_wfs_params, device, 635e-9, 0.0, rooftop=0.0)
+    wfs.wavelength = torch.tensor(_BAND, device=device)
+    wfs.BuildPrismMask(0.5)
+    prism_mask = wfs.phaseMask.detach().clone()
+
+    wfs.eval()
+    assert torch.allclose(wfs.phaseMask, prism_mask)
+    wfs.train()
+    wfs(torch.zeros(1, wfs.Nres, wfs.Nres, device=device))  # rebuilds the mask in train mode
+    assert torch.allclose(wfs.phaseMask, prism_mask)
+
+    wfs.prismPupilProportion = None
+    wfs.BuildMask()
+    assert not torch.allclose(wfs.phaseMask, prism_mask)
+
+
+def test_prism_displaces_pupils_across_the_band(tiny_wfs_params, device):
+    """Flat wavefront, one quadrant: the pupil image's centroid must move by the
+    configured Nres * pupil_proportion / sampling pixels per axis between the
+    shortest and longest wavelength, and not at all without the prism."""
+    pupil_proportion = 1.5
+    wfs = _pyramid(tiny_wfs_params, device, 635e-9, 0.0, rooftop=0.0)
+    wfs.wavelength = torch.tensor(_BAND, device=device)
+    flat = torch.zeros(1, wfs.Nres, wfs.Nres, device=device)
+
+    def quadrant_centroids():
+        frames = wfs.Propagator(flat, collapse_wvl=False)[0, :, : wfs.Npix // 2, : wfs.Npix // 2]
+        idx = torch.arange(wfs.Npix // 2, device=device, dtype=frames.dtype)
+        total = frames.sum(dim=(-2, -1))
+        return torch.stack([(frames.sum(-1) * idx).sum(-1), (frames.sum(-2) * idx).sum(-1)], dim=-1) / total[:, None]
+
+    no_prism = quadrant_centroids()
+    wfs.BuildPrismMask(pupil_proportion)
+    with_prism = quadrant_centroids()
+
+    expected = wfs.Nres * pupil_proportion / wfs.sampling
+    assert torch.allclose(no_prism[-1] - no_prism[0], torch.zeros(2, device=device), atol=0.1)
+    assert torch.allclose((with_prism[-1] - with_prism[0]).abs(), torch.full((2,), expected, device=device), rtol=0.15)
+
+
+def test_gradients_flow_through_prism_mask(tiny_wfs_params, device):
+    wfs = _pyramid(tiny_wfs_params, device, 635e-9, 1.0, rooftop=0.5)
+    wavelength = torch.tensor(_BAND, device=device).requires_grad_()
+    wfs.wavelength = wavelength
+    wfs.BuildPrismMask(0.5)
+
+    flat = torch.zeros(1, wfs.Nres, wfs.Nres, device=device)
+    torch.var(wfs(flat), dim=(-2, -1)).sum().backward()
+
+    for grad in (wfs.mainSlope.grad, wavelength.grad):
+        assert grad is not None
+        assert torch.isfinite(grad).all()
+        assert torch.any(grad != 0)
