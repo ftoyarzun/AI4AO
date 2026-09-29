@@ -99,6 +99,18 @@ class WFS(nn.Module):
         self.frame_no_noise = (torch.abs(fftshift(upupil, [-2, -1])) ** 2)  # Return the noisy image, normalized the the number of counts
 
     def MakeMTFMatrices(self, fourier_extension):
+        """Builds the MFT kernels between the pupil, a focal-plane window of
+        Nf = fourier_extension * sampling * MTF_focal_upscale pixels, and the
+        detector.
+
+        The window is fixed in angle: `fourier_extension` and the focal sampling
+        are in lambda_c/D (lambda_c: centre of the band, see ChromaticRatio). A
+        focal pixel therefore spans lambda_c / lambda times as many lambda/D at
+        each wavelength, so the kernels get a wavelength axis: Mx/My are
+        (Nwavelength, 1, Np, Nf) and iMx/iMy are (Nwavelength, 1, Nf, Npix),
+        broadcasting against the (..., Nwavelength, Nmask, H, W) field. For a
+        single wavelength the scale is exactly 1.
+        """
         fourier_sampling = self.sampling * self.MTF_focal_upscale
         pupil_sampling = self.Nres
         pupil_extension = self.Npix
@@ -112,7 +124,7 @@ class WFS(nn.Module):
         x = (
             torch.arange(Np, device=self.device, dtype=torch.float32) - Np / 2
         ) / pupil_sampling
-        # Focal plane coordinates (in lambda/D units)
+        # Focal plane coordinates (in lambda_c/D units)
         u = (
             torch.arange(Nf, device=self.device, dtype=torch.float32) - (Nf - 1) / 2
         ) / fourier_sampling
@@ -127,13 +139,17 @@ class WFS(nn.Module):
             - self.Npix / 2
         ) / self.Nres
 
+        # lambda_c / lambda converts lambda_c/D to each wavelength's own lambda/D
+        ratio = self.ChromaticRatio().view(-1, 1, 1, 1)  # (Nwavelength, 1, 1, 1)
+        self.MTF_ratio = ratio
+
         # Fourier kernels
-        self.Mx = torch.exp(-1j * 2 * torch.pi * torch.outer(x, u))  # (Np, Nf)
-        self.My = torch.exp(-1j * 2 * torch.pi * torch.outer(x, u))  # (Np, Nf)
+        self.Mx = torch.exp(-1j * 2 * torch.pi * (torch.outer(x, u) * ratio))  # (Nwavelength, 1, Np, Nf)
+        self.My = self.Mx
 
         # Inverse Fourier kernels
-        self.iMx = torch.exp(1j * 2 * torch.pi * torch.outer(u, d))  # (Nf, Np)
-        self.iMy = torch.exp(1j * 2 * torch.pi * torch.outer(u, d))  # (Nf, Np)
+        self.iMx = torch.exp(1j * 2 * torch.pi * (torch.outer(u, d) * ratio))  # (Nwavelength, 1, Nf, Npix)
+        self.iMy = self.iMx
 
     def MFT_pupil_to_focal(self, E):
         """
@@ -149,7 +165,7 @@ class WFS(nn.Module):
             Complex electric field in the focal plane.
         """
         # Matrix Fourier Transform
-        Ef = self.Mx.T @ E @ self.My
+        Ef = self.Mx.mT @ E @ self.My
 
         # Normalization
         Ef *= 1 / self.Nres**2
@@ -173,10 +189,10 @@ class WFS(nn.Module):
         """
 
         # Inverse Matrix Fourier Transform
-        Ep = self.iMx.T @ E @ self.iMy
+        Ep = self.iMx.mT @ E @ self.iMy
 
-        # Normalization
-        Ep *= 1 / (self.sampling * self.MTF_focal_upscale) ** 2
+        # Normalization: focal pixel area in each wavelength's own (lambda/D)^2
+        Ep = Ep * (self.MTF_ratio ** 2 * (1 / (self.sampling * self.MTF_focal_upscale) ** 2))
 
         return Ep
 

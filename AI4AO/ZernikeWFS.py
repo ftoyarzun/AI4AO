@@ -70,11 +70,22 @@ class ZernikeWFS(WFS):
         return phaseMask + zernike_mask
     
     def BuildZernikeMaskMFT(self):
+        """Builds the MTF-path masks: a (1, Nmask, N, N) hard-edged dot
+        transmission shared by every wavelength, and a (Nwavelength, Nmask, 1, 1)
+        phase depth.
+
+        As on the FFT path, the dot diameter is in lambda_c/D and the depth in
+        radians at lambda_c. The dot is a fixed angle, which MakeMTFMatrices
+        models by scaling the focal window per wavelength, so the transmission
+        needs no wavelength axis. The depth scales as lambda_c / lambda (a fixed
+        optical step, glass dispersion ignored).
+        """
+        ratio = self.ChromaticRatio().view(-1, 1, 1, 1)  # (Nwavelength, 1, 1, 1), exactly 1 for one wavelength
         N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
         phaseMask = torch.ones(1, self.number_of_masks, 1, 1, device=self.device, dtype=torch.float32)
         transmisionMask = MakePupil(N, self.device)
         transmisionMask = transmisionMask.repeat(1, self.number_of_masks, 1, 1)
-        phaseMask= phaseMask * self.depths.view(1, self.number_of_masks, 1, 1)
+        phaseMask= phaseMask * (self.depths.view(1, self.number_of_masks, 1, 1) * ratio)  # (Nwavelength, Nmask, 1, 1)
         self.MakeMTFMatrices(self.diameters[0])
 
         frame_center = torch.ones((self.number_of_masks, 2), device=self.device, dtype=torch.float32) * self.Npix // 2
