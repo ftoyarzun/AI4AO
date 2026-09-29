@@ -18,6 +18,7 @@ from AI4AO.LossFunctions import (
     WFSSignalLoss,
     LogResidualVarianceLoss,
     RMSELoss,
+    ModalMAELoss,
 )
 
 
@@ -74,6 +75,22 @@ def test_rmse_loss_matches_manual_computation():
 
     assert torch.allclose(loss, expected, atol=1e-6)
     assert torch.allclose(loss_fn(Ze, Ze.clone(), None, None, None, None), torch.zeros_like(loss), atol=1e-6)
+
+
+def test_modal_mae_loss_matches_manual_computation_and_backprops():
+    loss_fn = ModalMAELoss()
+    Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames = _dummy_forward_args()
+
+    loss = loss_fn(Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames)
+    expected = torch.mean(torch.abs(z_estimated - Ze))
+
+    assert loss.dim() == 0
+    assert torch.allclose(loss, expected, atol=1e-6)
+    assert torch.allclose(loss_fn(Ze, Ze.clone(), None, None, None, None), torch.zeros_like(loss), atol=1e-6)
+
+    loss.backward()
+    assert z_estimated.grad is not None
+    assert torch.isfinite(z_estimated.grad).all()
 
 
 def test_log_residual_variance_loss_matches_manual_computation():

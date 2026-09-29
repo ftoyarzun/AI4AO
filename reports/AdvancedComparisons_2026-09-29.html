@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advanced Comparisons Report</title>
+<style>
+:root {
+  --bg: #f7f6f3; --surface: #fcfcfb; --border: #e2e0da;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #807e78;
+  --bar: #86b6ef; --bar-best: #1c5cab; --whisker: #52514e; --grid: #ecebe7;
+  --warn-bg: #fff4dc; --warn-border: #eda100; --bad-bg: #fde8e8; --bad-border: #d03b3b;
+  --tie: #1c5cab;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121211; --surface: #1a1a19; --border: #383835;
+    --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e87;
+    --bar: #3d5f8a; --bar-best: #6da7ec; --whisker: #c3c2b7; --grid: #2a2a28;
+    --warn-bg: #3a2f14; --warn-border: #c98500; --bad-bg: #3d1c1c; --bad-border: #e66767;
+    --tie: #86b6ef;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121211; --surface: #1a1a19; --border: #383835;
+  --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e87;
+  --bar: #3d5f8a; --bar-best: #6da7ec; --whisker: #c3c2b7; --grid: #2a2a28;
+  --warn-bg: #3a2f14; --warn-border: #c98500; --bad-bg: #3d1c1c; --bad-border: #e66767;
+  --tie: #86b6ef;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 0; }
+.sub { color: var(--text-2); margin: 0 0 24px; font-size: 14px; }
+.box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 16px; }
+.box h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-2); margin: 0 0 8px; }
+.box ul { margin: 0; padding-left: 20px; }
+.box li { margin: 3px 0; }
+.warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.bad { background: var(--bad-bg); border-color: var(--bad-border); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-2); font-weight: 600; font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; }
+th.num { text-align: right; }
+.best-table td:first-child { color: var(--text-2); white-space: nowrap; }
+section.nb { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin: 20px 0; }
+.nbfile { color: var(--muted); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+.varied { color: var(--text-2); margin: 6px 0 10px; font-size: 14px; }
+.grid2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--text-2); font-size: 12px; }
+svg .val { fill: var(--text); font-variant-numeric: tabular-nums; }
+.takeaway { margin: 12px 0 0; font-size: 14px; }
+.takeaway b { color: var(--text); }
+.note { margin: 8px 0 0; font-size: 13px; color: var(--text-2); }
+.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); margin-left: 4px; }
+.tag.best { border-color: var(--bar-best); color: var(--bar-best); font-weight: 600; }
+.tag.miss { border-color: var(--bad-border); color: var(--bad-border); font-weight: 600; }
+tr.missing td { background: var(--bad-bg); }
+#tip { position: fixed; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 10; }
+.hit { fill: transparent; cursor: default; }
+.hit:hover { fill: var(--grid); fill-opacity: .6; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Advanced comparisons: results</h1>
+  <p class="sub" id="sub"></p>
+
+  <div class="box" id="missing-box"></div>
+  <div class="box">
+    <h3>Best choice per axis</h3>
+    <table class="best-table" id="best-table"></table>
+    <p class="note" id="combined"></p>
+  </div>
+  <div class="box warn">
+    <h3>Known discrepancies (noted, not corrected)</h3>
+    <ul id="discrepancies"></ul>
+  </div>
+  <div class="box">
+    <h3>How to read</h3>
+    <ul id="method"></ul>
+  </div>
+
+  <div id="sections"></div>
+
+  <section class="nb" id="final"></section>
+</main>
+<div id="tip"></div>
+<script>
+const DATA = [{"nb": "CNNArchitectureComparison", "arms": [{"name": "Classic", "mean": 155.0869683342171, "sd": 42.4384612705886, "vals": [174.14447484043194, 129.51302608144033, 157.84947038355313, 212.51661053156568, 101.41125983409438], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "StemEncoder", "mean": 118.20270771067953, "sd": 14.26880641341078, "vals": [125.60686002416332, 113.29160543027683, 129.83987573988998, 126.95214479663264, 95.3230525624349], "params": 969382, "missing": false, "tie": false, "best": true}, {"name": "CoordConv", "mean": 134.85466325846573, "sd": 27.311570582665723, "vals": [139.35462561676104, 123.66260193630296, 139.4059125914282, 173.44288494314242, 98.40729120469405], "params": 941214, "missing": false, "tie": false, "best": false}, {"name": "Detiled", "mean": 243.89449038153543, "sd": 64.49135687055605, "vals": [312.3076055544516, 257.76338929972553, 250.6872931462567, 261.6087328988215, 137.10543100842187], "params": 945148, "missing": false, "tie": false, "best": false}, {"name": "Recommended", "mean": 128.11614169550012, "sd": 16.57083618967484, "vals": [138.2598355803566, 124.51603481622442, 142.154704008135, 134.76055471528525, 100.88957935749931], "params": 995758, "missing": false, "tie": false, "best": false}, {"name": "ResNet", "mean": 163.66442849857776, "sd": 47.76084369326704, "vals": [196.60311068037117, 128.8780708819104, 173.11826638888306, 217.78821235329815, 101.93448218842605], "params": 909022, "missing": false, "tie": false, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "CNN architecture (6 designs, ~0.9M)", "axis": "Architecture (~0.9M)", "varied": "How the reconstructor treats the 4 Pyramid pupil images: Classic, StemEncoder, CoordConv, Detiled, Recommended, ResNet. Parameters matched at ~0.9\u20131.0M.", "takeaway": "StemEncoder is best and beats every other design on every seed. Recommended (+10 nm) is second. Detiled (single retiled image) is clearly worst (+126 nm). Classic and ResNet are unstable on the hard seed."}, {"nb": "ActivationComparison", "arms": [{"name": "ReLU", "mean": 197.17960384468824, "sd": 77.01549927518002, "vals": [246.47985696901742, 140.32931971996732, 205.08315401457367, 291.87262384766655, 102.13306467221628], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "LeakyReLU", "mean": 145.93811386021116, "sd": 38.98295303426469, "vals": [149.3596641921613, 127.05854146588536, 145.72765394404996, 206.6294371161348, 100.9152725828244], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "ELU", "mean": 113.19140753585089, "sd": 13.159662050147768, "vals": [124.22260908806493, 109.02105174181997, 122.10230693199264, 118.53144599172083, 92.07962392565605], "params": 940710, "missing": false, "tie": false, "best": true}, {"name": "GELU", "mean": 127.26799383244725, "sd": 16.50814432824177, "vals": [137.07473556223704, 123.13857666867989, 138.75222748538363, 137.36479331782903, 100.00963612810665], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "SiLU", "mean": 130.62636696759, "sd": 19.517910672912855, "vals": [147.3047035460695, 123.62080781258555, 139.3419779560645, 143.2441223414571, 99.62022318177333], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "Mish", "mean": 120.14355519340825, "sd": 15.287256364732311, "vals": [126.17275046977738, 114.93938956164129, 131.58249601019634, 132.2504630252297, 95.77267690019653], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "Sigmoid", "mean": 272.5717649809667, "sd": 74.43085911447311, "vals": [389.44241964600224, 266.2891063209827, 276.4893736184604, 246.063677877828, 184.57424744156015], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "Custom", "mean": 149.29048859357863, "sd": 29.5803873810405, "vals": [191.49422314512776, 141.07720858191897, 154.63078284483345, 150.23350385945378, 109.0167245365592], "params": 940710, "missing": false, "tie": false, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Activation function", "axis": "Activation", "varied": "Nonlinearity inside the fixed ClassicCNN (941k): ReLU, LeakyReLU, ELU, GELU, SiLU, Mish, Sigmoid, Custom (signed \u221a|x|).", "takeaway": "ELU is best, followed by Mish (+7) and GELU/SiLU (+14\u201317). All smooth activations beat plain ReLU, which is unstable across seeds. Sigmoid fails to train properly."}, {"nb": "AdvancedArchitectureComparison", "arms": [{"name": "Classic", "mean": 149.3181031264612, "sd": 54.9114634667711, "vals": [141.4216228567966, 122.28547063841688, 141.04514889368147, 242.5651643989113, 99.2731088444998], "params": 3054019, "missing": false, "tie": true, "best": false}, {"name": "ViT", "mean": 166.3232126247749, "sd": 41.58594220999417, "vals": [229.25399889572873, 148.88397004142462, 169.93678286780778, 168.55159401529818, 114.98971730361518], "params": 3031494, "missing": false, "tie": false, "best": false}, {"name": "ConvNeXtV2", "mean": 123.43164570438603, "sd": 15.594097566517513, "vals": [139.56375255474995, 121.81179442904977, 132.78847177389252, 124.48590780422819, 98.5083019600097], "params": 3062150, "missing": false, "tie": false, "best": true}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 5, "Nout": 42}, "missing": [], "title": "Advanced architectures (ViT, ConvNeXt V2)", "axis": "Advanced arch. (~3M)", "varied": "Actuator-aligned-patch ViT and ConvNeXt V2 vs a widened ClassicCNN, all at ~3M parameters.", "takeaway": "ConvNeXt V2 is best on average and the most stable. Classic is within ~8 nm of it on 4 of 5 seeds, but blows up on seed 1237 (243 nm). ViT is consistently worse (+43 nm).", "note": "different budget from the rest (~3M params, 5 closed-loop iterations in stage 2)."}, {"nb": "NormalizationComparison", "arms": [{"name": "None", "mean": 143.44954735179272, "sd": 33.44877797228569, "vals": [147.3852790923047, 130.60079595561547, 147.86537860800308, 191.8776320053439, 99.51865109769642], "params": 940710, "missing": false, "tie": true, "best": false}, {"name": "BatchNorm", "mean": 139.72207284496108, "sd": 23.440453846990405, "vals": [152.53843343998597, 130.67509030406654, 149.92590990914323, 162.31560096002795, 103.15532961158169], "params": 941550, "missing": false, "tie": false, "best": true}, {"name": "GroupNorm", "mean": 161.85805122859165, "sd": 70.79395739431001, "vals": [153.60679128662014, 126.91020856436808, 144.6059343379602, 283.2782115547161, 100.88911039929371], "params": 941550, "missing": false, "tie": true, "best": false}, {"name": "LayerNorm", "mean": 157.03670470657016, "sd": 33.31161056415694, "vals": [199.41624884722842, 147.30032660281722, 157.84540607910458, 171.8358646485285, 108.78567735517208], "params": 941550, "missing": false, "tie": false, "best": false}, {"name": "InstanceNorm", "mean": 144.62754478472561, "sd": 24.0822410664454, "vals": [174.874429603733, 140.811849291822, 152.64171793205605, 146.54794711077557, 108.26177998524145], "params": 941550, "missing": false, "tie": true, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Normalization layer", "axis": "Normalization", "varied": "None / BatchNorm / GroupNorm / LayerNorm / InstanceNorm after every conv of ClassicCNN (~942k).", "takeaway": "Normalization doesn't help: BatchNorm, None and InstanceNorm are statistically tied. LayerNorm is slightly worse. GroupNorm is tied on average but unstable (283 nm on seed 1237). Keeping no normalization is fine."}, {"nb": "PoolingComparison", "arms": [{"name": "MaxPool", "mean": 120.04934433207382, "sd": 15.799518746842033, "vals": [126.99106832769758, 113.94862298175212, 131.5487025976836, 132.65035647691548, 95.10797127632031], "params": 1221374, "missing": false, "tie": false, "best": true}, {"name": "AvgPool", "mean": 127.07857166560643, "sd": 19.139633293913164, "vals": [133.53212580113905, 118.3883497901661, 138.7650030437726, 146.5085261997956, 98.19885349315882], "params": 1221374, "missing": false, "tie": false, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Pooling / downsampling", "axis": "Pooling", "varied": "MaxPool vs AvgPool in ClassicCNN (base_channels=32, 1.22M).", "takeaway": "MaxPool beats AvgPool by 7 nm, consistently across seeds."}, {"nb": "LossFunctionComparison", "arms": [{"name": "ModalMAE", "mean": 117.7267918706093, "sd": 14.120825020617845, "vals": [124.4644209918988, 112.62222443519931, 129.89472963909066, 126.36408541766286, 95.28849886919488], "params": 940710, "missing": false, "tie": false, "best": true}, {"name": "ModalMSE", "mean": 140.06964903501284, "sd": 28.076509001846134, "vals": [141.1721086697071, 126.50242808831536, 147.8963440604275, 180.44038085918146, 104.33698349743281], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "PhaseMAE", "mean": 133.5577749728145, "sd": 23.329997226500588, "vals": [138.36826440183358, 122.43742730788654, 141.99771669609618, 163.7725262071399, 101.21294025111638], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "PhaseMSE", "mean": 134.58165000201916, "sd": 18.63343151551971, "vals": [141.49928517781518, 127.1271088398862, 145.65200956440094, 152.84538790183433, 105.78445852615914], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "LogVariance", "mean": 127.07656509292065, "sd": 19.908718382601332, "vals": [131.73449531223014, 119.30920607028384, 137.17161095883057, 149.8239043939975, 97.34360872926118], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "Physics", "mean": 144.2691981878852, "sd": 21.34352214471544, "vals": [168.48717621087417, 138.54344160790788, 153.85778340260003, 149.1586942847789, 111.29889543326499], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "StrehlApprox", "mean": 123.58605232520858, "sd": 15.12106371642456, "vals": [133.08471125128563, 118.00308641340962, 135.29724185445957, 132.1118361374829, 99.43338596940521], "params": 940710, "missing": false, "tie": false, "best": false}, {"name": "Mixed loss", "mean": 139.91984531003254, "sd": 26.87228462240731, "vals": [149.87386975917616, 125.26430737125338, 148.10791526542744, 173.5424319804224, 102.81070217388333], "params": 940710, "missing": false, "tie": false, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Training loss", "axis": "Loss", "varied": "Loss used to train the fixed ClassicCNN (941k): modal MAE/MSE, residual-phase MAE/MSE, LogVariance, Physics, Strehl approximation, and a mixed loss.", "takeaway": "ModalMAE is best, with StrehlApprox a close, consistent second (+6 nm). MAE beats MSE in both the modal and phase domains. Physics-only is worst, and the mixed loss doesn't improve on its parts."}, {"nb": "CNNSizeComparison", "arms": [{"name": "86k (base=8)", "mean": 225.57431407221884, "sd": 87.9965201684018, "vals": [368.26722293881176, 181.25213330222323, 233.61039325209276, 210.59423715996672, 134.14758370799973], "params": 86030, "missing": false, "tie": false, "best": false}, {"name": "318k (base=16)", "mean": 148.39860398296878, "sd": 36.691618613718084, "vals": [160.2821839696844, 128.65415044416295, 150.71417180934077, 200.33068892644224, 102.01182476521353], "params": 318174, "missing": false, "tie": false, "best": false}, {"name": "1221k (base=32)", "mean": 118.2754957085308, "sd": 15.247384824599648, "vals": [123.86267655983829, 112.58494936328134, 129.50404482126032, 131.129837654953, 94.29597014332103], "params": 1221374, "missing": false, "tie": false, "best": false}, {"name": "4783k (base=64)", "mean": 109.02733720286051, "sd": 12.46895476161553, "vals": [113.78958220120694, 103.82064630221066, 120.34374208269583, 117.46489292363549, 89.71782250455362], "params": 4783422, "missing": false, "tie": false, "best": false}, {"name": "18930k (base=128)", "mean": 107.50678995918861, "sd": 12.12675765087098, "vals": [113.05419178597731, 102.5056519665668, 118.09853361910427, 115.32127075497556, 88.5543016693191], "params": 18930110, "missing": false, "tie": false, "best": true}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Model size", "axis": "Size", "varied": "ClassicCNN width (base_channels 8 \u2192 128), 86k \u2192 18.9M parameters.", "takeaway": "Returns saturate: 4.8M is within 1.5 nm of 18.9M. 1.2M costs +11 nm, and below ~300k performance degrades sharply and becomes unstable."}, {"nb": "WidthDepthComparison", "arms": [{"name": "300k_wide", "mean": 147.94100025028456, "sd": 32.87108376656318, "vals": [176.72408603175427, 127.56167677707708, 151.1052261093937, 180.89541242716223, 103.41859990603552], "params": 318174, "missing": false, "tie": false, "best": false}, {"name": "300k_deep", "mean": 373.71874554992246, "sd": 62.89638713479033, "vals": [381.7833942321158, 334.67156868027814, 419.44767303903063, 443.91563847057114, 288.77545332761656], "params": 327154, "missing": false, "tie": false, "best": false}, {"name": "300k_deep_res", "mean": 182.57262723864187, "sd": 46.25813429746765, "vals": [218.06604877383506, 156.8125611584037, 186.35954290857626, 232.9533543843354, 118.67162896805894], "params": 273520, "missing": false, "tie": false, "best": false}, {"name": "1M_wide", "mean": 123.28864329447242, "sd": 19.85050239942787, "vals": [123.7998645819971, 114.69515470707847, 133.8995474498006, 148.35180195404973, 95.69684777943621], "params": 1007447, "missing": false, "tie": false, "best": false}, {"name": "1M_deep", "mean": 375.65524735327926, "sd": 63.58764019016277, "vals": [379.903127623038, 339.6188503757003, 420.6590631383733, 448.87309513796936, 289.22210049131536], "params": 1066534, "missing": false, "tie": false, "best": false}, {"name": "1M_deep_res", "mean": 161.62894098670222, "sd": 76.02199002881673, "vals": [145.43385873366788, 123.13071806602238, 144.635833976281, 293.6873784165073, 101.25691574103257], "params": 1072810, "missing": false, "tie": true, "best": false}, {"name": "3M_wide", "mean": 111.34067250395674, "sd": 13.040918901343698, "vals": [116.99790292141188, 106.66182959084836, 123.12500530242687, 119.20803899556631, 90.71058570953028], "params": 3054019, "missing": false, "tie": false, "best": true}, {"name": "3M_deep", "mean": 373.7413635462872, "sd": 62.57422659507775, "vals": [381.8080642759014, 338.5492846064153, 417.9972279416688, 443.4489540017239, 286.9032869057264], "params": 2939510, "missing": false, "tie": false, "best": false}, {"name": "3M_deep_res", "mean": 123.66482593506589, "sd": 17.874316748397057, "vals": [131.57705325284041, 116.7402388091432, 133.10115321019111, 141.08067603046948, 95.82500837268526], "params": 2956690, "missing": false, "tie": false, "best": false}], "settings": {"TrainParams": {"lrn": 0.0001, "TrainRunNb": 10000, "ClosedLoopIterations": 1, "TestRunNb": 200, "Seed": 1234}, "WFS": {"Modulation": 0, "useNoise": true, "Nphotons": [4.5, 6], "RON": [1, 3], "Center_noise": 0, "Pupil_size_noise": 0.0, "Wavelength": 7e-07}, "DM": {"Nactuator": 17, "Nmodes": 190}, "CL_stage2": 10, "Nout": 42}, "missing": [], "title": "Width vs depth", "axis": "Width vs depth", "varied": "At ~300k, ~1M and ~3M params: wide (1 block/stage), deep (5\u20136 plain blocks/stage), and deep + residual.", "takeaway": "Wide wins at every budget, and 3M_wide is the best arm overall. Plain deep stacks don't train at all (~374 nm, identical at every size). Residual connections rescue them, but they still trail wide nets."}];
+const NOTES = {"order": ["CNNArchitectureComparison", "ActivationComparison", "AdvancedArchitectureComparison", "NormalizationComparison", "PoolingComparison", "LossFunctionComparison", "CNNSizeComparison", "WidthDepthComparison"], "subtitle": "8 ablation notebooks in <code>Tutorials/Advanced</code> \u00b7 46 checkpoints re-evaluated \u00b7 metric: steady-state closed-loop residual, nm RMS (lower is better) \u00b7 2026-09-29", "combined": "<b>Combined config (tested, see the final remark at the bottom):</b> StemEncoder, ELU, MaxPool, no normalization, ModalMAE loss, widened to ~2.8M params. It reaches <b>106.3 nm</b>, better than every single-axis winner.", "method": ["Notebooks have no saved outputs and the <code>.pth</code> files hold weights only, so every number was recomputed: each notebook's own setup cells were executed, stage-2 checkpoints loaded (strict), and its <code>Trainer.evaluate()</code> rollout run (200 steps, first 30% discarded, RMS over the pupil and the 16-phase batch).", "5 seeds (1234\u20131238), shared by all arms of a notebook. <b>nm RMS</b> = mean \u00b1 sd over seeds; <b>nb. seed</b> = seed 1234 alone; <b>n.s.</b> / \u2248 = paired difference to the best arm is within 2 standard errors. With 5 seeds this often just means \u201ctoo noisy to call\u201d, not \u201cas good\u201d.", "All 8 notebooks share <code>CNNComparison_params.py</code> (17 actuators / 190 modes, noise on), so the instrument is identical across them, but training budgets differ (see discrepancies). Compare arms within a notebook, not across notebooks.", "Seed 1237 is a hard draw: several arms (Classic, ResNet, GroupNorm, 1M_deep_res\u2026) jump to 200\u2013300 nm there. Most of the large sd values come from that single seed (hover a bar for per-seed values)."], "discrepancies": ["<b>Training budget</b> (not actually a discrepancy): <code>TrainRunNb = 10000</code> counts simulated closed-loop frames. <code>Trainer.train</code> takes <code>TrainRunNb // closed_loop_iterations</code> optimizer steps, so stage 2 is 1000 steps (10 iterations) and 10000 in stage 1. The params comment still refers to \u201cthe 4 trained sizes\u201d.", "<b>AdvancedArchitecture</b> is on a different footing: ~3M-parameter models (Classic uses <code>base_channels=51</code>) and <code>CLOSED_LOOP_ITERATIONS_STAGE2 = 5</code> (so 2000 stage-2 optimizer steps over the same 10000 frames), vs ~0.9M (default) and 10 elsewhere.", "<b>Pooling</b> uses <code>base_channels=32</code> (1.22M params instead of 0.94M) and now has only MaxPool/AvgPool. The notebook text still describes three variants (SpaceToDepth/Haar).", "<b>LossFunction</b> has 8 arms, though the text says seven. \u201cMixed loss\u201d = LogVariance + 10\u00b7Physics + 10\u00b7ModalMAE. The default loss the other notebooks train with (LogVariance + Physics) is not itself an arm.", "<b>Params file vs text:</b> <code>Modulation: 0</code>, although the notebooks describe a \u201cmodulated Pyramid\u201d. The <code>Pupil_size_noise</code> comment says \u00b13%, but the value is 0.00 (and <code>Center_noise</code> is 0).", "<b>Seeding:</b> the notebooks reseed only <code>torch</code>, but <code>PhaseDataset</code> draws the number of turbulence layers from <code>np.random</code>, so the notebooks' \u201cidentical draws\u201d rollouts are not fully paired. This report seeds both, so its seed-1234 numbers won't exactly match a notebook run.", "<b>One training run per arm:</b> the same config (ClassicCNN with its default LeakyReLU, no norm, LogVariance + Physics) appears as Classic / LeakyReLU / None in three notebooks and scores <b>155 / 146 / 143 nm</b>. The 1.22M MaxPool ClassicCNN appears in both Size and Pooling and scores 118 / 120 nm. Training-run noise is therefore ~5\u201310 nm, so gaps smaller than that shouldn't be over-read."], "final": {"intro": "The per-axis winners were combined into one reconstructor in <code>Tutorials/Advanced/BestCNN.ipynb</code> (checkpoint <code>Data/BestCNN/BestCNN.pth</code>): a StemEncoder with ELU in both the stem and the encoder, MaxPool, no normalization, and ModalMAE loss. It is widened to <code>base_channels=12</code> (2.79M params, same depth), and uses the same instrument and two-stage training budget as the ablations. It was evaluated against the saved checkpoints of the relevant winners on the same 5 seeds, with torch and NumPy both seeded.", "rows": [["BestCNN 2.8M (combined)", "106.3 \u00b1 12.7", "\u2014"], ["ClassicCNN 3M wide (WidthDepth)", "111.3 \u00b1 13.0", "+5.0 \u00b1 1.1"], ["ClassicCNN 0.9M, ELU (Activation)", "113.2 \u00b1 13.2", "+6.9 \u00b1 3.1"], ["ClassicCNN 0.9M, ModalMAE (Loss)", "117.7 \u00b1 14.1", "+11.4 \u00b1 1.6"], ["StemEncoder 0.9M, GELU (Architecture)", "118.2 \u00b1 14.3", "+11.9 \u00b1 1.7"]], "takeaway": "The winners combine: BestCNN beats every baseline by more than the seed-to-seed spread of the paired difference. It also edges out the 18.9M ClassicCNN from the Size notebook (107.5 nm) with ~7\u00d7 fewer parameters. Each model is still a single training run (training-run noise ~5\u201310 nm), so treat the 5 nm lead over the 3M wide ClassicCNN as real but modest."}};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = x => x.toFixed(1);
+
+document.getElementById('sub').innerHTML = NOTES.subtitle;
+document.getElementById('discrepancies').innerHTML = NOTES.discrepancies.map(d => `<li>${d}</li>`).join('');
+document.getElementById('method').innerHTML = NOTES.method.map(d => `<li>${d}</li>`).join('');
+document.getElementById('combined').innerHTML = NOTES.combined;
+
+const allMissing = DATA.flatMap(s => s.arms.filter(a => a.missing).map(a => `${s.title}: <b>${esc(a.name)}</b>`));
+const mb = document.getElementById('missing-box');
+if (allMissing.length) {
+  mb.classList.add('bad');
+  mb.innerHTML = `<h3>Missing checkpoints</h3><ul>${allMissing.map(m => `<li>${m} (no .pth, evaluated untrained)</li>`).join('')}</ul>`;
+} else {
+  const n = DATA.reduce((k, s) => k + s.arms.length, 0);
+  mb.innerHTML = `<h3>Checkpoints</h3>All <b>${n}</b> arms across ${DATA.length} notebooks have a saved <code>.pth</code> that loads (strict) into the architecture the notebook currently builds. None missing.`;
+}
+
+document.getElementById('best-table').innerHTML =
+  '<tr><th>Axis</th><th>Best arm</th><th class="num">nm RMS</th><th>Not significantly different from best (5 seeds)</th></tr>' +
+  DATA.map(s => {
+    const b = s.arms.find(a => a.best);
+    const ties = s.arms.filter(a => a.tie).map(a => esc(a.name)).join(', ') || '—';
+    return `<tr><td>${esc(s.axis)}</td><td><b>${esc(b.name)}</b></td><td class="num">${fmt(b.mean)} ± ${fmt(b.sd)}</td><td>${ties}</td></tr>`;
+  }).join('');
+
+const tip = document.getElementById('tip');
+function showTip(e, html) { tip.innerHTML = html; tip.style.display = 'block';
+  const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + 'px'; tip.style.top = (e.clientY + 12) + 'px'; }
+function hideTip() { tip.style.display = 'none'; }
+
+function chart(s) {
+  const arms = [...s.arms].sort((a, b) => a.mean - b.mean);
+  const W = 520, labelW = 118, valW = 92, rowH = 26, top = 6, bot = 22;
+  const H = top + arms.length * rowH + bot;
+  const xmax = Math.max(...arms.map(a => a.mean + a.sd));
+  const niceMax = (() => { const p = Math.pow(10, Math.floor(Math.log10(xmax))); return Math.ceil(xmax / p * 2) / 2 * p; })();
+  const plotW = W - labelW - valW;
+  const X = v => labelW + v / niceMax * plotW;
+  let g = '';
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const v = niceMax * i / ticks, x = X(v);
+    g += `<line x1="${x}" x2="${x}" y1="${top}" y2="${H - bot}" stroke="var(--grid)" stroke-width="1"/>`;
+    g += `<text x="${x}" y="${H - 6}" text-anchor="middle" style="font-size:11px">${Math.round(v)}</text>`;
+  }
+  arms.forEach((a, i) => {
+    const y = top + i * rowH, cy = y + rowH / 2, bh = 14;
+    const x0 = X(0), x1 = X(a.mean);
+    const col = a.best ? 'var(--bar-best)' : 'var(--bar)';
+    const w = Math.max(x1 - x0, 1), r = Math.min(4, w);
+    g += `<path d="M${x0},${cy - bh/2} H${x1 - r} Q${x1},${cy - bh/2} ${x1},${cy - bh/2 + r} V${cy + bh/2 - r} Q${x1},${cy + bh/2} ${x1 - r},${cy + bh/2} H${x0} Z" fill="${col}"/>`;
+    const xl = X(Math.max(a.mean - a.sd, 0)), xr = X(a.mean + a.sd);
+    g += `<line x1="${xl}" x2="${xr}" y1="${cy}" y2="${cy}" stroke="var(--whisker)" stroke-width="1.5"/>`;
+    g += `<line x1="${xr}" x2="${xr}" y1="${cy - 4}" y2="${cy + 4}" stroke="var(--whisker)" stroke-width="1.5"/>`;
+    g += `<text x="${labelW - 8}" y="${cy + 4}" text-anchor="end"${a.best ? ' style="fill:var(--text);font-weight:600"' : ''}>${esc(a.name)}</text>`;
+    g += `<text class="val" x="${W - valW + 8}" y="${cy + 4}">${fmt(a.mean)}${a.tie ? ' ≈' : ''}${a.best ? ' ★' : ''}</text>`;
+    const tipHtml = `<b>${esc(a.name)}</b><br>${fmt(a.mean)} ± ${fmt(a.sd)} nm RMS<br><span style="color:var(--text-2)">per seed: ${a.vals.map(fmt).join(', ')}</span>`;
+    g += `<rect class="hit" x="0" y="${y}" width="${W}" height="${rowH}" data-tip="${esc(tipHtml)}"/>`;
+  });
+  g += `<line x1="${X(0)}" x2="${X(0)}" y1="${top}" y2="${H - bot}" stroke="var(--muted)" stroke-width="1"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.title)}: steady-state residual per arm, nm RMS">${g}</svg>
+          <div style="font-size:11px;color:var(--muted);text-align:center">steady-state residual, nm RMS (mean of 5 seeds, whisker = +1 sd) · ★ best · ≈ not significantly different from best</div>`;
+}
+
+function table(s) {
+  const arms = [...s.arms].sort((a, b) => a.mean - b.mean);
+  return `<table><tr><th>Arm</th><th class="num">nm RMS</th><th class="num">nb. seed</th></tr>` +
+    arms.map(a => `<tr class="${a.missing ? 'missing' : ''}"><td>${esc(a.name)}${a.best ? '<span class="tag best">best</span>' : ''}${a.tie ? '<span class="tag">n.s.</span>' : ''}${a.missing ? '<span class="tag miss">NO .pth</span>' : ''}</td>
+      <td class="num">${fmt(a.mean)} ± ${fmt(a.sd)}</td><td class="num">${fmt(a.vals[0])}</td></tr>`).join('') + '</table>';
+}
+
+document.getElementById('sections').innerHTML = DATA.map(s => `
+  <section class="nb">
+    <h2>${esc(s.title)}</h2>
+    <div class="nbfile">Tutorials/Advanced/${esc(s.nb)}.ipynb · Data/${esc(s.nb)}/</div>
+    <p class="varied">${s.varied}</p>
+    <div class="grid2"><div>${chart(s)}</div><div>${table(s)}</div></div>
+    <p class="takeaway"><b>Takeaway:</b> ${s.takeaway}</p>
+    ${s.note ? `<p class="note">Note: ${s.note}</p>` : ''}
+  </section>`).join('');
+
+const F = NOTES.final;
+document.getElementById('final').innerHTML = `
+  <h2>Final remark: combining the winners</h2>
+  <div class="nbfile">Tutorials/Advanced/BestCNN.ipynb · Data/BestCNN/</div>
+  <p class="varied">${F.intro}</p>
+  <table><tr><th>Model</th><th class="num">nm RMS (5 seeds)</th><th class="num">Paired Δ vs BestCNN</th></tr>
+  ${F.rows.map((r, i) => `<tr><td>${i === 0 ? '<b>' + esc(r[0]) + '</b><span class="tag best">best</span>' : esc(r[0])}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td></tr>`).join('')}
+  </table>
+  <p class="takeaway"><b>Takeaway:</b> ${F.takeaway}</p>`;
+
+document.querySelectorAll('.hit').forEach(el => {
+  el.addEventListener('mousemove', e => showTip(e, el.dataset.tip));
+  el.addEventListener('mouseleave', hideTip);
+});
+</script>
+</body>
+</html>
