@@ -26,6 +26,8 @@ class ZernikeWFS(WFS):
             self.number_of_masks = 1
 
         self.BuildMask()
+
+        self.initialized = True
     
     def BuildMask(self):
         if self.use_MTF is False:
@@ -38,26 +40,34 @@ class ZernikeWFS(WFS):
 
     
     def BuildZernikeMaskFFT(self):
+        """Builds the (Nwavelength, Nmask, H, W) FFT-path phase mask.
+
+        The dot diameter (in lambda_c/D) and depth (radians at lambda_c) are
+        given at the band's central wavelength (see WFS.ChromaticRatio). The dot
+        is a fixed angle, so at each wavelength its diameter spans
+        sampling * lambda_c / lambda pixels. It is a fixed step in optical path,
+        so its phase depth scales as lambda_c / lambda (glass dispersion is
+        ignored). The tilt ramps that separate the pupil images are linear, and
+        therefore scale-invariant and achromatic.
+        """
+        ratio = self.ChromaticRatio().view(-1, 1, 1, 1)  # (Nwavelength, 1, 1, 1), exactly 1 for one wavelength
 
         coords = torch.stack([-self.x_mask, -self.y_mask], dim=0)
-        phaseMask = torch.einsum('ck,kwh->cwh', self.positions, coords).unsqueeze(0)
+        phaseMask = torch.einsum('ck,kwh->cwh', self.positions, coords).unsqueeze(0)  # (1, Nmask, H, W)
 
         frame_center = torch.ones(self.number_of_masks, 2, device=self.device) * self.Npix / 2
         pupil_center = frame_center + self.positions / 2 / torch.pi * self.Npix
         self.pupil_centers = torch.round(pupil_center).to(dtype=torch.int).cpu().numpy()
 
         slope = 10
-        diameters_in_pixels = self.diameters * self.sampling
-        diameters_in_pixels = diameters_in_pixels.unsqueeze(1).unsqueeze(1)
+        diameters_in_pixels = self.diameters.reshape(1, -1, 1, 1) * (self.sampling * ratio)  # (Nwavelength, 1, 1, 1)
 
-        ring_mask = (torch.tanh(slope * (diameters_in_pixels/ 2.0 - self.rho_mask.unsqueeze(0)))/ 2)
-        annular = ring_mask + 0.5
+        ring_mask = (torch.tanh(slope * (diameters_in_pixels/ 2.0 - self.rho_mask))/ 2)
+        annular = ring_mask + 0.5  # (Nwavelength, 1, H, W)
 
-        zernike_mask = self.depths.unsqueeze(1).unsqueeze(1) * annular
+        zernike_mask = (self.depths.reshape(1, -1, 1, 1) * ratio) * annular  # (Nwavelength, Nmask, H, W)
 
-        phaseMask[0] = phaseMask[0] + zernike_mask
-
-        return phaseMask
+        return phaseMask + zernike_mask
     
     def BuildZernikeMaskMFT(self):
         N = int(self.sampling * self.MTF_focal_upscale * self.diameters[0])
