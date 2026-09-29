@@ -1,6 +1,7 @@
 from .paths import DATA_DIR, get_data_dir, instrument_dir
 from .TorchPropagator import WFS
 from .PhaseDataset import PhaseDataset
+from .PSFDataset import PSFModel, PSFDataset
 from .DeformableMirror import DeformableMirror
 from .FramePreprocess import FramePreprocess
 from .ZernikeWFS import ZernikeWFS

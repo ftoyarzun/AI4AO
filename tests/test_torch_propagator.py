@@ -118,14 +118,17 @@ def _two_wavelength_reference_frame(build_wfs, wavelength_a, wavelength_b, opd, 
     change total energy), so the multi-wavelength call's single
     sum-then-normalize is equivalent to averaging the two independently
     normalized frames -- and would instead equal their unaveraged *sum* if the
-    wavelength reduction were (incorrectly) applied after normalization."""
+    wavelength reduction were (incorrectly) applied after normalization.
+
+    Uses Propagator rather than forward: in train mode forward() rebuilds the
+    mask from the WFS parameters, which would discard a mask set with SetMask."""
     wfs_a = build_wfs(wavelength_a)
     wfs_b = build_wfs(wavelength_b)
     if mask_a is not None:
         wfs_a.SetMask(phaseMask=mask_a)
     if mask_b is not None:
         wfs_b.SetMask(phaseMask=mask_b)
-    return 0.5 * (wfs_a(opd) + wfs_b(opd))
+    return 0.5 * (wfs_a.Propagator(opd) + wfs_b.Propagator(opd))
 
 
 def test_propagator_multi_wavelength_shared_mask(tiny_wfs_params, device):
@@ -152,23 +155,36 @@ def test_propagator_multi_wavelength_shared_mask(tiny_wfs_params, device):
 
 
 def test_propagator_multi_wavelength_with_modulation_masks(tiny_wfs_params, device):
-    """Several modulation-step masks (today's existing 'mask channel') shared
-    across several wavelengths -- exercises both channel axes at once."""
+    """Several modulation-step masks across several wavelengths -- exercises
+    both channel axes at once. Modulation is a fixed angle given in lambda_c/D
+    (lambda_c: centre of the band), so each wavelength's reference is a
+    monochromatic Pyramid modulated at modulation * lambda_c / lambda of its
+    own lambda/D."""
     from AI4AO.PyramidWFS import PyramidWFS
 
-    def build(wavelength):
-        params = tiny_wfs_params(modulation=1.0)
+    modulation = 1.0
+    wavelength_a, wavelength_b = 635e-9, 750e-9
+    lambda_c = (wavelength_a + wavelength_b) / 2
+
+    def build(wavelength, modulation):
+        params = tiny_wfs_params(modulation=modulation)
         params["Wavelength"] = wavelength
         return PyramidWFS(params, device)
 
-    wfs = build(635e-9)
-    wfs.wavelength = torch.tensor([635e-9, 750e-9], device=device)
+    wfs = build(wavelength_a, modulation)
+    wfs.wavelength = torch.tensor([wavelength_a, wavelength_b], device=device)
 
     opd = 1e-7 * torch.randn(2, wfs.Nres, wfs.Nres, device=device)
     frame = wfs(opd)
 
     assert frame.shape == (2, wfs.Npix, wfs.Npix)
-    reference = _two_wavelength_reference_frame(build, 635e-9, 750e-9, opd)
+    build_equivalent = lambda wl: build(wl, modulation * lambda_c / wl)
+    # Chosen so both equivalents use as many modulation steps as the band does.
+    assert all(
+        build_equivalent(wl).phaseMask.shape[1] == wfs.phaseMask.shape[1]
+        for wl in (wavelength_a, wavelength_b)
+    )
+    reference = _two_wavelength_reference_frame(build_equivalent, wavelength_a, wavelength_b, opd)
     assert torch.allclose(frame, reference, atol=1e-5)
 
 
@@ -190,11 +206,14 @@ def test_propagator_wavelength_dependent_mask(tiny_wfs_params, device):
     assert not torch.allclose(mask_a, mask_b)  # the two masks must actually differ
 
     wfs = build(635e-9)
-    wfs.SetMask(phaseMask=torch.stack([mask_a, mask_b]).unsqueeze(1))  # (2, 1, H, W)
+    # Set the band first: the wavelength setter rebuilds the WFS's own mask,
+    # and so does forward() in train mode, so the custom mask goes in last and
+    # is propagated with Propagator.
     wfs.wavelength = torch.tensor([635e-9, 750e-9], device=device)
+    wfs.SetMask(phaseMask=torch.stack([mask_a, mask_b]).unsqueeze(1))  # (2, 1, H, W)
 
     opd = 1e-7 * torch.randn(2, wfs.Nres, wfs.Nres, device=device)
-    frame = wfs(opd)
+    frame = wfs.Propagator(opd)
 
     assert frame.shape == (2, wfs.Npix, wfs.Npix)
     reference = _two_wavelength_reference_frame(

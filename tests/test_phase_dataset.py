@@ -9,6 +9,7 @@ indices reuse) -- it is not a conventional random-access Dataset, so every
 test below that touches a dataset instance iterates from idx=0.
 """
 import numpy as np
+import pytest
 import torch
 
 from AI4AO.PhaseDataset import (
@@ -169,3 +170,29 @@ def test_build_atmosphere_psd_scales_with_reference_wavelength(phase_dataset):
     nonzero = total_psd_1 != 0
     ratio = total_psd_2[nonzero] / total_psd_1[nonzero]
     assert torch.allclose(ratio, torch.full_like(ratio, 4.0), rtol=1e-4)
+
+
+def test_batch_includes_l0_and_level_of_correction(phase_dataset, tiny_atmos_params):
+    Nphases = tiny_atmos_params["Nphases"]
+    sample = phase_dataset[0]
+    assert sample["L0"].shape == (Nphases,)
+    assert sample["level_of_correction"].shape == (Nphases, 1)
+    assert torch.equal(sample["L0"], phase_dataset.L0.reshape(-1))
+
+
+@pytest.mark.parametrize("scintillation", [False, True])
+@pytest.mark.parametrize("closed_loop", [False, True])
+def test_odd_nres_is_supported(tiny_wfs_params, tiny_atmos_params, tiny_loop_params, tiny_dm_params,
+                               device, closed_loop, scintillation):
+    """CompressAtmosphere (and the scintillation pupil) used to crop
+    N//2 - Nres//2 : N//2 + Nres//2, i.e. Nres - 1 pixels for odd Nres."""
+    wfs_params = tiny_wfs_params()
+    wfs_params["Nres"] = 13
+    atmos_params = dict(tiny_atmos_params, Scintillation=scintillation)
+    dataset = PhaseDataset(wfs_params, atmos_params, tiny_loop_params, tiny_dm_params, device)
+    dataset.generateClosedLoop = closed_loop
+    for idx in range(2):
+        sample = dataset[idx]
+        assert sample["opd"].shape == (tiny_atmos_params["Nphases"], 13, 13)
+        assert sample["pupil"].shape == (tiny_atmos_params["Nphases"], 13, 13)
+        assert torch.isfinite(sample["opd"]).all()

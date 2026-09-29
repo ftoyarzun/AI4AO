@@ -11,6 +11,18 @@ import numpy as np
 import math
 
 from .Utils import MakePupil
+# The PSD and transfer-function helpers live in PSD.py (shared with PSFDataset);
+# they are re-exported here so existing `from AI4AO.PhaseDataset import ...` keep working.
+from .PSD import (  # noqa: F401
+    GetSpatialFrequencies,
+    GetAtmospherePSD,
+    GetFittingPSD,
+    openLoopTransferFunction,
+    closedLoopTransferFunction,
+    GetTemporalErrorPSD,
+    CenterCrop,
+    DrawAOParameters,
+)
 
 
 
@@ -135,160 +147,6 @@ def Zernike(pupil, j = 100):
     outFullRes = torch.reshape(outFullRes, [j, resolution, resolution])
 
     return out, outFullRes
-
-
-def GetSpatialFrequencies(D, resolution, device="cpu"):
-    """
-    Computes the spatial frequencies for a given diameter and resolution.
-
-    Args:
-        D (float): Diameter of the telescope
-        resolution (int): Resolution of the telescope
-
-    Returns:
-        tuple:
-            - dF (float): Frequency step size
-            - fx (torch array): Spatial frequency components in the x direction
-            - fy (torch array): Spatial frequency components in the y direction
-    """
-    dF = 1 / (D)
-    fx = (
-        torch.linspace(
-            -resolution / 2,
-            resolution / 2 - 1,
-            resolution,
-            dtype=torch.float32,
-            device=device,
-        )
-        * dF
-    )
-    [fx, fy] = torch.meshgrid(fx, fx, indexing="ij")
-    return dF, fx, fy
-
-
-# def GetAtmospherePSD(fx, fy, dF, r0, L0, pupil, pupilLogical):
-def GetAtmospherePSD(fsqr, dF, r0, L0, f_slope=11.0 / 6.0):
-    """
-    Computes the atmospheric power spectral density (PSD) for phase aberrations based on the spatial frequencies.
-
-    Args:
-        fx (torch array): Spatial frequency components in the x direction
-        fy (torch array): Spatial frequency components in the y direction
-        dF (float): Frequency step size
-        r0 (float): Fried parameter (m)
-        L0 (float): Outer scale of turbulence (m)
-        pupil (torch array): Pupil function of the system
-        pupilLogical (torch array): Logical pupil mask indicating valid regions of the pupil
-
-    Returns:
-        torch array: Atmospheric power spectral density (PSD) for phase aberrations
-    """
-    resolution = fsqr.shape[-1]
-    l0 = 1e-10  # Default value for the inner scale   ##PTP warning ?
-    # fsqr = fx**2 + fy**2
-    fm = 5.92 / l0 / (2 * torch.pi)
-    # frecuencia de escala interna [1/m]
-    f0 = 1 / L0
-    # frecuencia de escala externa [1/m]
-    PSD_phi = (
-        0.023
-        * r0 ** (-5 / 3)
-        / (fsqr + f0**2) ** (f_slope)
-        * dF**2
-        * resolution**2
-        * torch.exp(-fsqr / fm**2)
-    )
-    PSD_phi[..., resolution // 2, resolution // 2] = 0
-    return PSD_phi
-
-
-def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection=1):
-    """
-    Computes a fitting power spectral density (PSD) filter, including both low-pass and high-pass components.
-
-    Args:
-        fx (torch array): Spatial frequency components in the x direction
-        fy (torch array): Spatial frequency components in the y direction
-        dF (float): Frequency step size
-        D (float): Diameter of the telescope
-        Nactuator (int): Number of actuators in the diameter of the deformable mirror
-        levelOfCorrection (float, optional): Correction factor for high-pass filter (default is 1)
-
-    Returns:
-        torch array: High-pass filter for the fitting PSD
-    """
-    # DM pitch is D / (Nactuator - 1) (see DeformableMirror.MakeActGrid)
-    fc = (Nactuator - 1) / 2 / D
-
-    low_pass_filter = (fx < fc) & (fy > -fc) & (fy < fc) & (fx > -fc)
-    high_pass_filter = 1 - low_pass_filter * levelOfCorrection
-
-    return high_pass_filter
-
-
-def openLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
-    """
-    Return the temporal open loop transfer function for a integrator controller.
-    Source: AOPERA (R. Fetick)
-    Parameters
-    ----------
-    freq : np.array
-        Array of temporal frequencies to evaluate the CLTF on.
-    ao_freq : float
-        The sampling temporal frequency of the AO loop.
-    ki : float
-        Integrator gain.
-    leak : float
-        Leaky integrator.
-    nb_frame_delay : float
-        Number of frame delay.
-        Must include: RTC, pixel transfert, DM rise.
-        Must not include: WFS integration, DM zero-order-hold.
-    """
-    z = torch.exp(2j*torch.pi*freq/ao_freq) # it is one method to pass from Tp to z
-    not_zero_issue = 1 - 1e-8 # avoid issue to divide by zero at leak/z = 1
-    H = ki/(1-not_zero_issue*leak/z) # controler
-    H *= 1/z**(nb_frame_delay+1) # delay + WFS + zero order hold
-    H *= torch.sinc(freq/ao_freq)
-
-    return H
-
-def closedLoopTransferFunction(*args, **kwargs):
-    """
-    Return the temporal closed loop transfer function.
-    See the open_loop_transfer arguments.
-    Source: AOPERA (R. Fetick)
-    """
-    return 1/(1+openLoopTransferFunction(*args, **kwargs))
-
-
-
-def GetTemporalErrorPSD(
-    fx, fy, freq, ki, leak, delayFrames, windSpeedVector_x, windSpeedVector_y
-):
-    """
-    Computes the temporal error power spectral density (PSD) given the spatial frequencies and other parameters.
-
-    Args:
-        fx (torch array): Spatial frequency components in the x direction
-        fy (torch array): Spatial frequency components in the y direction
-        dF (float): Frequency step size
-        freq (float): Temporal frequency of the system
-        delayFrames (int): Number of frames for delay
-        windSpeedVector (torch array): Wind speed vector [vx, vy]
-
-    Returns:
-        torch array: Temporal error power spectral density
-    """
-    fx_temporal = fx * windSpeedVector_x + 1e-7
-    fy_temporal = fy * windSpeedVector_y + 1e-7
-
-    f_temporal = fx_temporal + fy_temporal
-
-    ETF = closedLoopTransferFunction(f_temporal, freq, ki, leak, delayFrames)
-    ETF = torch.abs(ETF) ** 2
-
-    return ETF
 
 
 class PhaseDataset(Dataset):
@@ -461,12 +319,11 @@ class PhaseDataset(Dataset):
         opdMap = self.CompressAtmosphere()
 
         if self.useScintillation:
-            N = self.layeredOPD.shape[-1]
             if self.generateClosedLoop:
                 self.scintillationLayeredOPD = self.MakeLayersFromGenerator(idx, self.movingScintillationWavefrontGenerator)
-                pupilMap = self.ComputeScintillation(self.scintillationLayeredOPD).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+                pupilMap = CenterCrop(self.ComputeScintillation(self.scintillationLayeredOPD).abs(), self.Nres)
             else:
-                pupilMap = self.ComputeScintillation(self.layeredOPD).abs()[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+                pupilMap = CenterCrop(self.ComputeScintillation(self.layeredOPD).abs(), self.Nres)
         else:
             pupilMap = self.pupil.repeat(self.Nphases, 1, 1)
 
@@ -481,10 +338,12 @@ class PhaseDataset(Dataset):
                 "nphotons": self.Nphotons,
                 "ron": self.RON,
                 "r0": self.r0_moving.squeeze(),
+                "L0": self.L0.reshape(-1),
                 "wind": torch.stack((self.windSpeedVector_x, self.windSpeedVector_y)).squeeze(),
                 "fractional_r0": self.fractionalr0.squeeze(),
                 "loop_gain": self.loopGain.reshape(-1, 1),
                 "loop_leak": self.loopLeak.reshape(-1, 1),
+                "level_of_correction": self.levelOfCorrection.reshape(-1, 1),
                 }
     
     def RemovePiston(self, opdMap):
@@ -504,8 +363,7 @@ class PhaseDataset(Dataset):
         Returns:
             torch.Tensor: Resulting OPD map (meters) cropped and projected onto the pupil.
         """
-        N = self.layeredOPD.shape[-1]
-        croppedLayeredOPD = self.layeredOPD[:, :, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
+        croppedLayeredOPD = CenterCrop(self.layeredOPD, self.Nres)
         opdMap = croppedLayeredOPD.sum(dim=0)
         opdMap = self.pupil * opdMap  # Apply pupil mask
         opdMap = self.RemovePiston(opdMap)
@@ -522,7 +380,6 @@ class PhaseDataset(Dataset):
             scintillationSupport = scintillationSupport * torch.exp(1j * self.wavenumber * layeredOPD[i])
             scintillationSupport = self.ASP(scintillationSupport, dist)
         
-        scintillationSupport = scintillationSupport#[:, N//2-self.Nres//2:N//2+self.Nres//2, N//2-self.Nres//2:N//2+self.Nres//2]
         return scintillationSupport
     
     def ResetMovingWavefront(self):
@@ -538,41 +395,32 @@ class PhaseDataset(Dataset):
         Updates r0, L0, correction level, photon/RON noise, fractional layer weights,
         and wind speed vectors for each atmospheric layer.
         """
-        self.nLayers = int(torch.randint(*self.nLayersRange, (1,)))
-        self.r0_moving = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.r0Range)
-        self.L0 = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.L0Range)
+        params = DrawAOParameters(
+            self.Nphases, self.nLayersRange, self.r0Range, self.L0Range,
+            self.levelOfCorrectionRange, self.loopGainRange, self.loopLeakRange,
+            self.photonRange, self.RONRange, self.windSpeedRange,
+            self.height_exp_dist_lambda, self.device,
+        )
+        self.aoParameters = params  # canonical shapes, see DrawAOParameters
 
-        self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.levelOfCorrectionRange)
-        self.loopGain = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.loopGainRange)
-        self.loopLeak = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.loopLeakRange)
+        def column(t):
+            # (B,) -> (B, 1, 1) and (L, B) -> (L, B, 1, 1), broadcasting against (..., H, W)
+            return t.reshape(*t.shape, 1, 1)
 
-        self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.photonRange)
-        self.Nphotons = torch.pow(10, self.Nphotons)
-        self.RON = torch.empty(self.Nphases, 1, 1, device=self.device).uniform_(*self.RONRange)
+        self.nLayers = params["fractional_r0"].shape[0]
+        self.r0_moving = column(params["r0"])
+        self.L0 = column(params["L0"])
+        self.levelOfCorrection = column(params["level_of_correction"])
+        self.loopGain = column(params["loop_gain"])
+        self.loopLeak = column(params["loop_leak"])
+        self.Nphotons = column(params["nphotons"])
+        self.RON = column(params["ron"])
+        self.fractionalr0 = column(params["fractional_r0"])
+        self.layerHeights = column(params["layer_heights"])
+        self.windSpeed = column(params["wind_speed"])
+        self.windSpeedVector_x = column(params["wind"][0])
+        self.windSpeedVector_y = column(params["wind"][1])
 
-        self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 1.)
-        random_to_sort = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(0., 0.5)
-        _,index_sorted = torch.sort(self.fractionalr0 + random_to_sort, dim = 0) 
-        self.fractionalr0 = torch.gather(self.fractionalr0, dim=0, index=index_sorted)
-        self.fractionalr0 /= torch.sum(self.fractionalr0, dim = 0)
-
-        self.layerHeights = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).exponential_(lambd = self.height_exp_dist_lambda)
-        self.layerHeights,_ = torch.sort(self.layerHeights, dim = 0, descending = True)
-        
-        self.windSpeed = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*self.windSpeedRange)
-        self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
-        self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device).uniform_(*[-1,1])
-
-        currentIntegratedWindSpeed = torch.sum(self.fractionalr0 *
-                                            torch.sqrt(self.windSpeedVector_x ** 2 +
-                                                        self.windSpeedVector_y ** 2) ** (5/3), dim = 0) ** (3/5)
-
-        normalization = self.windSpeed / currentIntegratedWindSpeed
-        self.windSpeedVector_x = self.windSpeedVector_x * normalization
-        self.windSpeedVector_y = self.windSpeedVector_y * normalization
-        
-
-     
     def BuildAtmospherePSD(self):
         """
         Construct the atmospheric power spectral density (PSD) for all layers.
