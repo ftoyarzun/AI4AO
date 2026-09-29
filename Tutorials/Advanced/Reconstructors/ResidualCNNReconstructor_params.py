@@ -8,9 +8,10 @@ demonstrate a residual CNN that complements -- rather than replaces -- a
 frozen, pre-calibrated linear reconstructor. See
 Ideas/10-residual-cnn-linear-complement.md for the full motivation.
 
-Deliberately identical to CNNArchitectureComparison_params.py's instrument
-(same nominal Pyramid/DM geometry), since this notebook directly reuses that
-notebook's CNN-only condition as one arm of its own three-way ablation
+Deliberately identical to the instrument CNNArchitectureComparison.ipynb was
+originally built on (now FrameDenoiser_params.py; same nominal Pyramid/DM
+geometry), since this notebook directly reuses that comparison's CNN-only
+condition as one arm of its own three-way ablation
 (Linear-only / CNN-only / Linear+Residual-CNN).
 """
 
@@ -61,7 +62,7 @@ LoopParams = dict(
 )
 
 ## DM driven by the Pyramid. "Nmodes" is a fixed integer, matching
-## CNNArchitectureComparison_params.py's convention: DeformableMirror.MakeZernikeM2C()
+## FrameDenoiser_params.py's convention: DeformableMirror.MakeZernikeM2C()
 ## reads it directly, and the same M2C is reused both as the DM command basis and
 ## (via dm(M2C.T)) as the linear reconstructor's calibration basis -- see the notebook.
 DMParams = dict(

@@ -9,7 +9,7 @@ frozen linear reconstructor (condition C). This is a fictional demo
 instrument (no real bench behind it).
 
 WFSParams/AtmosParams/LoopParams/DMParams are copied verbatim from
-ResidualCNNReconstructor_params.py so results are directly comparable to
+../Reconstructors/ResidualCNNReconstructor_params.py so results are directly comparable to
 that notebook's own Pyramid conditions, rather than introducing yet another
 incomparable fictional instrument. See Ideas/01-self-shaping-mask.md for the
 full design discussion.

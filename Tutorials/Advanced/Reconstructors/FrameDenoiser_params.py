@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Shared parameter file for the CNN architecture comparison notebook
-(CNNArchitectureComparison.ipynb): a single modulated Pyramid WFS driving one
-DM. This is a fictional demo instrument (no real bench behind it), built
-purely to compare five reconstructor architectures under identical
-atmosphere/noise/DM/loss/training-budget conditions -- see
-Ideas/07-cnn-architecture-comparison.md for the full motivation.
+Parameter file for the WFS frame denoiser notebook (FrameDenoiser.ipynb):
+a single modulated Pyramid WFS driving one DM. This is a fictional demo
+instrument (no real bench behind it) -- see Ideas/12-wfs-frame-denoiser.md.
 
-Unlike DualSensorFusion_params.py/TwoStageAO_params.py, there is only ever
-one WFS and one DM here, so WFSParams carries the sensing wavelength and
-modulation directly rather than being copied/extended per sensor.
+Formerly CNNArchitectureComparison_params.py: it was written for the
+original CNN architecture comparison (Ideas/07-cnn-architecture-comparison.md),
+which has since moved to ../Comparisons/CNNComparison_params.py (same
+geometry, different r0/L0 and pupil-noise ranges). FrameDenoiser.ipynb was
+the last notebook still loading it, so it now lives here under that name.
+Its TrainParams therefore still only holds the comparison-style keys; the
+notebook adds its denoiser-specific keys on top.
+
+Unlike ../SystemDesign/DualSensorFusion_params.py and TwoStageAO_params.py,
+there is only ever one WFS and one DM here, so WFSParams carries the sensing
+wavelength and modulation directly rather than being copied/extended per sensor.
 """
 
 # %% Set general parameters
@@ -60,7 +65,7 @@ LoopParams = dict(
 )
 
 ## DM driven by the Pyramid. "Nmodes" is a fixed integer here (rather than the
-## None-placeholder pattern DualSensorFusion_params.py uses), matching
+## None-placeholder pattern ../SystemDesign/DualSensorFusion_params.py uses), matching
 ## Tutorials/basics/wfs_params_exp.py's convention: DeformableMirror.MakeZernikeM2C()
 ## defaults to nModes = DMParams["Nmodes"], and every architecture's Nmodes-sized
 ## head below reads this same key directly.

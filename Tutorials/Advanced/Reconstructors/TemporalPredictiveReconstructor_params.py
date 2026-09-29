@@ -7,9 +7,9 @@ last N frames are used to predict the modal DM correction M frames ahead, to
 compensate for the AO loop's own structural latency (see
 Ideas/05-temporal-predictive-reconstructor.md). This is a fictional demo
 instrument (no real bench behind it), following the same "no real bench,
-nominal geometry" pattern as TwoStageAO_params.py/DualSensorFusion_params.py.
+nominal geometry" pattern as ../SystemDesign/TwoStageAO_params.py and DualSensorFusion_params.py.
 
-Unlike DualSensorFusion_params.py, there is only one WFS here, so there is no
+Unlike ../SystemDesign/DualSensorFusion_params.py, there is only one WFS here, so there is no
 second sensor-specific dict to split off -- WFSParams already carries
 Wavelength/Modulation directly.
 

@@ -5,7 +5,7 @@ Shared parameter file for the NCPA-estimation notebook (NCPAEstimation.ipynb).
 See Ideas/06-ncpa-estimation.md for the full plan. This is a fictional demo
 instrument (no real bench behind it), built purely to demonstrate the
 diversity-command / PSF-fitting technique -- the same "no real bench" framing
-TwoStageAO.ipynb/DualSensorFusion.ipynb already use for their own demo twins.
+../SystemDesign/TwoStageAO.ipynb and DualSensorFusion.ipynb already use for their own demo twins.
 
 Unlike the other Tutorials/Advanced params files, this notebook never touches
 PhaseDataset or Trainer -- NCPA is measured on a static internal source with
@@ -34,7 +34,7 @@ WFSParams = dict(
 ## The DM whose "previously calibrated" misregistration this notebook mostly
 ## treats as fixed (see Ideas/06-ncpa-estimation.md step 2/8). "Nmodes" is a
 ## placeholder resolved in the notebook from dm.totalAct, exactly like
-## DualSensorFusion_params.py.
+## ../SystemDesign/DualSensorFusion_params.py.
 DMParams = dict(
     {
         "Nactuator": 11,

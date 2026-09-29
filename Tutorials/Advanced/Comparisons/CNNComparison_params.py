@@ -47,7 +47,7 @@ LoopParams = dict(
     }
 )
 
-## DM driven by the Pyramid -- see CNNArchitectureComparison_params.py's own
+## DM driven by the Pyramid -- see ../Reconstructors/FrameDenoiser_params.py's own
 ## comment for why "Nmodes" is a fixed integer here.
 DMParams = dict(
     {

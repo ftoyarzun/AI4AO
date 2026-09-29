@@ -24,6 +24,10 @@ Each instrument folder configures the pipeline for a specific real or simulated 
 - **`CalibrateExample<Instrument>Twin.ipynb`** — calibrates the instrument twin (e.g. interaction matrix, DM misregistration) and writes the resulting artifacts.
 - **`TrainExample<Instrument>.ipynb`** — trains a reconstructor for that instrument using its calibrated twin. Present for `Ekarus`, `Oziriis`, and `Rama`; `Papyrus` currently only has the calibration notebook.
 
+### `Advanced/`
+
+Research-style notebooks on fictional demo instruments (no bench data needed), grouped by theme: `Comparisons/` (CNN reconstructor ablations on one shared instrument), `Reconstructors/` (alternative reconstruction approaches), `SystemDesign/` (multi-sensor and learned-optics systems) and `PSF/` (science-PSF techniques). See [`Advanced/README.md`](Advanced/README.md) for the per-notebook index.
+
 ## Params-file convention
 
 Each params file (`wfs_params_exp.py`, `<Instrument>_params.py`) defines five plain Python dicts — `WFSParams`, `AtmosParams`, `LoopParams`, `DMParams`, `TrainParams` — consumed positionally by the pipeline constructors (`PhaseDataset`, `WFS`/`PyramidWFS`/`ZernikeWFS`, `DeformableMirror`, `Trainer`, ...). This is the only configuration mechanism in AI4AO; there is no YAML/JSON config layer.

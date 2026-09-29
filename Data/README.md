@@ -29,7 +29,7 @@ Data/
 ├── Oziriis/
 ├── Papyrus/
 ├── Tutorials/      # synthetic — produced by basics/04, no external input
-└── TwoStageAO/     # synthetic — produced by Advanced/TwoStageAO
+└── TwoStageAO/     # synthetic — produced by Advanced/SystemDesign/TwoStageAO
 ```
 
 ## Inputs you must provide
@@ -65,4 +65,4 @@ Created automatically (parent folders are made on save):
 | `<Instrument>/<Instrument>CNN*.pth` | `TrainExample*.ipynb` (`Trainer.save_checkpoint`) | resumed by the same notebook |
 | `Tutorials/TutorialsWFS.pth`, `TutorialsDM.pth` | `basics/04_TwinCalibrationGroundTruth.ipynb` | `basics/05_TrainingAReconstructor.ipynb` |
 | `Tutorials/ReconstructorCNN.pth` | `basics/05` | `basics/05` |
-| `TwoStageAO/Stage{1,2}CNN.pth` | `Advanced/TwoStageAO.ipynb` | same notebook |
+| `TwoStageAO/Stage{1,2}CNN.pth` | `Advanced/SystemDesign/TwoStageAO.ipynb` | same notebook |
