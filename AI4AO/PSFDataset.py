@@ -45,14 +45,57 @@ ALL_TERMS = ("fitting", "servo", "aliasing", "noise", "static", "jitter")
 MAS_TO_RAD = np.pi / (180 * 3600 * 1000)
 
 
+def _AsRange(value, name):
+    """A scalar or a [min, max] pair as a (min, max) tuple of floats; a scalar
+    is the degenerate range (value, value)."""
+    if np.ndim(value) == 0:
+        return float(value), float(value)
+    if len(value) != 2 or float(value[0]) > float(value[1]):
+        raise ValueError(f"PSFParams['{name}'] must be a number or a [min, max] range, got {value}")
+    return float(value[0]), float(value[1])
+
+
+class PSFGrid:
+    """
+    Frequency/lag grids and the diffraction OTF for one PSF sampling: the
+    WFS.GetPSF grid, i.e. the Nres-pixel pupil zero-padded to N pixels.
+
+    Attributes:
+        N (int): grid size; sampling (float): effective sampling N / Nres;
+        dF (float): frequency step (1/m); fx, fy, fsqr: centred frequency grids;
+        f_max, inside_f_max: largest inscribed frequency and its disk mask;
+        rho_x, rho_y: pupil-plane lags (m) of the unshifted OTF;
+        otf_tel0: aberration-free telescope OTF; diffraction_peak: its on-axis PSF value.
+    """
+
+    def __init__(self, model, N):
+        device = model.device
+        self.N = N
+        self.sampling = N / model.Nres
+        self.dF, self.fx, self.fy = GetSpatialFrequencies(N * model.dx, N, device)
+        self.fsqr = self.fx**2 + self.fy**2
+        self.f_max = (N // 2) * self.dF
+        self.inside_f_max = (self.fsqr < self.f_max**2).to(torch.float32)
+
+        # Pupil-plane lags matching the unshifted OTF (zero lag at index 0)
+        lag = (torch.arange(N, device=device, dtype=torch.float32) - N // 2) * model.dx
+        rho_x, rho_y = torch.meshgrid(lag, lag, indexing="ij")
+        self.rho_x = torch.fft.ifftshift(rho_x)
+        self.rho_y = torch.fft.ifftshift(rho_y)
+
+        with torch.no_grad():
+            self.otf_tel0 = model.TelescopeOTF(None, self)
+            self.diffraction_peak = self.otf_tel0.real.sum(dim=(-2, -1))
+
+
 class PSFModel:
     """
     Differentiable PSD-based PSF model of one instrument.
 
-    Holds only fixed instrument state (grids, the WFS pupil, loop constants);
-    every per-PSF quantity comes in through a params dict of tensors, so fitting
-    code can pass nn.Parameters (with its own reparameterization) and
-    backpropagate through PSF(params).
+    Holds only fixed instrument state (the WFS pupil, loop constants, cached
+    grids); every per-PSF quantity comes in through a params dict of tensors,
+    so fitting code can pass nn.Parameters (with its own reparameterization)
+    and backpropagate through PSF(params).
 
     Params dict (B PSFs, L layers); only the keys the enabled terms need are read:
         r0 (B,)                    Fried parameter at 500 nm (m)
@@ -65,6 +108,13 @@ class PSFModel:
         static_opd (B, Nres, Nres) static aberration (m) on the WFS pupil grid, optional
         jitter (B, 2)              residual jitter rms along the principal axes (rad)
         jitter_angle (B,)          rotation of the jitter axes (rad)
+        sampling (float)           PSF pixels per lambda/D, shared by the batch; optional
+        fov (float or None)        field of view in lambda/D (None: full grid); optional
+
+    `sampling` and `fov` default to PSFParams["sampling"] / PSFParams["fov"]
+    when those are single values. When PSFParams gives [min, max] ranges
+    (PSFDataset then draws one value per batch) the params dict must carry
+    them.
 
     Args:
         wfs (WFS): supplies the pupil (with central obstruction), D, Nres and
@@ -93,6 +143,7 @@ class PSFModel:
 
         self.D = wfs.D
         self.Nres = wfs.Nres
+        self.dx = self.D / self.Nres
         self.Nactuator = DMParams["Nactuator"]
         self.f_slope = AtmosParams["f_slope"]
         self.loopFrequency = LoopParams["loopFrequency"]
@@ -102,8 +153,6 @@ class PSFModel:
         if np.ndim(PSFParams.get("Wavelength", 0.0)) > 0:
             raise ValueError("PSFModel is monochromatic: PSFParams['Wavelength'] must be a scalar")
         self.wavenumber = 2 * np.pi / self.wavelength
-        self.sampling = PSFParams.get("sampling", WFSParams["sampling"])
-        self.fov = PSFParams.get("fov", None)
 
         # WFS sensing wavelength (band centre for a polychromatic WFS), used only
         # to convert the WFS noise from radians to OPD.
@@ -123,33 +172,120 @@ class PSFModel:
                 "(WFS sensitivity constants); set them or drop 'noise' from `terms`."
             )
 
-        # Same grid as WFS.GetPSF: the pupil (Nres pixels across D) zero-padded to N
-        self.N = self.Nres + 2 * int(np.round(self.Nres * (self.sampling - 1)) // 2)
-        if self.N < 2 * self.Nres:
-            raise ValueError(
-                f"PSF sampling {self.sampling} gives a {self.N}-pixel grid for a {self.Nres}-pixel pupil; "
-                "the OTF support needs at least 2 * Nres (sampling >= 2)."
-            )
-        self.dx = self.D / self.Nres
-        self.dF, self.fx, self.fy = GetSpatialFrequencies(self.N * self.dx, self.N, device)
-        self.fsqr = self.fx**2 + self.fy**2
-        self.f_max = (self.N // 2) * self.dF
-        self.inside_f_max = (self.fsqr < self.f_max**2).to(torch.float32)
-
-        # Pupil-plane lags matching the unshifted OTF (zero lag at index 0)
-        lag = (torch.arange(self.N, device=device, dtype=torch.float32) - self.N // 2) * self.dx
-        rho_x, rho_y = torch.meshgrid(lag, lag, indexing="ij")
-        self.rho_x = torch.fft.ifftshift(rho_x)
-        self.rho_y = torch.fft.ifftshift(rho_y)
+        # PSF sampling and field of view: single values or [min, max] ranges
+        self.sampling_range = _AsRange(PSFParams.get("sampling", WFSParams["sampling"]), "sampling")
+        fov = PSFParams.get("fov", None)
+        self.fov_range = None if fov is None else _AsRange(fov, "fov")
+        self.allowed_samplings = self.AllowedSamplings()
+        if self.fov_range is not None:
+            for s in self.allowed_samplings:
+                if int(np.round(self.fov_range[1] * s)) > self.GridSize(s):
+                    raise ValueError(
+                        f"fov {self.fov_range[1]} lambda/D does not fit the {self.GridSize(s)}-pixel grid at "
+                        f"sampling {s:.3f}; the largest field is Nres = {self.Nres} lambda/D."
+                    )
 
         # Pupil coordinates (m) for short-exposure jitter tilts, centred like MakePupil
         x = (torch.arange(self.Nres, device=device, dtype=torch.float32) - (self.Nres - 1) / 2) * self.dx
         self.pupil_x, self.pupil_y = torch.meshgrid(x, x, indexing="ij")
 
-        # Diffraction-limited (aberration-free) telescope OTF, cached
-        with torch.no_grad():
-            self.otf_tel0 = self.TelescopeOTF(None)
-            self.diffraction_peak = self.otf_tel0.real.sum(dim=(-2, -1))
+        # One PSFGrid per grid size, built on first use
+        self._grids = {}
+        for s in self.allowed_samplings:
+            self.Grid(s)
+
+    # ------------------------------------------------------------------
+    # Grids, sampling and field of view
+    # ------------------------------------------------------------------
+
+    def GridSize(self, sampling):
+        """Grid size N that WFS.GetPSF uses at this sampling."""
+        return self.Nres + 2 * int(np.round(self.Nres * (sampling - 1)) // 2)
+
+    def AllowedSamplings(self):
+        """
+        The samplings PSFDataset draws from. For a single configured value,
+        that value. For a [min, max] range, the effective sampling N / Nres of
+        every grid size N = Nres + 2k inside the range, so the reported
+        sampling is exactly the pixel scale of the PSF.
+        """
+        lo, hi = self.sampling_range
+        if lo < 2:
+            raise ValueError(
+                f"PSF sampling {lo} is below 2: the OTF support needs a grid of at least 2 * Nres "
+                "pixels (sampling >= 2)."
+            )
+        if lo == hi:
+            return [lo]
+        k_min = int(np.ceil(self.Nres * (lo - 1) / 2 - 1e-9))
+        k_max = int(np.floor(self.Nres * (hi - 1) / 2 + 1e-9))
+        samplings = [(self.Nres + 2 * k) / self.Nres for k in range(k_min, k_max + 1)]
+        if not samplings:
+            raise ValueError(
+                f"No PSF grid falls inside the sampling range [{lo}, {hi}]: with Nres = {self.Nres} "
+                f"the sampling moves in steps of 2 / Nres = {2 / self.Nres:.4f}."
+            )
+        return samplings
+
+    def Grid(self, sampling):
+        """The (cached) PSFGrid for this sampling."""
+        return self._GridForSize(self.GridSize(sampling))
+
+    def _GridForSize(self, N):
+        if N not in self._grids:
+            self._grids[N] = PSFGrid(self, N)
+        return self._grids[N]
+
+    def Sampling(self, params):
+        """The sampling for this params dict: params['sampling'], or the
+        configured value when PSFParams['sampling'] is a single value."""
+        if params is not None and params.get("sampling") is not None:
+            return float(params["sampling"])
+        lo, hi = self.sampling_range
+        if lo != hi:
+            raise ValueError("PSFParams['sampling'] is a range: pass the sampling as params['sampling'].")
+        return lo
+
+    def FOV(self, params):
+        """The field of view (lambda/D, or None for the full grid) for this
+        params dict: params['fov'], or the configured single value."""
+        if params is not None and "fov" in params:
+            return None if params["fov"] is None else float(params["fov"])
+        if self.fov_range is None:
+            return None
+        lo, hi = self.fov_range
+        if lo != hi:
+            raise ValueError("PSFParams['fov'] is a range: pass the field of view as params['fov'].")
+        return lo
+
+    # Shortcuts to the grid of a single configured sampling (raise for a range)
+    @property
+    def sampling(self):
+        return self.Sampling(None)
+
+    @property
+    def fov(self):
+        return self.FOV(None)
+
+    @property
+    def N(self):
+        return self.Grid(self.sampling).N
+
+    @property
+    def dF(self):
+        return self.Grid(self.sampling).dF
+
+    @property
+    def fx(self):
+        return self.Grid(self.sampling).fx
+
+    @property
+    def fy(self):
+        return self.Grid(self.sampling).fy
+
+    @property
+    def fsqr(self):
+        return self.Grid(self.sampling).fsqr
 
     # ------------------------------------------------------------------
     # Parameters
@@ -180,10 +316,13 @@ class PSFModel:
         piston-filtered f^(-slope) PSD screen on the WFS pupil, piston-removed
         and rescaled so its rms over the pupil equals `rms` (B,) exactly. The
         default slope 2.2 is AOPERA's psd_ncpa default. Uses the global torch RNG.
+        The map lives on the pupil grid, so it does not depend on the PSF sampling;
+        it is synthesized on the 2 * Nres (sampling 2) grid.
         """
         rms = torch.as_tensor(rms, device=self.device, dtype=torch.float32).reshape(-1)
-        psd = PowerLawPSD(self.fsqr, slope) * PistonFilter(self.fsqr, self.D)
-        screen = CenterCrop(PSDToScreen(psd.expand(rms.shape[0], -1, -1), self.dF), self.Nres)
+        grid = self._GridForSize(2 * self.Nres)
+        psd = PowerLawPSD(grid.fsqr, slope) * PistonFilter(grid.fsqr, self.D)
+        screen = CenterCrop(PSDToScreen(psd.expand(rms.shape[0], -1, -1), grid.dF), self.Nres)
         pupil = self.wfs.pupil
         n = pupil.sum()
         screen = pupil * (screen - (screen * pupil).sum(dim=(-2, -1), keepdim=True) / n)
@@ -194,14 +333,17 @@ class PSFModel:
     # PSD
     # ------------------------------------------------------------------
 
-    def CorrectedBand(self, params):
+    def CorrectedBand(self, params, grid=None):
         """c * LP: the level of correction inside the square DM band, (B, N, N)."""
+        if grid is None:
+            grid = self.Grid(self.Sampling(params))
         c = params["level_of_correction"].view(-1, 1, 1)
-        return 1 - GetFittingPSD(self.fx, self.fy, self.dF, self.D, self.Nactuator, c)
+        return 1 - GetFittingPSD(grid.fx, grid.fy, grid.dF, self.D, self.Nactuator, c)
 
     def ResidualPSD(self, params, return_terms=False):
         """
-        Residual OPD PSD (m^2 m^2), (B, N, N), centred (fftshift convention).
+        Residual OPD PSD (m^2 m^2), (B, N, N), centred (fftshift convention),
+        on the grid of params' sampling.
 
         fitting:  (1 - c LP) Phi_atm
         servo:    c LP Phi_atm sum_l fr0_l |CLTF(f . v_l)|^2
@@ -210,14 +352,16 @@ class PSFModel:
 
         With return_terms, also returns a dict of the individual terms.
         """
+        grid = self.Grid(self.Sampling(params))
+        fx, fy = grid.fx, grid.fy
         r0 = params["r0"].view(-1, 1, 1)
         L0 = params["L0"].view(-1, 1, 1)
-        corrected = self.CorrectedBand(params)
+        corrected = self.CorrectedBand(params, grid)
         terms = {}
 
         needs_atmosphere = {"fitting", "servo"} & set(self.terms)
         if needs_atmosphere:
-            atmosphere = VonKarmanOPDPSD(self.fsqr, r0, L0, self.f_slope)
+            atmosphere = VonKarmanOPDPSD(grid.fsqr, r0, L0, self.f_slope)
         if "fitting" in self.terms:
             terms["fitting"] = atmosphere * (1 - corrected)
 
@@ -230,13 +374,13 @@ class PSFModel:
             gain = params["loop_gain"].view(1, B, 1, 1)
             leak = params["loop_leak"].view(1, B, 1, 1)
             if "servo" in self.terms:
-                rejection = GetTemporalErrorPSD(self.fx, self.fy, self.loopFrequency, gain, leak,
+                rejection = GetTemporalErrorPSD(fx, fy, self.loopFrequency, gain, leak,
                                                 self.delayFrames, wind_x, wind_y)
                 terms["servo"] = corrected * atmosphere * (fr0 * rejection).sum(dim=0)
             if "aliasing" in self.terms:
-                ntf = GetTemporalNoisePSD(self.fx, self.fy, self.loopFrequency, gain, leak,
+                ntf = GetTemporalNoisePSD(fx, fy, self.loopFrequency, gain, leak,
                                           self.delayFrames, wind_x, wind_y)
-                aliased = GetAliasedAtmospherePSD(self.fx, self.fy, r0, L0, self.f_slope, self.wfs_pitch)
+                aliased = GetAliasedAtmospherePSD(fx, fy, r0, L0, self.f_slope, self.wfs_pitch)
                 terms["aliasing"] = corrected * (fr0 * ntf).sum(dim=0) * aliased
 
         if "noise" in self.terms:
@@ -258,52 +402,58 @@ class PSFModel:
     def ResidualVariance(self, params, psd):
         """Residual OPD variance (m^2) per PSF, (B,): the grid sum, plus the
         Kolmogorov tail beyond the grid when psd_integral == "infinite"."""
+        grid = self._GridForSize(psd.shape[-1])
         if self.psd_integral == "grid":
-            return psd.sum(dim=(-2, -1)) * self.dF**2
-        variance = (psd * self.inside_f_max).sum(dim=(-2, -1)) * self.dF**2
+            return psd.sum(dim=(-2, -1)) * grid.dF**2
+        variance = (psd * grid.inside_f_max).sum(dim=(-2, -1)) * grid.dF**2
         if "fitting" in self.terms:
-            variance = variance + VonKarmanTail(params["r0"], self.f_max)
+            variance = variance + VonKarmanTail(params["r0"], grid.f_max)
         return variance
 
     # ------------------------------------------------------------------
     # OTF and PSF
     # ------------------------------------------------------------------
 
-    def TelescopeOTF(self, static_opd):
-        """Static/diffraction OTF (unshifted, zero lag at [0, 0]) from
-        WFS.GetPSF, so it shares GetPSF's pupil, padding and normalization."""
+    def TelescopeOTF(self, static_opd, grid):
+        """Static/diffraction OTF (unshifted, zero lag at [0, 0]) on `grid`,
+        from WFS.GetPSF, so it shares GetPSF's pupil, padding and normalization."""
         if static_opd is None:
             static_opd = torch.zeros(1, self.Nres, self.Nres, device=self.device)
-        psf = self.wfs.GetPSF(static_opd, sampling=self.sampling, wl=self.wavelength)
+        psf = self.wfs.GetPSF(static_opd, sampling=grid.sampling, wl=self.wavelength)
         return torch.fft.ifft2(torch.fft.ifftshift(psf, dim=(-2, -1)), dim=(-2, -1))
 
     def OTF(self, params, psd=None):
         """Long-exposure OTF, (B, N, N) complex, unshifted (zero lag at [0, 0]):
         OTF_tel * exp(-k^2 (sigma^2 - B(rho))) * OTF_jitter."""
+        grid = self.Grid(self.Sampling(params))
         if psd is None:
             psd = self.ResidualPSD(params)
-        covariance = PSDToCovariance(psd, self.dF)
+        elif psd.shape[-1] != grid.N:
+            raise ValueError(f"psd is on a {psd.shape[-1]}-pixel grid, but the sampling needs {grid.N}")
+        covariance = PSDToCovariance(psd, grid.dF)
         variance = self.ResidualVariance(params, psd).view(-1, 1, 1)
         otf = torch.exp(-self.wavenumber**2 * (variance - covariance))
 
         static_opd = params.get("static_opd") if "static" in self.terms else None
-        otf = otf * (self.TelescopeOTF(static_opd) if static_opd is not None else self.otf_tel0)
+        otf = otf * (self.TelescopeOTF(static_opd, grid) if static_opd is not None else grid.otf_tel0)
 
         if "jitter" in self.terms and params.get("jitter") is not None:
-            otf = otf * JitterOTF(self.rho_x, self.rho_y, params["jitter"],
+            otf = otf * JitterOTF(grid.rho_x, grid.rho_y, params["jitter"],
                                   params["jitter_angle"], self.wavelength)
         return otf
 
-    def PSFFromOTF(self, otf):
-        """Centred PSF from an unshifted OTF, cropped to the field of view."""
+    def PSFFromOTF(self, otf, params=None):
+        """Centred PSF from an unshifted OTF, cropped to params' field of view
+        (the configured one when params is None)."""
         psf = torch.fft.fftshift(torch.fft.fft2(otf, dim=(-2, -1)), dim=(-2, -1)).real
-        return self.CropFOV(psf.clamp_min(0))
+        return self.CropFOV(psf.clamp_min(0), params)
 
-    def CropFOV(self, psf):
-        """Centre crop to fov (in lambda/D), exactly as WFS.GetPSF does."""
-        if self.fov is None:
+    def CropFOV(self, psf, params=None):
+        """Centre crop to the field of view (lambda/D), exactly as WFS.GetPSF does."""
+        fov = self.FOV(params)
+        if fov is None:
             return psf
-        fov_pix = int(np.round(self.fov * self.sampling))
+        fov_pix = int(np.round(fov * self.Sampling(params)))
         Ny, Nx = psf.shape[-2], psf.shape[-1]
         y0 = (Ny - fov_pix) // 2
         x0 = (Nx - fov_pix) // 2
@@ -311,23 +461,27 @@ class PSFModel:
 
     def PSF(self, params):
         """Long-exposure PSF (B, H, W), in WFS.GetPSF units."""
-        return self.PSFFromOTF(self.OTF(params))
+        return self.PSFFromOTF(self.OTF(params), params)
 
     def Strehl(self, otf):
-        """On-axis Strehl ratio (B,) relative to the aberration-free pupil."""
-        return otf.real.sum(dim=(-2, -1)) / self.diffraction_peak
+        """On-axis Strehl ratio (B,) relative to the aberration-free pupil on
+        the same grid."""
+        return otf.real.sum(dim=(-2, -1)) / self._GridForSize(otf.shape[-1]).diffraction_peak
 
     def ShortExposurePSF(self, params, psd=None, noise=None):
         """
         One instantaneous PSF per sample (B, H, W): a random residual screen
         drawn from the residual PSD, plus the static map and a random jitter
-        tilt, imaged with WFS.GetPSF. Draws are independent (not a time series);
-        on average they converge to PSF(params) for psd_integral="grid".
-        Uses the global torch RNG; pass `noise` (complex (B, N, N)) to fix the screen.
+        tilt, imaged with WFS.GetPSF at params' sampling and field of view.
+        Draws are independent (not a time series); on average they converge to
+        PSF(params) for psd_integral="grid". Uses the global torch RNG; pass
+        `noise` (complex (B, N, N)) to fix the screen.
         """
+        sampling = self.Sampling(params)
+        grid = self.Grid(sampling)
         if psd is None:
             psd = self.ResidualPSD(params)
-        opd = CenterCrop(PSDToScreen(psd, self.dF, noise), self.Nres)
+        opd = CenterCrop(PSDToScreen(psd, grid.dF, noise), self.Nres)
 
         if "static" in self.terms and params.get("static_opd") is not None:
             opd = opd + params["static_opd"]
@@ -341,8 +495,8 @@ class PSFModel:
             tilt_y = (theta[:, 0] * sin + theta[:, 1] * cos).view(-1, 1, 1)
             opd = opd + tilt_x * self.pupil_x + tilt_y * self.pupil_y
 
-        psf = self.wfs.GetPSF(opd, sampling=self.sampling, wl=self.wavelength)
-        return self.CropFOV(psf)
+        psf = self.wfs.GetPSF(opd, sampling=sampling, wl=self.wavelength)
+        return self.CropFOV(psf, params)
 
 
 class PSFDataset(Dataset):
@@ -354,12 +508,20 @@ class PSFDataset(Dataset):
     plus the PSF-only static aberration and jitter, and returns the long-exposure
     PSF (and optionally one short exposure) for each.
 
+    PSFParams["sampling"] and PSFParams["fov"] may be single values or
+    [min, max] ranges. With ranges, each call draws one sampling (uniformly
+    among the grid sizes in range, see PSFModel.AllowedSamplings) and one
+    field of view (uniform in lambda/D), shared by the whole batch, so the
+    PSF size round(fov * sampling) changes from batch to batch.
+
     Unlike PhaseDataset there is no sequential-idx contract: every
     __getitem__ call draws a fresh, independent batch.
 
     Batch dict:
         psf (B, H, W), psf_short (B, H, W) if return_short_exposure,
-        strehl (B,), psd (B, N, N), plus every drawn parameter (see PSFModel).
+        strehl (B,), psd (B, N, N), plus every drawn parameter (see PSFModel),
+        including sampling and fov as Python floats. The batch dict is itself a
+        complete params dict: model.PSF(batch) reproduces batch["psf"].
 
     Args:
         wfs, WFSParams, AtmosParams, LoopParams, DMParams, PSFParams, device,
@@ -399,7 +561,9 @@ class PSFDataset(Dataset):
     @torch.no_grad()
     def DrawRandomParameters(self):
         """One batch of random parameters (canonical PSFModel params dict).
-        The atmosphere/loop draws come first, identical to PhaseDataset's."""
+        The atmosphere/loop draws come first, identical to PhaseDataset's; the
+        batch-wide sampling and fov come last, and are drawn only when they
+        are ranges."""
         params = DrawAOParameters(
             self.Nphases, self.nLayersRange, self.r0Range, self.L0Range,
             self.levelOfCorrectionRange, self.loopGainRange, self.loopLeakRange,
@@ -407,15 +571,28 @@ class PSFDataset(Dataset):
             self.height_exp_dist_lambda, self.device,
         )
         B = self.Nphases
-        terms = self.model.terms
+        model = self.model
 
         params["ncpa_rms"] = torch.empty(B, device=self.device).uniform_(*self.ncpaRange)
-        if "static" in terms and max(self.ncpaRange) > 0:
-            params["static_opd"] = self.model.DrawStaticOPD(params["ncpa_rms"], self.ncpaSlope)
+        if "static" in model.terms and max(self.ncpaRange) > 0:
+            params["static_opd"] = model.DrawStaticOPD(params["ncpa_rms"], self.ncpaSlope)
 
         jitter_mas = torch.empty(B, 2, device=self.device).uniform_(*self.jitterRange)
         params["jitter"] = jitter_mas * MAS_TO_RAD
         params["jitter_angle"] = torch.empty(B, device=self.device).uniform_(0, np.pi)
+
+        samplings = model.allowed_samplings
+        if len(samplings) == 1:
+            params["sampling"] = samplings[0]
+        else:
+            params["sampling"] = samplings[int(torch.randint(len(samplings), (1,), device=self.device))]
+
+        if model.fov_range is None:
+            params["fov"] = None
+        elif model.fov_range[0] == model.fov_range[1]:
+            params["fov"] = model.fov_range[0]
+        else:
+            params["fov"] = float(torch.empty(1, device=self.device).uniform_(*model.fov_range))
         return params
 
     @torch.no_grad()
@@ -424,7 +601,7 @@ class PSFDataset(Dataset):
         psd = self.model.ResidualPSD(params)
         otf = self.model.OTF(params, psd)
         batch = {
-            "psf": self.model.PSFFromOTF(otf),
+            "psf": self.model.PSFFromOTF(otf, params),
             "strehl": self.model.Strehl(otf),
             "psd": psd,
             **params,

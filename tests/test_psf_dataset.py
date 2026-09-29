@@ -290,3 +290,103 @@ def test_fitting_recovers_r0(device):
         loss.backward()
         optimizer.step()
     assert torch.exp(log_r0).item() == pytest.approx(0.12, rel=0.02)
+
+
+# ---------------------------------------------------------------------------
+# Random sampling and field of view (one draw per batch)
+# ---------------------------------------------------------------------------
+
+def test_allowed_samplings_are_exact_grids(device):
+    """A [min, max] sampling range yields the effective sampling N / Nres of
+    every GetPSF grid N = Nres + 2k in range, so the reported value is exact."""
+    _, ds = build(device, Nres=16, psf={"sampling": [2.0, 3.0]})
+    samplings = ds.model.allowed_samplings
+    assert samplings == [(16 + 2 * k) / 16 for k in range(8, 17)]
+    for s in samplings:
+        assert ds.model.GridSize(s) == round(s * 16)
+
+
+def test_random_sampling_and_fov_per_batch(device):
+    _, ds = build(device, Nres=16, psf={"sampling": [2.0, 3.0], "fov": [6.0, 12.0]})
+    ds.return_short_exposure = True
+    drawn = set()
+    for _ in range(12):
+        batch = ds[0]
+        s, fov = batch["sampling"], batch["fov"]
+        assert isinstance(s, float) and isinstance(fov, float)
+        assert s in ds.model.allowed_samplings
+        assert 6.0 <= fov <= 12.0
+        size = int(np.round(fov * s))
+        assert batch["psf"].shape == (4, size, size)
+        assert batch["psf_short"].shape == (4, size, size)
+        assert batch["psd"].shape[-1] == ds.model.GridSize(s)
+        assert torch.isfinite(batch["psf"]).all() and ((batch["strehl"] > 0) & (batch["strehl"] <= 1)).all()
+        drawn.add(s)
+    assert len(drawn) > 1
+
+
+def test_batch_dict_reproduces_its_psf(device):
+    """The batch dict is a complete params dict: model.PSF(batch) gives
+    batch['psf'], and so does a fixed-sampling model built at the drawn values."""
+    W, A, L, Dm, P = make_params(Nres=16, psf={"sampling": [2.0, 3.0], "fov": [6.0, 12.0]})
+    wfs = WFS(W, device)
+    ds = PSFDataset(wfs, W, A, L, Dm, P, device)
+    batch = ds[0]
+    assert torch.allclose(ds.model.PSF(batch), batch["psf"])
+
+    fixed = PSFModel(wfs, W, A, L, Dm, dict(P, sampling=batch["sampling"], fov=batch["fov"]), device)
+    params = {k: v for k, v in batch.items() if k not in ("sampling", "fov")}
+    assert torch.allclose(fixed.PSF(params), batch["psf"])
+
+
+def test_random_sampling_diffraction_matches_getpsf(device):
+    wfs, ds = build(device, terms=(), Nres=16, psf={"sampling": [2.0, 4.0], "fov": [5.0, 10.0]})
+    for _ in range(5):
+        batch = ds[0]
+        expected = wfs.GetPSF(torch.zeros(4, 16, 16, device=device), sampling=batch["sampling"],
+                              fov=batch["fov"], wl=1600e-9)
+        assert torch.allclose(batch["psf"], expected, atol=1e-5 * expected.max().item())
+
+
+def test_fixed_values_do_not_consume_rng(device):
+    """Single configured sampling/fov values draw nothing, so fixed setups keep
+    their random stream (and the atmosphere still matches PhaseDataset's)."""
+    _, ds = build(device, psf={"fov": 10.0})
+    torch.manual_seed(5)
+    params = ds.DrawRandomParameters()
+    after = torch.rand(1, device=device)
+    torch.manual_seed(5)
+    ds.DrawRandomParameters()
+    assert params["sampling"] == 3.0 and params["fov"] == 10.0
+    assert torch.equal(torch.rand(1, device=device), after)
+
+
+def test_ranges_require_explicit_values_in_params(device):
+    _, ds = build(device, Nres=16, psf={"sampling": [2.0, 3.0], "fov": [6.0, 12.0]})
+    params = ds.DrawRandomParameters()
+    for key in ("sampling", "fov"):
+        partial = {k: v for k, v in params.items() if k != key}
+        with pytest.raises(ValueError, match=key):
+            ds.model.PSF(partial)
+
+
+@pytest.mark.parametrize("psf, message", [
+    ({"sampling": [1.5, 3.0]}, "below 2"),
+    ({"sampling": [2.01, 2.1]}, "No PSF grid"),
+    ({"sampling": [2.0, 3.0], "fov": [5.0, 17.0]}, "does not fit"),
+    ({"sampling": [3.0, 2.0]}, "range"),
+])
+def test_invalid_sampling_or_fov_ranges_raise(device, psf, message):
+    W, A, L, Dm, P = make_params(Nres=16, psf=psf)
+    with pytest.raises(ValueError, match=message):
+        PSFModel(WFS(W, device), W, A, L, Dm, P, device)
+
+
+def test_gradients_with_random_sampling(device):
+    _, ds = build(device, Nres=16, psf={"sampling": [2.0, 3.0], "fov": [6.0, 12.0]})
+    params = ds.DrawRandomParameters()
+    leaves = {k: (v.clone().requires_grad_(True) if k in FIT_PARAMS else v) for k, v in params.items()}
+    (ds.model.PSF(leaves) ** 2).sum().backward()
+    for key in FIT_PARAMS:
+        assert torch.isfinite(leaves[key].grad).all(), key
+        assert leaves[key].grad.abs().sum() > 0, key
