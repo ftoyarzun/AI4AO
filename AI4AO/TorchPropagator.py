@@ -485,6 +485,9 @@ class WFS(nn.Module):
                 wavelength indices instead of sharing them. See ZernikeWFS.BuildZernikeMaskFFT
                 for the existing precedent of building such a tensor with an explicit
                 unsqueeze rather than relying on this method's 3-D auto-unsqueeze.
+                PyramidWFS.BuildMask and ZernikeWFS.BuildZernikeMaskFFT always pass
+                this 4-D form, with Nwavelength = len(self.wavelength), since their
+                masks scale with lambda_c / lambda (see WFS.ChromaticRatio).
                 Note this derived self.mask only drives the FFT path (FFTPropagator);
                 the MTF path (MTFPropagator) uses self.phaseMask/self.transmisionMask
                 directly and relies on the same broadcasting rules independently.
@@ -677,6 +680,32 @@ class WFS(nn.Module):
         assert value.dim() <= 1, "wavelength must be scalar (0-d) or a 1-D tensor of wavelengths"
         self._wavelength = value.reshape(-1)
         self.wavenumber = 2 * torch.pi / value.reshape(1, -1, 1, 1)
+
+        # The mask may depend on the band (see ChromaticRatio), so rebuild it and
+        # the reference once construction is done -- this setter also runs inside
+        # __init__, before any mask exists.
+        if getattr(self, "initialized", False):
+            if self.training:
+                self.BuildMask()
+                self.BuildReferenceIntensity()
+            else:
+                with torch.no_grad():
+                    self.BuildMask()
+                    self.BuildReferenceIntensity()
+
+    def ChromaticRatio(self):
+        """lambda_c / lambda for each sensing wavelength, shape (Nwavelength,),
+        with lambda_c = (min + max) / 2 of the current band.
+
+        A physical focal-plane mask is fixed in angle, while a shared FFT grid
+        has lambda / (D * sampling) per pixel at wavelength lambda. A mask
+        feature specified in lambda_c/D (modulation radius, rooftop width, dot
+        diameter) therefore spans `sampling * ChromaticRatio()` pixels at each
+        wavelength. Exactly 1.0 for a single wavelength, so monochromatic masks
+        are unchanged.
+        """
+        wl = self.wavelength
+        return (wl.min() + wl.max()) / 2 / wl
         # if wavenumber.dim() > 0:
         #     # dim 1 (not dim 0) so it lines up with the batch-first Propagator/GetPSF
         #     # convention: dim 0 is strictly Nphases, dim 1 is wavelength.

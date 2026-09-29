@@ -21,14 +21,29 @@ class PyramidWFS(WFS):
         self.initialized = True
 
     def BuildMask(self):
+        """Builds the (Nwavelength, Nsteps, H, W) phase mask (Nsteps = 1 when
+        unmodulated) and passes it to SetMask's 4-D per-wavelength path.
+
+        Modulation and rooftop are given in lambda_c/D (lambda_c: centre of the
+        band, see WFS.ChromaticRatio). Both are fixed angles, so each wavelength
+        sees them at sampling * lambda_c / lambda pixels. The facets are linear
+        ramps, which are scale-invariant, so the facet slopes and the pupil
+        positions stay achromatic.
+        """
+        ratio = self.ChromaticRatio()  # (Nwavelength,), exactly 1 for one wavelength
+        sampling = (self.sampling * ratio).view(-1, 1)  # (Nwavelength, 1)
         if self.modulation == 0:
-            F = self.PyramidMask()
+            F = self.PyramidMask(sampling=sampling)
         else:
-            nSteps = min(self.maxModulationSteps, max(round(6.28 * self.modulation / 4) * 4, 8))
+            # Size the step count for the largest radius in lambda/D across the band
+            # (at the shortest wavelength). The count is an integer, so no gradient.
+            max_modulation = self.modulation * float(ratio.max().detach())
+            nSteps = min(self.maxModulationSteps, max(round(6.28 * max_modulation / 4) * 4, 8))
             steps = torch.linspace(0,2*torch.pi * (1 - 1/nSteps),nSteps, device=self.device, dtype=torch.float32)
-            x = self.modulation * self.sampling * torch.cos(steps)
-            y = self.modulation * self.sampling * torch.sin(steps)
-            F = self.PyramidMask(x_offset=x, y_offset=y)
+            radius = (self.modulation * self.sampling) * ratio.view(-1, 1)  # (Nwavelength, 1), pixels
+            x = radius * torch.cos(steps)
+            y = radius * torch.sin(steps)
+            F = self.PyramidMask(x_offset=x, y_offset=y, sampling=sampling)
         self.pupil_centers = self.GetPupilCenter()
         self.SetMask(phaseMask=F)
     
@@ -63,17 +78,26 @@ class PyramidWFS(WFS):
 
         self.SetMask(phaseMask=mask)
 
-    def PyramidMask(self, x_offset=0, y_offset=0):
-        # scalar offsets -> single (H, W) mask; array-like offsets of length C -> (C, H, W), one mask per offset pair
+    def PyramidMask(self, x_offset=0, y_offset=0, sampling=None):
+        """Pyramid phase mask for tip offsets (x_offset, y_offset), in focal-plane pixels.
+
+        The output shape is (*S, H, W), where S is the broadcast shape of the
+        offsets and of `sampling`. Scalar offsets give a single (H, W) mask, and
+        1-D offsets of length C give (C, H, W), one mask per offset pair.
+        `sampling` (focal-plane pixels per lambda/D) sets the rooftop width in
+        pixels and defaults to self.sampling. BuildMask passes (Nwavelength, 1)
+        together with (Nwavelength, Nsteps) offsets, which gives
+        (Nwavelength, Nsteps, H, W).
+        """
+        if sampling is None:
+            sampling = self.sampling
         x_offset = torch.as_tensor(x_offset, device=self.device, dtype=torch.float32)
         y_offset = torch.as_tensor(y_offset, device=self.device, dtype=torch.float32)
-        squeeze_output = x_offset.dim() == 0 and y_offset.dim() == 0
-        x_offset, y_offset = torch.broadcast_tensors(x_offset.reshape(-1), y_offset.reshape(-1))
 
-        rooftop_in_pixels = self.rooftop * self.sampling / np.sqrt(2)
+        rooftop_in_pixels = torch.as_tensor(self.rooftop * sampling / np.sqrt(2))[..., None, None]
 
-        x = self.x_mask.unsqueeze(0) + x_offset.view(-1, 1, 1)  # (C, H, W)
-        y = self.y_mask.unsqueeze(0) + y_offset.view(-1, 1, 1)  # (C, H, W)
+        x = self.x_mask + x_offset[..., None, None]  # (*S, H, W)
+        y = self.y_mask + y_offset[..., None, None]  # (*S, H, W)
 
         P1 = (x + rooftop_in_pixels / 2) * self.maskShifts[0, 0] + (
             y + rooftop_in_pixels / 2
@@ -85,12 +109,9 @@ class PyramidWFS(WFS):
         )
         P4 = x * self.maskShifts[3, 0] - y * self.maskShifts[3, 1]
 
-        stacked = torch.stack([P1, P2, P3, P4])  # shape: (4, C, H, W)
+        stacked = torch.stack(torch.broadcast_tensors(P1, P2, P3, P4))  # shape: (4, *S, H, W)
 
-        F = torch.max(stacked * self.mainSlope, dim=0).values  # shape (C, H, W)
-
-        if squeeze_output:
-            F = F.squeeze(0)
+        F = torch.max(stacked * self.mainSlope, dim=0).values  # shape (*S, H, W)
 
         return F
 
