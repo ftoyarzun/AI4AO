@@ -1,4 +1,5 @@
 """Tests for AI4AO.ZernikeWFS."""
+import numpy as np
 import pytest
 import torch
 
@@ -209,6 +210,158 @@ def test_gradients_flow_through_chromatic_zernike_fft_mask(zernike_wfs, device):
     torch.var(zernike_wfs(flat), dim=(-2, -1)).sum().backward()
 
     for grad in (zernike_wfs.depths.grad, zernike_wfs.diameters.grad, wavelength.grad):
+        assert grad is not None
+        assert torch.isfinite(grad).all()
+        assert torch.any(grad != 0)
+
+
+# ---------------------------------------------------------------------------
+# Chromatic dot (MTF path, polychromatic sensing)
+# ---------------------------------------------------------------------------
+
+def _zernike_mtf(tiny_zernike_wfs_params, device, wavelength, diameter=2.1, depth_scale=1.0,
+                 mtf_upscale=4.0, mask_type="Zernike"):
+    """MTF-path ZWFS with an explicit dot diameter. The default 2.1 keeps
+    N = sampling * MTF_upscale * diameter away from an integer, so the int() in
+    the window size is stable under the float rescalings used below."""
+    params = tiny_zernike_wfs_params(mask_type=mask_type, use_mtf=True, mtf_upscale=mtf_upscale)
+    params["Wavelength"] = wavelength
+    wfs = ZernikeWFS(params, device)
+    with torch.no_grad():
+        wfs.diameters.fill_(diameter)
+        wfs.depths.mul_(depth_scale)
+    wfs.BuildMask()
+    return wfs
+
+
+def _legacy_mtf_frame(wfs, opd):
+    """Monochromatic MTF-path frame computed the pre-chromatic way: 2-D MFT
+    kernels in the field's own lambda/D and a 1 / (sampling * MTF_upscale)**2
+    inverse normalization."""
+    fs = wfs.sampling * wfs.MTF_focal_upscale
+    Np, Npix = wfs.Nres, wfs.Npix
+    Nf = int(wfs.diameters[0] * fs)
+    x = (torch.arange(Np, device=wfs.device, dtype=torch.float32) - Np / 2) / wfs.Nres
+    u = (torch.arange(Nf, device=wfs.device, dtype=torch.float32) - (Nf - 1) / 2) / fs
+    d = (torch.arange(Npix, device=wfs.device, dtype=torch.float32) - Npix / 2) / wfs.Nres
+    Mx = torch.exp(-1j * 2 * torch.pi * torch.outer(x, u))
+    iMx = torch.exp(1j * 2 * torch.pi * torch.outer(u, d))
+
+    phase = wfs.wavenumber * opd.unsqueeze(1)
+    pupil = wfs.pupil.unsqueeze(0).unsqueeze(1)
+    uin = (wfs.pupil.unsqueeze(0) * pupil * torch.exp(1j * phase) / torch.sqrt(wfs.pupil.sum())).unsqueeze(-3)
+    pad = int(np.round(wfs.Nres * (wfs.sampling - 1)) // 2)
+    uin_padded = torch.nn.functional.pad(uin, (pad, pad, pad, pad))
+
+    psi_f = Mx.T @ uin @ Mx
+    psi_f *= 1 / wfs.Nres ** 2
+    Ep = iMx.T @ (psi_f * wfs.transmisionMask) @ iMx
+    Ep *= 1 / fs ** 2
+    phase_mask = torch.ones(1, wfs.number_of_masks, 1, 1, device=wfs.device) * wfs.depths.view(1, -1, 1, 1)
+    psi = uin_padded + (torch.exp(1j * phase_mask) - 1) * Ep
+    frame = wfs.ShiftPupilImages(torch.abs(psi) ** 2).sum(dim=(1, -3))
+    return frame / frame.sum(dim=(-2, -1), keepdim=True)
+
+
+@pytest.mark.parametrize("mask_type", ["Zernike", "DoubleZernike"])
+def test_single_wavelength_mtf_matches_legacy(tiny_zernike_wfs_params, device, mask_type):
+    wfs = _zernike_mtf(tiny_zernike_wfs_params, device, 635e-9, mask_type=mask_type)
+
+    assert wfs.Mx.shape[:2] == (1, 1) and wfs.iMx.shape[:2] == (1, 1)
+    assert wfs.phaseMask.shape == (1, wfs.number_of_masks, 1, 1)
+
+    opd = 1e-7 * torch.randn(2, wfs.Nres, wfs.Nres, device=device)
+    assert torch.equal(wfs.Propagator(opd), _legacy_mtf_frame(wfs, opd))
+
+
+def _zernike_mtf_monochromatic_equivalents(tiny_zernike_wfs_params, device, mask_type, diameter=2.1, mtf_upscale=4.0):
+    """One monochromatic MTF ZWFS per band wavelength with the focal window
+    rescaled to that wavelength's lambda/D: diameter and depth times
+    lambda_c / lambda, and MTF_upscale times lambda / lambda_c, which keeps the
+    same N and the same angular pixel as the polychromatic window."""
+    lambda_c = (min(_BAND) + max(_BAND)) / 2
+    return [
+        _zernike_mtf(tiny_zernike_wfs_params, device, wl, diameter * lambda_c / wl, lambda_c / wl,
+                     mtf_upscale * wl / lambda_c, mask_type)
+        for wl in _BAND
+    ]
+
+
+@pytest.mark.parametrize("mask_type", ["Zernike", "DoubleZernike"])
+def test_polychromatic_mtf_channel_equals_rescaled_monochromatic(tiny_zernike_wfs_params, device, mask_type):
+    wfs = _zernike_mtf(tiny_zernike_wfs_params, device, 635e-9, mask_type=mask_type)
+    wfs.wavelength = torch.tensor(_BAND, device=device)
+    monos = _zernike_mtf_monochromatic_equivalents(tiny_zernike_wfs_params, device, mask_type)
+
+    assert all(m.transmisionMask.shape == wfs.transmisionMask.shape for m in monos)
+
+    opd = 1e-7 * torch.randn(2, wfs.Nres, wfs.Nres, device=device)
+    frames = wfs.Propagator(opd, collapse_wvl=False)
+    assert frames.shape == (2, len(_BAND), wfs.Npix, wfs.Npix)
+    for i, mono in enumerate(monos):
+        assert torch.allclose(frames[:, i], mono.Propagator(opd), rtol=1e-4, atol=1e-8)
+
+    achromatic = _zernike_mtf(tiny_zernike_wfs_params, device, _BAND[0], mask_type=mask_type)
+    assert not torch.allclose(frames[:, 0], achromatic.Propagator(opd), rtol=1e-4, atol=1e-8)
+
+    # The collapsed frame weights each channel by its raw flux. Unlike the FFT
+    # path, the MTF path's finite focal window is not exactly energy-conserving
+    # (~0.4% loss here, already present monochromatically), and that loss now
+    # varies slightly per wavelength, so the equal-weight sum only holds to ~1e-3.
+    expected = torch.stack([m.Propagator(opd) for m in monos]).sum(dim=0)
+    expected = expected / expected.sum(dim=(-2, -1), keepdim=True)
+    collapsed = wfs.Propagator(opd)
+    assert (collapsed - expected).norm() / expected.norm() < 1e-2
+
+
+def test_polychromatic_fft_vs_mtf_agreement(tiny_zernike_wfs_params, device):
+    """Same agreement check as test_fft_vs_mtf_agreement_across_upscales, with a
+    band: both paths now describe the same physical, fixed-angle dot."""
+    band = torch.tensor(_BAND, device=device)
+    wfs_fft = ZernikeWFS(tiny_zernike_wfs_params(mask_type="Zernike", use_mtf=False), device)
+    wfs_mtf = ZernikeWFS(tiny_zernike_wfs_params(mask_type="Zernike", use_mtf=True, mtf_upscale=4), device)
+    wfs_fft.wavelength = band
+    wfs_mtf.wavelength = band
+
+    _, modes_full = Zernike(wfs_fft.pupil, j=20)
+    opd_modes = modes_full * 20e-9
+    with torch.no_grad():
+        signal_fft = (wfs_fft.Propagator(opd_modes) - wfs_fft.Propagator(-opd_modes)) / 2
+        signal_mtf = (wfs_mtf.Propagator(opd_modes) - wfs_mtf.Propagator(-opd_modes)) / 2
+
+    sf, sm = signal_fft.flatten(start_dim=1), signal_mtf.flatten(start_dim=1)
+    cosine_similarity = (sf * sm).sum(dim=1) / (sf.norm(dim=1) * sm.norm(dim=1) + 1e-30)
+    norm_ratio = sf.norm(dim=1) / (sm.norm(dim=1) + 1e-30)
+
+    assert torch.all(cosine_similarity > 0.95)
+    assert torch.all(norm_ratio[10:] > 0.9)
+    assert torch.all(norm_ratio[10:] < 1.1)
+
+
+@pytest.mark.parametrize("mode", ["train", "eval"])
+def test_wavelength_setter_rebuilds_mtf_kernels_and_reference(tiny_zernike_wfs_params, device, mode):
+    wfs = _zernike_mtf(tiny_zernike_wfs_params, device, 635e-9)
+    wfs.train(mode == "train")
+    reference_before = wfs.reference_intensity.clone()
+
+    wfs.wavelength = torch.tensor(_BAND, device=device)
+
+    assert wfs.Mx.shape[:2] == (len(_BAND), 1) and wfs.iMx.shape[:2] == (len(_BAND), 1)
+    assert wfs.phaseMask.shape == (len(_BAND), wfs.number_of_masks, 1, 1)
+    assert not torch.allclose(wfs.reference_intensity, reference_before)
+    assert wfs.phaseMask.requires_grad == (mode == "train")
+
+
+def test_gradients_flow_through_chromatic_zernike_mtf(tiny_zernike_wfs_params, device):
+    wfs = _zernike_mtf(tiny_zernike_wfs_params, device, 635e-9, mask_type="DoubleZernike")
+    wavelength = torch.tensor(_BAND, device=device).requires_grad_()
+    wfs.wavelength = wavelength
+
+    # Flat wavefront: the only wavelength dependence is the chromatic dot.
+    flat = torch.zeros(1, wfs.Nres, wfs.Nres, device=device)
+    torch.var(wfs(flat), dim=(-2, -1)).sum().backward()
+
+    for grad in (wfs.depths.grad, wfs.positions.grad, wavelength.grad):
         assert grad is not None
         assert torch.isfinite(grad).all()
         assert torch.any(grad != 0)
