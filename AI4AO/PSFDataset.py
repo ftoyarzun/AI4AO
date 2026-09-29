@@ -11,7 +11,7 @@ distributions as PhaseDataset and returns batches of PSFs.
 The PSF grid, pupil and normalization are those of WFS.GetPSF, so with every
 aberration switched off PSFModel.PSF reproduces GetPSF exactly.
 
-See plans/PSFDataset.md for the design and the math.
+See Ideas/14-PSFDataset.md for the design and the math.
 """
 import warnings
 
@@ -70,7 +70,7 @@ class PSFModel:
         wfs (WFS): supplies the pupil (with central obstruction), D, Nres and
             the GetPSF convention. Any WFS subclass works; only GetPSF is used.
         WFSParams, AtmosParams, LoopParams, DMParams, PSFParams (dict): instrument
-            params dicts (see plans/PSFDataset.md for the PSFParams keys).
+            params dicts (see Ideas/14-PSFDataset.md for the PSFParams keys).
         terms (tuple): error terms to include, a subset of ALL_TERMS.
         psd_integral (str): "grid" takes the residual variance as the sum over
             the PSD grid, like GetPSF(PhaseDataset) screens; "infinite" adds the
