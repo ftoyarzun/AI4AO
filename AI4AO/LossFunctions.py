@@ -171,7 +171,46 @@ class WFSSignalLoss(AOLoss):
             Tensor: Scalar loss value.
         """
 
-        return -torch.mean(torch.std(wfs_frames, dim=(-2,-1))) * 1e6
+        return -torch.mean(torch.std(wfs_frames, dim=(-2,-1)))
+
+
+class CenterOfGravityLoss(AOLoss):
+    """
+    Penalizes the WFS frame's intensity-weighted centroid drifting away from
+    the frame center. A learned mask is free to add a global phase tilt on
+    top of whatever else it's doing -- that shifts the whole diffraction
+    pattern without adding any information the reconstructor can use, so
+    nothing else in the loss discourages it. This is the direct replacement
+    for the least-squares tip/tilt removal MaskManager used to apply to the
+    mask itself before that step was removed; enforcing it on the resulting
+    frame instead works for any mask geometry, not just ones with a known
+    flat reference plane.
+
+    Args:
+        wfs (nn.Module): WFS whose pixel grid (x_mask/y_mask, Npix) defines
+            the frame-center convention to penalize against.
+        device (str): Unused; accepted for interface consistency with other losses.
+    """
+
+    def __init__(self, wfs, device=None):
+        super().__init__()
+        half = wfs.Npix / 2
+        self.x_norm = (wfs.x_mask / half).clone()
+        self.y_norm = (wfs.y_mask / half).clone()
+
+    def compute(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):
+        """
+        Computes the squared distance of the WFS frame's intensity-weighted
+        centroid from the frame center, normalized by the frame half-width
+        (so the result is a dimensionless, order-unity quantity).
+
+        Returns:
+            Tensor: Scalar loss value.
+        """
+        total = wfs_frames.sum(dim=(-2, -1)).clamp_min(1e-12)
+        cx = (wfs_frames * self.x_norm).sum(dim=(-2, -1)) / total
+        cy = (wfs_frames * self.y_norm).sum(dim=(-2, -1)) / total
+        return torch.mean(cx**2 + cy**2)
 
 
 class LogResidualVarianceLoss(AOLoss):
@@ -221,3 +260,14 @@ class RMSELoss(AOLoss):
 
     def compute(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):
         return torch.sqrt(self.mse(z_estimated, Ze))
+
+
+class ModalMAELoss(AOLoss):
+    """Mean absolute error between predicted and true residual modal coefficients."""
+
+    def __init__(self):
+        super().__init__()
+        self.mae = nn.L1Loss()
+
+    def compute(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):
+        return self.mae(z_estimated, Ze)

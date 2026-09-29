@@ -25,7 +25,7 @@ class PyramidWFS(WFS):
             F = self.PyramidMask()
         else:
             nSteps = min(self.maxModulationSteps, max(round(6.28 * self.modulation / 4) * 4, 8))
-            steps = torch.linspace(0,2*torch.pi,nSteps, device=self.device, dtype=torch.float32)
+            steps = torch.linspace(0,2*torch.pi * (1 - 1/nSteps),nSteps, device=self.device, dtype=torch.float32)
             x = self.modulation * self.sampling * torch.cos(steps)
             y = self.modulation * self.sampling * torch.sin(steps)
             F = self.PyramidMask(x_offset=x, y_offset=y)

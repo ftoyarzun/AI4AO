@@ -63,6 +63,7 @@ class WFS(nn.Module):
         self.pupil_shift_x = ParamsDict.get("pupilShiftX", 0.0)
         self.pupil_shift_y = ParamsDict.get("pupilShiftY", 0.0)
         self.pupil_upscale = ParamsDict.get("pupilUpscale", 1)
+        self.use_MTF = ParamsDict.get("Use_MTF", False)
         self.reference_intensity = None
         self.pupil_centers = None
 
@@ -285,7 +286,7 @@ class WFS(nn.Module):
         if not self.useNoise:
             return self.frame_no_noise
 
-        self.AddNoiseToFrame()
+        self.frame_with_noise = self.AddNoiseToFrame()
         return self.frame_with_noise
     
     def PropagateField(self, uin, uin_padded):
@@ -298,11 +299,14 @@ class WFS(nn.Module):
         self.Nphotons = Nphotons
         self.RON = RON
 
-    def AddNoiseToFrame(self):
-        self.frame_with_noise = PoissonNoise(
-            self.frame_no_noise * self.Nphotons
-        ) + self.RON * torch.randn_like(self.frame_no_noise)
-        self.frame_with_noise /= self.frame_with_noise.sum(dim=(-2, -1), keepdim=True)
+    def AddNoiseToFrame(self, frame = None):
+        if frame is None:
+            frame = self.frame_no_noise
+        frame_with_noise = PoissonNoise(
+            frame * self.Nphotons
+        ) + self.RON * torch.randn_like(frame)
+        frame_with_noise /= frame_with_noise.sum(dim=(-2, -1), keepdim=True)
+        return frame_with_noise
 
     def GetPSF(self, opd, pupil = None, sampling = None, fov = None, wl = None, collapse_wvl = True):
         """
