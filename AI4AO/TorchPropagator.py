@@ -685,13 +685,18 @@ class WFS(nn.Module):
         # the reference once construction is done -- this setter also runs inside
         # __init__, before any mask exists.
         if getattr(self, "initialized", False):
-            if self.training:
+            self.RebuildMaskAndReference()
+
+    def RebuildMaskAndReference(self):
+        """Rebuild the mask and the reference intensity after a mask setting
+        changed, without a graph when not training (mirrors train())."""
+        if self.training:
+            self.BuildMask()
+            self.BuildReferenceIntensity()
+        else:
+            with torch.no_grad():
                 self.BuildMask()
                 self.BuildReferenceIntensity()
-            else:
-                with torch.no_grad():
-                    self.BuildMask()
-                    self.BuildReferenceIntensity()
 
     def ChromaticRatio(self):
         """lambda_c / lambda for each sensing wavelength, shape (Nwavelength,),

@@ -15,6 +15,7 @@ class PyramidWFS(WFS):
 
         self.modulation = ParamsDict["Modulation"]
         self.maxModulationSteps = 32
+        self.prismPupilProportion = None  # set by BuildPrismMask
 
         self.BuildMask()
 
@@ -29,6 +30,9 @@ class PyramidWFS(WFS):
         sees them at sampling * lambda_c / lambda pixels. The facets are linear
         ramps, which are scale-invariant, so the facet slopes and the pupil
         positions stay achromatic.
+
+        If BuildPrismMask has been called, each wavelength's mask is then scaled
+        by PrismFactor to model the dispersion of a prism.
         """
         ratio = self.ChromaticRatio()  # (Nwavelength,), exactly 1 for one wavelength
         sampling = (self.sampling * ratio).view(-1, 1)  # (Nwavelength, 1)
@@ -44,6 +48,8 @@ class PyramidWFS(WFS):
             x = radius * torch.cos(steps)
             y = radius * torch.sin(steps)
             F = self.PyramidMask(x_offset=x, y_offset=y, sampling=sampling)
+        if self.prismPupilProportion is not None:
+            F = F * self.PrismFactor().view(-1, 1, 1, 1)
         self.pupil_centers = self.GetPupilCenter()
         self.SetMask(phaseMask=F)
     
@@ -59,24 +65,48 @@ class PyramidWFS(WFS):
     def PropagateField(self, uin, uin_padded):
         self.FFTPropagator(uin_padded)
 
-    def BuildPrismMask(self, pupil_proportion, Nsamples = 5):
-        self.BuildMask()
-        displacement_size_in_pix = self.Nres * pupil_proportion / self.sampling
-        displacement_array = torch.linspace(
-            -displacement_size_in_pix/2, displacement_size_in_pix/2, Nsamples, 
-            device = self.device, dtype = torch.float32
-            ).view(Nsamples,1,1)
+    def BuildPrismMask(self, pupil_proportion):
+        """Model a dispersing prism in front of the pyramid: each wavelength's
+        four pupil images are displaced along the facet diagonals, so across the
+        band the pupils are smeared over a range set by `pupil_proportion`.
+
+        Requires a polychromatic WFS (len(self.wavelength) > 1), since the
+        dispersion is sampled by the sensing wavelengths themselves. The setting
+        is stored in self.prismPupilProportion and re-applied on every BuildMask
+        (train()/eval(), forward in train mode, wavelength changes). Set it back
+        to None and call BuildMask() to remove the prism. The mask and reference
+        intensity are rebuilt here.
+        """
+        if self.wavelength.numel() < 2:
+            raise ValueError(
+                "BuildPrismMask needs a polychromatic WFS: assign wfs.wavelength a "
+                "1-D tensor of several sensing wavelengths first."
+            )
+        self.prismPupilProportion = pupil_proportion
+        self.RebuildMaskAndReference()
+
+    def PrismFactor(self):
+        """Per-wavelength scale of the pyramid mask, shape (Nwavelength,), for the
+        prism set by BuildPrismMask.
+
+        Scaling a wavelength's mask by k moves its pupil images from
+        mainSlope / (2 pi) * Npix to k times that distance from the frame centre
+        along each axis. The displacement is linear in wavelength and spans
+        Nres * prismPupilProportion / sampling pixels across the band, from -1/2
+        of that at the shortest wavelength to +1/2 at the longest, centred on
+        lambda_c. For an evenly spaced band this matches the former
+        linspace-over-samples version. A single wavelength has nothing to
+        disperse, so its factor is exactly 1.
+        """
+        wl = self.wavelength
+        if wl.numel() < 2:
+            return torch.ones_like(wl)
+        displacement_size_in_pix = self.Nres * self.prismPupilProportion / self.sampling
+        lambda_c = (wl.min() + wl.max()) / 2
+        displacement = (wl - lambda_c) / (wl.max() - wl.min()) * displacement_size_in_pix  # (Nwavelength,)
 
         standard_pupil_displacement_in_pix = self.mainSlope / (2 * torch.pi) * self.Npix
-        samples_pupil_positions_array = displacement_array + standard_pupil_displacement_in_pix
-
-        displacement_factor = samples_pupil_positions_array / self.mainSlope / self.Npix * (2 * torch.pi)
-
-        mask = torch.clone(self.phaseMask).repeat((Nsamples,1,1))
-
-        mask *= displacement_factor
-
-        self.SetMask(phaseMask=mask)
+        return (standard_pupil_displacement_in_pix + displacement) / standard_pupil_displacement_in_pix
 
     def PyramidMask(self, x_offset=0, y_offset=0, sampling=None):
         """Pyramid phase mask for tip offsets (x_offset, y_offset), in focal-plane pixels.
