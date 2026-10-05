@@ -1,6 +1,6 @@
 # Advanced tutorials
 
-Research-style notebooks that go beyond the `basics/` series: ablation studies, alternative reconstructor designs, multi-sensor/learned-optics systems, and PSF-domain techniques. None of them needs bench data — each builds its own fictional, nominal-geometry demo instrument from a params file sitting next to the notebook. Most have a design write-up in `Ideas/`.
+Research-style notebooks that go beyond the `basics/` series: ablation studies, alternative reconstructor designs, multi-sensor/learned-optics systems, and PSF-domain techniques. None of them needs bench data — each builds its own fictional, nominal-geometry demo instrument from a params file sitting next to the notebook. The one exception is `Reconstructors/DiagnosingAReconstructor.ipynb`: it diagnoses the network trained in `basics/05`, so it reuses that notebook's params file. Most have a design write-up in `Ideas/`.
 
 Run each notebook from its own folder (its params file is loaded by relative path). Checkpoints go to `Data/<NotebookName>/` via `AI4AO.paths.DATA_DIR`, independent of where the notebook lives.
 
@@ -28,6 +28,7 @@ One fixed instrument (`CNNComparison_params.py`, a modulated Pyramid WFS + 17-ac
 | `TemporalPredictiveReconstructor.ipynb` | Uses the last N frames to predict the correction ahead of loop latency |
 | `UnsupervisedFineTuning.ipynb` | Fine-tunes a pretrained reconstructor from WFS frames alone (physics loss, no ground-truth OPD) |
 | `FrameDenoiser.ipynb` | Denoises raw WFS frames (with optional frame history) before a linear reconstructor |
+| `DiagnosingAReconstructor.ipynb` | Looks inside a trained reconstructor CNN with `AI4AO.CNNDiagnostics`: feature maps, gradient flow, saliency, per-mode Jacobians, training-time monitoring, and four diagnostics-driven fixes. Needs `basics/05_TrainingAReconstructor.ipynb` run first, and uses its params file (`../../basics/wfs_params_exp.py`) instead of one of its own, so the weights match. |
 
 ## `SystemDesign/` — multi-sensor and learned-optics systems
 
