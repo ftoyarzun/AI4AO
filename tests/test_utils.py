@@ -3,15 +3,10 @@ dependency -- runs entirely on CPU with the Agg backend set in conftest.py."""
 import matplotlib.pyplot as plt
 import pytest
 import torch
-import torch.nn as nn
 
 from AI4AO.Utils import (
     imshow,
     imshow_multiple,
-    get_activations,
-    get_conv_kernel_gradients,
-    get_conv_kernels,
-    print_graph,
     MakePupil,
 )
 
@@ -172,65 +167,6 @@ def test_imshow_multiple_update_mode_applies_per_item_overrides():
     imshow_multiple(updated_tensors, fig=fig, axes=axes)
 
     assert axes[1][0].images[0].get_clim() == (-3.0, 3.0)
-
-
-class _ToyConvNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv0 = nn.Conv2d(1, 2, 3, padding=1)
-        self.conv1 = nn.Conv2d(2, 2, 3, padding=1)
-        self.fc = nn.Linear(2 * 4 * 4, 3)
-
-    def forward(self, x):
-        x = self.conv0(x)
-        x = self.conv1(x)
-        return self.fc(x.flatten(start_dim=1))
-
-
-def test_get_activations_returns_one_entry_per_conv():
-    model = _ToyConvNet()
-    x = torch.randn(1, 1, 4, 4)
-
-    activations = get_activations(model, x)
-
-    assert set(activations.keys()) == {"conv0", "conv1"}
-    assert activations["conv0"].shape == (1, 2, 4, 4)
-    assert activations["conv1"].shape == (1, 2, 4, 4)
-
-
-def test_get_conv_kernel_gradients_requires_backward():
-    model = _ToyConvNet()
-
-    with pytest.raises(RuntimeError):
-        get_conv_kernel_gradients(model, 0)
-
-    x = torch.randn(1, 1, 4, 4)
-    model(x).sum().backward()
-
-    grad = get_conv_kernel_gradients(model, 0)
-    assert grad.shape == model.conv0.weight.shape
-
-    with pytest.raises(ValueError):
-        get_conv_kernel_gradients(model, 10)
-
-
-def test_get_conv_kernels_shape_and_out_of_range():
-    model = _ToyConvNet()
-    kernel = get_conv_kernels(model, 1)
-    assert kernel.shape == model.conv1.weight.shape
-
-    with pytest.raises(ValueError):
-        get_conv_kernels(model, 10)
-
-
-def test_print_graph_handles_diamond_and_terminates(capsys):
-    x = torch.tensor(2.0, requires_grad=True)
-    shared = x * 2
-    y = shared + shared  # diamond: shared appears twice in the autograd graph
-
-    print_graph(y.grad_fn)
-    out = capsys.readouterr().out
-    assert "AddBackward" in out
 
 
 def test_make_pupil_default_shape_dtype_and_circularity(device):

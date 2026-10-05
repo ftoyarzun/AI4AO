@@ -1,6 +1,5 @@
 
 import torch # type: ignore[import]
-import torch.nn as nn # type: ignore[import]
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -907,90 +906,6 @@ def imshow_multiple(
     #plt.tight_layout()
 
     return fig, axes
-
-def get_activations(model, x):
-    """
-    Returns a dictionary containing the output of every Conv2d layer.
-    """
-    activations = {}
-    hooks = []
-
-    def hook_fn(name):
-        def hook(module, input, output):
-            activations[name] = output.detach().cpu()
-        return hook
-
-    # Register a hook on every Conv2d layer
-    conv_idx = 0
-    for module in model.modules():
-        if isinstance(module, nn.Conv2d):
-            hooks.append(
-                module.register_forward_hook(hook_fn(f"conv{conv_idx}"))
-            )
-            conv_idx += 1
-
-    # Forward pass
-    model.eval()
-    with torch.no_grad():
-        _ = model(x)
-
-    # Remove hooks
-    for hook in hooks:
-        hook.remove()
-
-    return activations
-
-def get_conv_kernel_gradients(model, conv_idx):
-    """
-    Returns the gradient of the weights of the conv_idx-th Conv2d layer.
-
-    Shape:
-        [out_channels, in_channels/groups, kernel_h, kernel_w]
-    """
-    conv_layers = [m for m in model.modules() if (isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear))]
-
-    if conv_idx >= len(conv_layers):
-        raise ValueError(f"Model has only {len(conv_layers)} Conv2d layers.")
-
-    layer = conv_layers[conv_idx]
-
-    if layer.weight.grad is None:
-        raise RuntimeError("No gradients available. Did you call loss.backward()?")
-
-    return layer.weight.grad.detach().cpu()
-
-
-def get_conv_kernels(model, conv_idx):
-    """
-    Returns the weight tensor of the conv_idx-th Conv2d layer.
-
-    Shape:
-        [out_channels, in_channels, kernel_h, kernel_w]
-    """
-    conv_layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
-
-    if conv_idx >= len(conv_layers):
-        raise ValueError(f"Model has only {len(conv_layers)} Conv2d layers.")
-
-    return conv_layers[conv_idx].weight.detach().cpu()
-
-
-def print_graph(fn, indent=0, visited=None):
-    if visited is None:
-        visited = set()
-
-    if fn is None or fn in visited:
-        return
-
-    visited.add(fn)
-
-    print(" " * indent + type(fn).__name__)
-
-    for next_fn, _ in fn.next_functions:
-        print_graph(next_fn, indent + 2, visited)
-
- # print_graph(total_loss.grad_fn)
-
 
 
 if __name__ == "__main__":

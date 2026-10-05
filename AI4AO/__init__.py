@@ -9,3 +9,4 @@ from .PyramidWFS import PyramidWFS
 from .Utils import imshow, imshow_multiple
 from .Trainer import Trainer
 from .TwinCalibrator import TwinCalibrator
+from .CNNDiagnostics import CNNDiagnostics
