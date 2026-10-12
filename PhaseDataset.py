@@ -239,7 +239,8 @@ class PhaseDataset(Dataset):
         
 
         phaseMap = phaseMap - torch.mean(phaseMap[:, self.pupil.bool()], dim=-1, keepdim=True).unsqueeze(-1)
-        phaseMap = self.pupil * phaseMap  # Apply pupil mask
+        # Amplitude transmission attenuates the field, not the phase in radians.
+        phaseMap = (self.pupil > 0) * phaseMap
 
         # Compute Zernike decomposition
         Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
