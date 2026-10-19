@@ -7,6 +7,7 @@ backwards, and a forward jump steps through every skipped frame.
 """
 import math
 
+import numpy as np
 import pytest
 import torch
 
@@ -101,6 +102,32 @@ def test_seeded_construction_is_reproducible(tiny_wfs_params, tiny_atmos_params,
         samples.append([ds[t]["opd"] for t in range(3)])
     for a, b in zip(*samples):
         assert torch.equal(a, b)
+
+
+def test_construction_draws_no_random_numbers(tiny_wfs_params, tiny_atmos_params, tiny_loop_params,
+                                              tiny_dm_params, device):
+    torch_state, np_state = torch.get_rng_state(), np.random.get_state()
+    # a range with several values: NumPy's randint draws nothing when it has only one
+    InfinitePhaseScreen(tiny_wfs_params(), dict(tiny_atmos_params, Layers=[1, 6]), tiny_loop_params,
+                        tiny_dm_params, device)
+    assert torch.equal(torch.get_rng_state(), torch_state)
+    assert all(np.array_equal(a, b) for a, b in zip(np.random.get_state(), np_state))
+
+
+def test_torch_seed_alone_reproduces_a_sequence(tiny_wfs_params, tiny_atmos_params, tiny_loop_params,
+                                                tiny_dm_params, device):
+    """Seeding torch right before dataset[0] fixes the whole sequence, including the number
+    of layers, whatever was drawn since construction."""
+    atmos_params = dict(tiny_atmos_params, Layers=[1, 6])
+    runs = []
+    for _ in range(2):
+        ds = InfinitePhaseScreen(tiny_wfs_params(), atmos_params, tiny_loop_params, tiny_dm_params, device)
+        torch.rand(10)  # unrelated draws between construction and seeding
+        torch.manual_seed(7)
+        runs.append([ds[t] for t in range(3)])
+    for a, b in zip(*runs):
+        assert a["fractional_r0"].shape == b["fractional_r0"].shape
+        assert torch.equal(a["opd"], b["opd"])
 
 
 def test_draws_same_conditions_as_phase_dataset(tiny_wfs_params, tiny_atmos_params, tiny_loop_params,

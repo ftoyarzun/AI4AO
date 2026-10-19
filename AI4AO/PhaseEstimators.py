@@ -5,8 +5,8 @@ Created on Thu Apr 10 09:41:35 2025
 @author: foyarzun
 """
 
-from AI4AO.TorchPropagator import WFS
-from AI4AO.PhaseDataset import Zernike
+from .TorchPropagator import WFS
+from .PhaseDataset import Zernike
 
 import numpy as np
 import torch.nn as nn # type: ignore[import]
@@ -126,57 +126,63 @@ class Papyrus1stStage(nn.Module):
         return x
 
 
-class Rama(nn.Module):
-    def __init__(self, wfsParams, atmosParams, device):
+class RamaBaseCNN(nn.Module):
+    def __init__(self, DMParams):
         super().__init__()
 
-        Nmodes = wfsParams["Nmodes"]
+        Nmodes = DMParams["Nmodes"]
+
+        self.stem = nn.Sequential(
+            # Process each pupil independently
+            nn.Conv2d(4, 32, kernel_size=11, padding=5, groups=4),
+            nn.GELU(),
+
+            nn.Conv2d(32, 64, kernel_size=7, padding=3, groups=4),
+            nn.GELU(),
+
+            nn.MaxPool2d(2),      # 42 -> 21
+        )
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(4, 8, kernel_size=7, padding=3),
-            nn.LeakyReLU(),
-            nn.Conv2d(8, 16, kernel_size=7, padding=3),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(16, 32, kernel_size=5, padding=2),
-            nn.LeakyReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.LeakyReLU(),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.LeakyReLU(),
-            nn.AdaptiveAvgPool2d((4, 4)),
+            nn.Conv2d(64, 64, 5, padding=2),
+            nn.GELU(),
+
+            nn.Conv2d(64, 64, 5, padding=2),
+            nn.GELU(),
+
+            nn.MaxPool2d(2),      # 21 -> 10
+
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.GELU(),
+
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.GELU(),
+
+            nn.MaxPool2d(2),      # 10 -> 5
+
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.GELU(),
+
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.GELU(),
+
+            nn.MaxPool2d(2),      # 10 -> 5
+
+            nn.Conv2d(256, 512, 2, padding=1),
+            nn.GELU(),
+
+            nn.AdaptiveAvgPool2d(1)
+        )
+
+        self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Dropout(0.1),
+            nn.Linear(512, Nmodes)
         )
-
-        self.outputlayer = nn.Sequential(
-            nn.Linear(128*4*4, Nmodes),
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
 
     def forward(self, x):
+        x = self.stem(x)
         x = self.encoder(x)
-        x = self.outputlayer(x)
-        return x
+        return self.head(x)
 
 
 class Papyrus2ndStage(nn.Module):

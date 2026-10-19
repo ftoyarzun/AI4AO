@@ -1,9 +1,51 @@
 
+import collections
 import torch # type: ignore[import]
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import math
+
+
+def seed_everything(seed):
+    """Seed torch's and NumPy's global RNGs. The simulation draws only from torch's
+    (PhaseDataset, InfinitePhaseScreen, the WFS noise, FramePreprocess); NumPy is seeded
+    too so that user code drawing from it is reproducible as well."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+
+class DelayLine:
+    """FIFO of past reconstructor outputs for a loop delay of `delay` frames.
+
+    read() returns the output pushed `delay` pushes ago: delay=0 is the newest one; a
+    fractional delay interpolates linearly between the two neighbouring outputs. Slots
+    not filled yet read as zeros (the loop starts with no correction).
+
+    Convention (as `LoopParams["delayFrames"]`): the output measured on frame i enters
+    the integrator at frame i + delay, so the DM shape it produces corrects frame
+    i + delay + 1.
+    """
+
+    def __init__(self, delay):
+        if delay < 0:
+            raise ValueError(f"delay must be >= 0, got {delay}")
+        self.k = math.floor(delay)
+        self.frac = delay - self.k
+        self.buffer = collections.deque(maxlen=self.k + (2 if self.frac > 0 else 1))
+
+    def push(self, z):
+        self.buffer.appendleft(z)  # newest first
+
+    def _at(self, j):
+        return self.buffer[j] if j < len(self.buffer) else torch.zeros_like(self.buffer[0])
+
+    def read(self):
+        if not self.buffer:
+            raise RuntimeError("DelayLine.read() before any push()")
+        if self.frac == 0:
+            return self._at(self.k)
+        return (1 - self.frac) * self._at(self.k) + self.frac * self._at(self.k + 1)
 
 
 def fused_optimizer_supported(device):

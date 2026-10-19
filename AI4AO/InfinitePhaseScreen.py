@@ -40,7 +40,6 @@ Differences from PhaseDataset's contract:
 """
 import math
 
-import numpy as np
 import torch  # type: ignore[import]
 from torch.utils.data import Dataset  # type: ignore[import]
 
@@ -210,7 +209,9 @@ class InfinitePhaseScreen(Dataset):
         self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device)
-        self.nLayers = np.random.randint(*self.nLayersRange)
+        # Placeholders only: DrawRandomParameters (at index 0) draws the real conditions, from
+        # torch's global RNG. Construction draws no random numbers, as in PhaseDataset.
+        self.nLayers = self.nLayersRange[0]
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)

@@ -1,6 +1,7 @@
 """Tests for AI4AO.Utils. Generic PyTorch/matplotlib helpers with no AO-domain
 dependency -- runs entirely on CPU with the Agg backend set in conftest.py."""
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 import torch
 
@@ -8,6 +9,8 @@ from AI4AO.Utils import (
     imshow,
     imshow_multiple,
     MakePupil,
+    DelayLine,
+    seed_everything,
 )
 
 
@@ -207,3 +210,50 @@ def test_make_pupil_upscale_soft_edge_matches_hard_edge_transmission(device):
     # Boundary anti-aliasing redistributes mass across the pupil's ~2*pi*Rpx edge
     # pixels, so hard- vs. soft-edge totals only need to be in the same ballpark.
     assert torch.allclose(soft.sum(), hard.sum().float(), atol=3 * nPx)
+
+
+# ---------------------------------------------------------------------------
+# seed_everything / DelayLine
+# ---------------------------------------------------------------------------
+
+def test_seed_everything_seeds_torch_and_numpy():
+    seed_everything(7)
+    a = (torch.rand(3), np.random.rand(3))
+    seed_everything(7)
+    b = (torch.rand(3), np.random.rand(3))
+    assert torch.equal(a[0], b[0])
+    assert np.array_equal(a[1], b[1])
+
+
+def _pushes(line, n):
+    """Push outputs 1, 2, ..., n (as 1-element tensors); return what read() gives after each."""
+    out = []
+    for v in range(1, n + 1):
+        line.push(torch.tensor([float(v)]))
+        out.append(float(line.read()))
+    return out
+
+
+def test_delay_line_zero_returns_newest():
+    assert _pushes(DelayLine(0), 4) == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_delay_line_integer_delay_reads_zeros_until_filled():
+    assert _pushes(DelayLine(2), 5) == [0.0, 0.0, 1.0, 2.0, 3.0]
+
+
+def test_delay_line_fractional_delay_interpolates():
+    d1, d2 = _pushes(DelayLine(1), 6), _pushes(DelayLine(2), 6)
+    assert _pushes(DelayLine(1.5), 6) == pytest.approx([(a + b) / 2 for a, b in zip(d1, d2)])
+    d0 = _pushes(DelayLine(0), 6)
+    assert _pushes(DelayLine(0.25), 6) == pytest.approx([0.75 * a + 0.25 * b for a, b in zip(d0, d1)])
+
+
+def test_delay_line_negative_delay_raises():
+    with pytest.raises(ValueError):
+        DelayLine(-0.5)
+
+
+def test_delay_line_read_before_push_raises():
+    with pytest.raises(RuntimeError):
+        DelayLine(1).read()

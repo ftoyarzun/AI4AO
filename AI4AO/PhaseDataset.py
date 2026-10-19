@@ -258,7 +258,10 @@ class PhaseDataset(Dataset):
         self.levelOfCorrection = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.Nphotons = torch.empty(self.Nphases, 1, 1, device=self.device)
         self.RON = torch.empty(self.Nphases, 1, 1, device=self.device)
-        self.nLayers = np.random.randint(*self.nLayersRange)
+        # Placeholders only: DrawRandomParameters (at index 0) draws the real conditions, from
+        # torch's global RNG. Construction draws no random numbers, so seeding torch before
+        # dataset[0] is enough to reproduce a sequence, wherever the dataset was built.
+        self.nLayers = self.nLayersRange[0]
         self.fractionalr0 = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_x = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)
         self.windSpeedVector_y = torch.empty(self.nLayers, self.Nphases, 1, 1, device=self.device)

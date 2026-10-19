@@ -157,6 +157,36 @@ def test_seeded_construction_is_reproducible(
     assert torch.allclose(sample1["r0"], sample2["r0"])
 
 
+def test_construction_draws_no_random_numbers(
+    tiny_wfs_params, tiny_atmos_params, tiny_loop_params, tiny_dm_params, device
+):
+    torch_state, np_state = torch.get_rng_state(), np.random.get_state()
+    # a range with several values: NumPy's randint draws nothing when it has only one
+    PhaseDataset(tiny_wfs_params(), dict(tiny_atmos_params, Layers=[1, 6]), tiny_loop_params,
+                 tiny_dm_params, device)
+    assert torch.equal(torch.get_rng_state(), torch_state)
+    assert all(np.array_equal(a, b) for a, b in zip(np.random.get_state(), np_state))
+
+
+def test_torch_seed_alone_reproduces_a_sequence(
+    tiny_wfs_params, tiny_atmos_params, tiny_loop_params, tiny_dm_params, device
+):
+    """Seeding torch right before dataset[0] fixes everything, including the number of
+    layers, whatever the NumPy state and whatever was drawn since construction."""
+    atmos_params = dict(tiny_atmos_params, Layers=[1, 6])
+    runs = []
+    for np_seed in (1, 2):
+        np.random.seed(np_seed)
+        ds = PhaseDataset(tiny_wfs_params(), atmos_params, tiny_loop_params, tiny_dm_params, device)
+        torch.rand(10)  # unrelated draws between construction and seeding
+        torch.manual_seed(7)
+        runs.append([ds[i] for i in range(3)])
+    for a, b in zip(*runs):
+        assert a["fractional_r0"].shape == b["fractional_r0"].shape
+        assert torch.equal(a["opd"], b["opd"])
+        assert torch.equal(a["r0"], b["r0"])
+
+
 def test_build_atmosphere_psd_scales_with_reference_wavelength(phase_dataset):
     """The Kolmogorov phase PSD (rad^2, quoted at referenceWavelength) is
     rescaled into an OPD PSD (m^2) by (referenceWavelength / 2*pi)**2, so
