@@ -103,10 +103,10 @@ def test_load_checkpoint_missing_path_returns_none(deformable_mirror, device, tm
 # ---------------------------------------------------------------------------
 
 class _TinyReconstructor(nn.Module):
-    def __init__(self, in_features, out_features):
+    def __init__(self, in_features, out_features, hidden=16):
         super().__init__()
-        self.stem = nn.Linear(in_features, 16)
-        self.head = nn.Linear(16, out_features)
+        self.stem = nn.Linear(in_features, hidden)
+        self.head = nn.Linear(hidden, out_features)
 
     def forward(self, x):
         return self.head(torch.tanh(self.stem(x.flatten(start_dim=1))))
@@ -134,9 +134,9 @@ def noisy_twin(tiny_wfs_params, tiny_atmos_params, tiny_loop_params, tiny_dm_par
     M2C = torch.eye(total_act, device=device)
     n_in = wfs.pupil_centers.shape[0] * fp.Nout * fp.Nout
 
-    def make_model(seed=0):
+    def make_model(seed=0, hidden=16):
         torch.manual_seed(seed)
-        return _TinyReconstructor(n_in, total_act).to(device)
+        return _TinyReconstructor(n_in, total_act, hidden).to(device)
 
     loss = LogResidualVarianceLoss(dataset.pupil, wfs.wavelength)
     return SimpleNamespace(wfs=wfs, dm=dm, fp=fp, dataset=dataset, M2C=M2C, loss=loss,
@@ -394,12 +394,15 @@ def test_train_many_validation_errors(noisy_twin, tmp_path):
         ([TrainingRun("a", m, recipes=[Recipe()])], "1 recipes for 2 stages"),
         ([TrainingRun("a", m, recipes=Recipe(group_lr_factors={"nope": 2.0}))], "'nope'"),
         ([TrainingRun("a", m), TrainingRun("a", copy.deepcopy(m))], "duplicate run names"),
-        ([TrainingRun("a", m, checkpoint=tmp_path / "x.pth"),
-          TrainingRun("b", copy.deepcopy(m), checkpoint=str(tmp_path / "x.pth"))], "share a checkpoint"),
+        ([TrainingRun("a", m, output=tmp_path / "x.pth"),
+          TrainingRun("b", copy.deepcopy(m), output=str(tmp_path / "x.pth"))], "share an output path"),
     ]
     for runs, message in cases:
         with pytest.raises(ValueError, match=message):
             trainer.train_many(runs, stages)
+    # an init that doesn't exist raises before anything is loaded or trained
+    with pytest.raises(FileNotFoundError, match="missing.pth"):
+        trainer.train_many([TrainingRun("a", m, init=tmp_path / "missing.pth")], stages)
     # an unknown group in the default recipe is caught too
     with pytest.raises(ValueError, match="'nope'"):
         trainer.train_many([TrainingRun("a", m)], stages,
@@ -596,54 +599,44 @@ def test_diagnostics_recorded_every_log_every_steps_across_stages(noisy_twin):
     assert all(np.isfinite(v).all() for v in diag.history["update_ratio"].values())
 
 
+def _weights(model):
+    return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+def _same_weights(model, weights):
+    return all(torch.equal(v, weights[k]) for k, v in model.state_dict().items())
+
+
+_STAGES = [Stage(3, 1), Stage(4, 2)]
+_RECIPE = Recipe(lr=1e-3, schedule="constant")
+
+
+def _run(twin, name, model, **kwargs):
+    return TrainingRun(name, model, recipes=kwargs.pop("recipes", _RECIPE), loss=twin.loss, **kwargs)
+
+
 @pytest.mark.slow
-def test_checkpoint_final_only_resume_and_load_reconstructor(noisy_twin, tmp_path):
+def test_output_written_once_after_last_stage(noisy_twin, tmp_path):
     path = tmp_path / "sub" / "a.pth"
-    stages = [Stage(3, 1), Stage(4, 2)]
-    recipe = Recipe(lr=1e-3, schedule="constant")
     seen = []
 
-    def loss(*args):  # records whether the checkpoint already exists while training
+    def loss(*args):  # records whether the output already exists while training
         seen.append(path.exists())
         return noisy_twin.loss(*args)
 
-    trainer = _trainer(noisy_twin, loss=None)
     model = noisy_twin.make_model()
-    trainer.train_many([TrainingRun("a", model, recipes=recipe, loss=loss, checkpoint=path)],
-                       stages, seed=0)
+    _trainer(noisy_twin, loss=None).train_many(
+        [TrainingRun("a", model, recipes=_RECIPE, loss=loss, output=path)], _STAGES, seed=0)
     assert seen and not any(seen)
-    assert sorted(p.name for p in path.parent.iterdir()) == ["a.pth"]   # no temporary file left
-    weights = {k: v.clone() for k, v in model.state_dict().items()}
-
-    # resume=True: loaded, not trained
-    fresh = noisy_twin.make_model(seed=1)
-    seen.clear()
-    report = trainer.train_many([TrainingRun("a", fresh, recipes=recipe, loss=loss, checkpoint=path,
-                                             track_ideal=True)], stages, resume=True)
-    assert not seen
-    h = report.runs["a"]
-    assert h.resumed and h.optimizer is None
-    assert [len(t) for t in h.loss] == [3, 2]
-    assert all(torch.isnan(t).all() for t in h.loss + h.loss_ideal)
-    for k, v in fresh.state_dict().items():
-        assert torch.equal(v, weights[k])
-
-    # without resume, an existing checkpoint raises
-    with pytest.raises(FileExistsError):
-        trainer.train_many([TrainingRun("a", fresh, recipes=recipe, loss=loss, checkpoint=path)], stages)
-    # a checkpoint that doesn't fit the model raises, also with resume=True
-    with pytest.raises(RuntimeError):
-        trainer.train_many([TrainingRun("a", nn.Linear(3, 3), recipes=recipe, loss=loss,
-                                        checkpoint=path)], stages, resume=True)
+    assert sorted(p.name for p in path.parent.iterdir()) == ["a.pth"]   # no .tmp, no .prev
 
     # load_reconstructor round-trips the weights and returns what was stored
     other = noisy_twin.make_model(seed=2)
     checkpoint = load_reconstructor(other, path)
-    for k, v in other.state_dict().items():
-        assert torch.equal(v, weights[k])
-    assert checkpoint["recipes"] == [asdict(recipe)] * 2
-    assert checkpoint["stages"] == [asdict(s) for s in stages]
-    assert (checkpoint["delay"], checkpoint["seed"]) == (2, 0)
+    assert _same_weights(other, _weights(model))
+    assert checkpoint["recipes"] == [asdict(_RECIPE)] * 2
+    assert checkpoint["stages"] == [asdict(s) for s in _STAGES]
+    assert (checkpoint["delay"], checkpoint["seed"], checkpoint["init"]) == (2, 0, None)
     assert [len(t) for t in checkpoint["loss_history"]] == [3, 2]
     assert checkpoint["optimizer_state_dict"] is not None
     with pytest.raises(FileNotFoundError):
@@ -651,8 +644,98 @@ def test_checkpoint_final_only_resume_and_load_reconstructor(noisy_twin, tmp_pat
     # Trainer.load_checkpoint reads train_many's files too
     t = _trainer(noisy_twin, noisy_twin.make_model(seed=3), None)
     t.load_checkpoint(path)
-    for k, v in t.phaseReconstructor.state_dict().items():
-        assert torch.equal(v, weights[k])
+    assert _same_weights(t.phaseReconstructor, _weights(model))
+
+
+@pytest.mark.slow
+def test_skip_trained_loads_existing_output_and_does_not_train(noisy_twin, tmp_path):
+    path = tmp_path / "a.pth"
+    trainer = _trainer(noisy_twin)
+    first = noisy_twin.make_model()
+    trainer.train_many([_run(noisy_twin, "a", first, output=path)], _STAGES, seed=0)
+    mtime = path.stat().st_mtime_ns
+
+    fresh = noisy_twin.make_model(seed=1)
+    runs = [_run(noisy_twin, "a", fresh, output=path, track_ideal=True),
+            _run(noisy_twin, "b", noisy_twin.make_model(seed=2), output=tmp_path / "b.pth")]
+    report = trainer.train_many(runs, _STAGES, skip_trained=True)
+
+    a, b = report.runs["a"], report.runs["b"]
+    assert a.skipped and a.optimizer is None
+    assert [len(t) for t in a.loss] == [3, 2]
+    assert all(torch.isnan(t).all() for t in a.loss + a.loss_ideal)
+    assert _same_weights(fresh, _weights(first))
+    assert path.stat().st_mtime_ns == mtime and not (tmp_path / "a.prev.pth").exists()
+    # the run without an output yet trains
+    assert not b.skipped and torch.isfinite(b.loss[0]).all() and (tmp_path / "b.pth").exists()
+
+
+@pytest.mark.slow
+def test_retraining_overwrites_and_keeps_the_previous_version(noisy_twin, tmp_path):
+    path = tmp_path / "a.pth"
+    trainer = _trainer(noisy_twin)
+    first = noisy_twin.make_model()
+    trainer.train_many([_run(noisy_twin, "a", first, output=path)], _STAGES, seed=0)
+    first_weights = _weights(first)
+
+    second = noisy_twin.make_model(seed=1)
+    report = trainer.train_many([_run(noisy_twin, "a", second, output=path)], _STAGES, seed=1)
+    assert not report.runs["a"].skipped
+    previous = tmp_path / "a.prev.pth"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.prev.pth", "a.pth"]
+    load_reconstructor(probe := noisy_twin.make_model(seed=5), previous)
+    assert _same_weights(probe, first_weights)
+    load_reconstructor(probe, path)
+    assert _same_weights(probe, _weights(second))
+
+    # a model that doesn't fit the existing output trains from scratch too; the old file is kept
+    small = noisy_twin.make_model(hidden=8)
+    trainer.train_many([_run(noisy_twin, "a", small, output=path)], _STAGES, seed=2)
+    load_reconstructor(probe, previous)              # .prev now holds the second model
+    assert _same_weights(probe, _weights(second))
+    load_reconstructor(noisy_twin.make_model(seed=6, hidden=8), path)
+
+
+@pytest.mark.slow
+def test_skip_trained_with_a_mismatched_output_raises(noisy_twin, tmp_path):
+    path = tmp_path / "a.pth"
+    trainer = _trainer(noisy_twin)
+    trainer.train_many([_run(noisy_twin, "a", noisy_twin.make_model(), output=path)], _STAGES, seed=0)
+    with pytest.raises(RuntimeError, match="skip_trained=False"):
+        trainer.train_many([_run(noisy_twin, "a", noisy_twin.make_model(hidden=8), output=path)],
+                           _STAGES, skip_trained=True)
+
+
+@pytest.mark.slow
+def test_init_loads_weights_continues_in_place_and_is_never_skipped(noisy_twin, tmp_path):
+    path = tmp_path / "a.pth"
+    trainer = _trainer(noisy_twin)
+    first = noisy_twin.make_model()
+    trainer.train_many([_run(noisy_twin, "a", first, output=path)], _STAGES, seed=0)
+    first_weights = _weights(first)
+
+    # lr = 0 leaves the weights where init put them, so the final file equals the init file
+    frozen = Recipe(lr=0.0, schedule="constant")
+    other = noisy_twin.make_model(seed=1)
+    report = trainer.train_many([_run(noisy_twin, "a", other, init=path, output=path, recipes=frozen)],
+                                _STAGES, skip_trained=True)
+    assert not report.runs["a"].skipped                 # init beats skip_trained
+    assert torch.isfinite(report.runs["a"].loss[0]).all()
+    assert _same_weights(other, first_weights)
+    assert load_reconstructor(noisy_twin.make_model(seed=2), path)["init"] == str(path)
+    load_reconstructor(probe := noisy_twin.make_model(seed=3), tmp_path / "a.prev.pth")
+    assert _same_weights(probe, first_weights)
+
+    # fine-tuning into a new file leaves the base untouched
+    tuned = noisy_twin.make_model(seed=4)
+    trainer.train_many([_run(noisy_twin, "ft", tuned, init=path, output=tmp_path / "ft.pth")], _STAGES)
+    assert not _same_weights(tuned, first_weights)
+    load_reconstructor(probe, path)
+    assert _same_weights(probe, first_weights)
+
+    # init weights that don't fit the model raise
+    with pytest.raises(RuntimeError, match="don't fit"):
+        trainer.train_many([_run(noisy_twin, "a", noisy_twin.make_model(hidden=8), init=path)], _STAGES)
 
 
 @pytest.mark.slow
@@ -662,10 +745,10 @@ def test_plot_losses_one_panel_per_stage(noisy_twin, tmp_path):
     path = tmp_path / "done.pth"
     trainer = _trainer(noisy_twin)
     stages = [Stage(4, 1), Stage(4, 2)]
-    trainer.train_many([TrainingRun("done", noisy_twin.make_model(), checkpoint=path)], stages)
-    runs = [TrainingRun("done", noisy_twin.make_model(), checkpoint=path),
+    trainer.train_many([TrainingRun("done", noisy_twin.make_model(), output=path)], stages)
+    runs = [TrainingRun("done", noisy_twin.make_model(), output=path),
             TrainingRun("new", noisy_twin.make_model(), track_ideal=True)]
-    report = trainer.train_many(runs, stages, resume=True)
+    report = trainer.train_many(runs, stages, skip_trained=True)
 
     fig, axes = report.plot_losses(smoothing_window=3)
     assert len(axes) == 2

@@ -109,6 +109,12 @@ def make_scheduler(optimizer, recipe, total_steps):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
+def previous_version_path(path):
+    """Where train_many keeps the file it replaces at `path`: RamaCNN.pth -> RamaCNN.prev.pth."""
+    path = Path(path)
+    return path.with_name(f"{path.stem}.prev{path.suffix}")
+
+
 def load_reconstructor(model, path, map_location=None):
     """Load a checkpoint's reconstructor weights into `model`, with no Trainer needed.
     Strict: a checkpoint that doesn't fit the model raises, and a missing file raises
@@ -138,7 +144,12 @@ class TrainingRun:
         # scheduler). Cannot be combined with recipes. train() uses it to stay bit-identical.
     diagnostics: CNNDiagnostics | None = None
     log_every: int = 250                     # diagnostics period, in optimizer steps
-    checkpoint: str | Path | None = None     # final weights, written once after the last stage
+    init: str | Path | None = None
+        # None -> train from the model's current weights (from scratch for a fresh model);
+        # a path -> load these weights first (strict). init == output keeps training in place.
+    output: str | Path | None = None
+        # final weights, written once after the last stage; an existing file is first
+        # renamed to <stem>.prev<suffix> (one previous version is kept)
     track_ideal: bool = False                # also track the loss of the oracle correction
 
     def recipe_for(self, k, default):
@@ -150,18 +161,18 @@ class TrainingRun:
 @dataclass
 class RunHistory:
     """What train_many recorded for one run. Tensors stay on the trainer's device."""
-    loss: list = field(default_factory=list)          # one (steps,) tensor per stage; NaN if resumed
+    loss: list = field(default_factory=list)          # one (steps,) tensor per stage; NaN if skipped
     loss_ideal: list | None = None                    # same, for track_ideal runs
     lr: list = field(default_factory=list)            # one (steps, n_param_groups) tensor per stage
-    optimizer: torch.optim.Optimizer | None = None    # the last stage's optimizer (None if resumed)
-    resumed: bool = False                             # loaded from run.checkpoint, not trained
+    optimizer: torch.optim.Optimizer | None = None    # the last stage's optimizer (None if skipped)
+    skipped: bool = False                             # skip_trained: loaded from run.output, not trained
     seconds: float | None = None                      # this run's compute time; only with time_runs=True
 
     @classmethod
-    def resumed_from(cls, stages, track_ideal, device):
+    def skipped_run(cls, stages, track_ideal, device):
         nan = [torch.full((s.steps,), float("nan"), device=device) for s in stages]
         return cls(loss=nan, loss_ideal=[t.clone() for t in nan] if track_ideal else None,
-                   lr=[torch.full((s.steps, 0), float("nan")) for s in stages], resumed=True)
+                   lr=[torch.full((s.steps, 0), float("nan")) for s in stages], skipped=True)
 
 
 @dataclass
@@ -177,11 +188,12 @@ class TrainingReport:
                     ylim=None, fig=None, axes=None):
         """One panel per stage (their lengths differ: stage 2 has 1/10 of the steps), each
         run's training loss smoothed within the stage (never across a boundary), plus a
-        dashed black curve per run that tracked the ideal loss. Resumed runs are skipped.
+        dashed black curve per run that tracked the ideal loss. Skipped runs (loaded with
+        skip_trained, not trained) are left out.
         The window shrinks to the stage length if needed. `runs` selects run names (all by
         default); pass `fig`/`axes` (one axis per stage) to draw into existing axes.
         Returns (fig, axes)."""
-        names = [n for n in (runs if runs is not None else self.runs) if not self.runs[n].resumed]
+        names = [n for n in (runs if runs is not None else self.runs) if not self.runs[n].skipped]
         if axes is None:
             fig, axes = plt.subplots(1, len(self.stages), figsize=(5.5 * len(self.stages), 4),
                                      squeeze=False)
@@ -407,11 +419,13 @@ class Trainer:
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise ValueError(f"duplicate run names: {duplicates}")
-        paths = [Path(r.checkpoint).resolve() for r in runs if r.checkpoint is not None]
+        paths = [Path(r.output).resolve() for r in runs if r.output is not None]
         duplicates = sorted({str(p) for p in paths if paths.count(p) > 1})
         if duplicates:
-            raise ValueError(f"several runs share a checkpoint path: {duplicates}")
+            raise ValueError(f"several runs share an output path: {duplicates}")
         for r in runs:
+            if r.init is not None and not Path(r.init).exists():
+                raise FileNotFoundError(f"run {r.name!r}: init {r.init} does not exist")
             if r.loss is None and self.loss is None:
                 raise ValueError(f"run {r.name!r} has no loss, and the trainer has none either")
             if r.optimizer is not None:
@@ -429,7 +443,7 @@ class Trainer:
                                          f"submodule of the model") from None
 
     def train_many(self, runs, stages, *, default_recipe=Recipe(), delay=2, seed=None,
-                   resume=False, print_every=None, time_runs=False):
+                   skip_trained=False, print_every=None, time_runs=False):
         """Train every run on the same draws, stage by stage, one graph alive at a time.
 
         dm and wfs are put in eval mode: the twin is frozen while the networks train.
@@ -438,10 +452,17 @@ class Trainer:
         statistics, different draws). Every run gets a fresh AdamW (and scheduler) per
         stage from its recipe, except legacy runs given an `optimizer`.
 
+        What happens to each run:
+        1. Skip: with skip_trained=True, a run with no `init` whose `output` exists is
+           loaded from it and not trained. If that file doesn't fit the model, this raises
+           (delete it, or pass skip_trained=False to retrain).
+        2. Start: a run with `init` loads those weights first (strict: a missing file or
+           weights that don't fit raise). Without `init`, it trains from the model's
+           current weights. A run with `init` is never skipped.
+        3. Save: after the last stage, the final weights go to `output`. An existing file
+           there is first renamed to <stem>.prev<suffix>, so one previous version is kept.
+
         `seed` (optional) is applied once with seed_everything before the first draw.
-        Checkpoints: each run's final weights only, written to run.checkpoint after the
-        last stage. An existing checkpoint raises FileExistsError, unless resume=True: then
-        its weights are loaded (strictly: a mismatch raises) and the run is not trained.
         With `time_runs`, CUDA is synchronized around every step to time each run.
         Returns a TrainingReport.
         """
@@ -459,22 +480,28 @@ class Trainer:
 
         todo, history = [], {}
         for r in runs:
-            path = Path(r.checkpoint) if r.checkpoint is not None else None
-            if path is not None and path.exists():
-                if not resume:
-                    raise FileExistsError(f"{path} exists; pass resume=True to use it, or "
-                                          f"choose another path")
-                load_reconstructor(r.model, path, self.device)
-                history[r.name] = RunHistory.resumed_from(stages, r.track_ideal, self.device)
-            else:
-                todo.append(r)
-                history[r.name] = RunHistory(loss_ideal=[] if r.track_ideal else None,
-                                             seconds=0.0 if time_runs else None)
-                if path is not None:
-                    print(f"{r.name}: training, final weights to {path}")
-        for name, h in history.items():
-            if h.resumed:
-                print(f"{name}: loaded from its checkpoint, not trained")
+            output = Path(r.output) if r.output is not None else None
+            if skip_trained and r.init is None and output is not None and output.exists():
+                try:
+                    load_reconstructor(r.model, output, self.device)
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        f"run {r.name!r}: {output} exists but doesn't fit the model. Delete it, or "
+                        f"pass skip_trained=False to retrain (the old file is kept as .prev).") from e
+                history[r.name] = RunHistory.skipped_run(stages, r.track_ideal, self.device)
+                print(f"{r.name}: already trained, loaded from {output}")
+                continue
+            if r.init is not None:
+                try:
+                    load_reconstructor(r.model, r.init, self.device)
+                except RuntimeError as e:
+                    raise RuntimeError(f"run {r.name!r}: the weights in init {r.init} don't fit "
+                                       f"the model") from e
+            todo.append(r)
+            history[r.name] = RunHistory(loss_ideal=[] if r.track_ideal else None,
+                                         seconds=0.0 if time_runs else None)
+            print(f"{r.name}: training " + (f"from {r.init}" if r.init is not None else "from scratch")
+                  + (f", final weights to {output}" if output is not None else ""))
 
         draw_seconds = 0.0
         if todo and seed is not None:
@@ -524,7 +551,7 @@ class Trainer:
                 h.optimizer = opt[r.name]
 
         for r in todo:
-            if r.checkpoint is not None:
+            if r.output is not None:
                 self._save_final(r, history[r.name], stages, default_recipe, delay, seed)
 
         peak = torch.cuda.max_memory_allocated(self.device) / 2 ** 30 if cuda else float("nan")
@@ -532,8 +559,9 @@ class Trainer:
 
     def _save_final(self, run, history, stages, default_recipe, delay, seed):
         """train_many's checkpoint: Trainer.save_checkpoint's keys plus the timeline, the
-        recipes and the loss history. Written to a temporary file and then renamed, so an
-        interrupted save never leaves a file that resume would take as finished."""
+        recipes, the starting weights (`init`) and the loss history. Written to a temporary
+        file first, so an interrupted save never leaves a half-written file that
+        skip_trained would take as finished; an existing file becomes <stem>.prev<suffix>."""
         recipes = ("legacy optimizer" if run.optimizer is not None
                    else [asdict(run.recipe_for(k, default_recipe)) for k in range(len(stages))])
         checkpoint = {
@@ -543,15 +571,20 @@ class Trainer:
             "recipes": recipes,
             "delay": delay,
             "seed": seed,
+            "init": str(run.init) if run.init is not None else None,
             "loss_history": [t.detach().cpu() for t in history.loss],
             "loss_ideal_history": ([t.detach().cpu() for t in history.loss_ideal]
                                    if history.loss_ideal is not None else None),
             "lr_history": history.lr,
         }
-        path = Path(run.checkpoint)
+        path = Path(run.output)
         ensure_parent(path)
         tmp = path.with_name(path.name + ".tmp")
         torch.save(checkpoint, tmp)
+        if path.exists():
+            previous = previous_version_path(path)
+            os.replace(path, previous)
+            print(f"{run.name}: previous {path.name} kept as {previous.name}")
         os.replace(tmp, path)
 
     def train(self, training_steps = 1000, closed_loop_iterations = 1, *, delay=2, recipe=None,
