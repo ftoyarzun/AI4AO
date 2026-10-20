@@ -26,7 +26,6 @@ class ShackHartmann(nn.Module):
         self.D = WFSParams["D"]  # telescope diameter in meters
         self.c_obs = WFSParams["c_obs"]
         self.useNoise = WFSParams["useNoise"]
-        self.separateNoise = WFSParams["separateNoise"]
         self.beamSplitProportionForWFSDetector = WFSParams["beamSplitProportionForWFSDetector"]
         self.QE = WFSParams["QE"]
         self.FWC = WFSParams["FWC"]
@@ -589,6 +588,15 @@ class ShackHartmann(nn.Module):
     def Propagator(self, phase):
         """
         Diffractive Shack-Hartmann WFS propagation.
+
+        Always stores frame_no_noise: expected star signal only,
+        with QE, saturation, gain, and optional digitization, excluding dark
+        current, sky background, and random noise. With useNoise=True, also stores
+        and returns frame_with_noise, sampled from the source-plus-sky photon map
+        with the configured detector noise. Otherwise returns frame_no_noise.
+        Both frames use the same detector units: gained electrons, or digital
+        counts when applyDigitalization is enabled.
+
         Steps:
         1) build full FFT spot stamps per lenslet,
         2) resample to the requested detector pixel scale,
@@ -640,21 +648,21 @@ class ShackHartmann(nn.Module):
         source_photons = raw_data_norm * self.Nphotons * self.beamSplitProportionForWFSDetector
 
         self.source_photons_no_noise = source_photons
-        if self.separateNoise:
-            self.source_electrons_no_noise = self.photons_to_electrons(self.source_photons_no_noise)
-            self.frame_no_noise_no_bg = self.apply_saturation(self.source_electrons_no_noise)
-            self.frame_no_noise_no_bg = self.apply_gain(self.frame_no_noise_no_bg)
-            self.frame_no_noise_no_bg = self.digitalize(self.frame_no_noise_no_bg)
         self.background_photons_no_noise = bg_map
         self.frame_photons_no_noise = source_photons + bg_map
 
-        self.frame_electrons_no_noise = self.photons_to_electrons(self.frame_photons_no_noise)
-        self.frame_no_noise = self.frame_electrons_no_noise
+        # Star-only signal; the full noise sampler uses source + sky above.
+        # Both outputs have the same deterministic detector conversions and units.
+        self.frame_electrons_no_noise = self.photons_to_electrons(self.source_photons_no_noise)
+        self.frame_no_noise = self.apply_saturation(self.frame_electrons_no_noise)
+        self.frame_no_noise = self.apply_gain(self.frame_no_noise)
+        if self.applyDigitalization and self.bits is not None:
+            self.frame_no_noise = self.digitalize(self.frame_no_noise)
 
         if not self.useNoise:
-            if self.FWC is not None:
-                self.frame_electrons_no_noise = self.apply_saturation(self.frame_electrons_no_noise)
-                self.frame_no_noise = self.frame_electrons_no_noise
+            self.frame_photons_with_noise = None
+            self.frame_electrons_with_noise = None
+            self.frame_with_noise = None
             self.maps_intensity = self.split_raw_data(input_frame=self.frame_no_noise)
             return self.frame_no_noise
 

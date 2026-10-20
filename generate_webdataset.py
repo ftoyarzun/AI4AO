@@ -9,6 +9,14 @@ Created on Mon Mar 16 17:07 2026
 
 Each sample is written with a key so files inside shards are named
 `<key>.frame.npy` and `<key>.phase.npy`.
+With --correct-zernike, phase.npy contains the atmospheric phase minus its
+ideal fitted Zernike correction, in radians on the full circular pupil.
+Both frame.npy and signal_frame.npy are propagated from that same residual
+through the physical aperture, including obscuration and spiders.
+signal_frame.npy always contains only the expected star signal, without sky
+background or random detector noise, in the same detector units as frame.npy.
+With WFSParams['useNoise']=True, frame.npy includes star, sky background, and
+configured detector noise; otherwise it is identical to signal_frame.npy.
 
 Usage example:
   python generate_webdataset.py --out shards/data-%03d.tar --n 1000 --shard-size 256
@@ -42,6 +50,7 @@ def main():
     parser.add_argument("--params", type=str, default=None, help="optional params file (unused, kept for compatibility)")
     parser.add_argument("--include-metadata", action="store_true", help="include scalar metadata (r0, Nphotons, RON) as meta.json")
     parser.add_argument("--include-ze", action="store_true", help="include Zernike coefficients as ze.npy")
+    parser.add_argument("--correct-zernike", action="store_true", help="subtract all configured Zernike modes before propagating and saving the phase")
     args = parser.parse_args()
 
     # compute padding width based on total number of samples
@@ -57,6 +66,9 @@ def main():
     AtmosParams = params.AtmosParams.copy()
     LoopParams = params.LoopParams.copy()
 
+    if args.correct_zernike and WFSParams["ModalBasis"] != "Zernike":
+        raise ValueError("--correct-zernike requires ModalBasis='Zernike'")
+
     dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
 
     wfs = ShackHartmann(WFSParams, device)
@@ -69,7 +81,13 @@ def main():
         with tqdm(total=args.n, desc="Generating WebDataset", unit="sample") as pbar:
             for i in range(args.n):
                 # generate one sample
-                phase, _, nPhotons, RON, _ = dataset[i]
+                phase, ze, nPhotons, RON, _ = dataset[i]
+
+                if args.correct_zernike:
+                    # ze: (B, K), basis: (H*W, K); both use the full circular pupil.
+                    basis = dataset.z_FullRes.flatten(0, 1)
+                    correction_phase = (ze @ basis.T).view_as(phase)
+                    phase = phase - correction_phase
 
                 # phaseMap has shape (1, H, W) - extract first)
                 wfs.Nphotons = nPhotons
@@ -78,7 +96,7 @@ def main():
                 # Produce frame (returns tensor with leading batch dim)
                 with torch.no_grad():
                     frame = wfs.Propagator(phase).squeeze()
-                signal_frame_np = wfs.frame_no_noise_no_bg.squeeze().cpu().numpy()
+                signal_frame_np = wfs.frame_no_noise.squeeze().cpu().numpy()
                 frame_np = frame.squeeze().cpu().numpy()
                 phase_np = phase.cpu().numpy()
 

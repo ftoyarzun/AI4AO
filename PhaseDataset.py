@@ -47,8 +47,10 @@ class PhaseDataset(Dataset):
         loopFrequency (float): Adaptive optics loop frequency.
         delayFrames (int): Control loop delay in frames.
         windSpeedRange (tuple): Range of wind speed values for each layer.
-        pupil (Tensor): Circular aperture mask.
-        z_FullRes (Tensor): Precomputed full-resolution Zernike polynomials.
+        pupil (Tensor): Physical aperture amplitude, including obscuration and spiders.
+        projection_pupil (Tensor): Phase support and fitting pupil; a full circular
+            support of diameter D for the Zernike basis.
+        z_FullRes (Tensor): Precomputed full-resolution modal basis.
         invZ (Tensor): Pseudo-inverse of the Zernike matrix for decomposition.
         testDatasetPath (str): File path for cached static dataset.
         movingTestDatasetPath (str): File path for cached moving dataset.
@@ -137,11 +139,16 @@ class PhaseDataset(Dataset):
         # self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
     
         if WFSParams['ModalBasis'] == "Zernike":
-            [z, z_FullRes] = Propagator.Zernike(self.pupil, self.pupil_logical, self.Nres, self.Nzernike)
+            # Fit over the full sampled circle, including phase hidden from the WFS
+            # by the secondary and spiders. The physical amplitude pupil is separate.
+            circular_support = ap.sample(npix=self.Nres, grid_size=self.D, what='amplitude') > 0
+            circular_logical = np.where(circular_support.flatten())
+            [z, z_FullRes] = Propagator.Zernike(circular_support, circular_logical, self.Nres, self.Nzernike)
             
             self.z_FullRes = torch.from_numpy(z_FullRes).to(device=device, dtype = torch.float32)
             self.z = torch.from_numpy(z)
             self.pupil = torch.from_numpy(self.pupil).to(self.device, dtype=torch.float32)
+            self.projection_pupil = torch.from_numpy(circular_support).to(self.device)
         
         elif WFSParams['ModalBasis'] == "Papyrus_KL":
             M2C = torch.from_numpy(loadmat('M2C_KL_OOPAO_synthetic_IF')["M2C_KL"]).to(device = device, dtype = torch.float32)[:,:self.Nzernike]
@@ -189,6 +196,10 @@ class PhaseDataset(Dataset):
 
         else:
             raise ValueError(f"Unknown basis: {WFSParams['ModalBasis']}")
+
+        if WFSParams['ModalBasis'] != "Zernike":
+            self.projection_pupil = self.pupil
+        self.projection_pupil_sum = self.projection_pupil.sum()
             
         
         #self.invZ = torch.from_numpy(np.linalg.pinv(z)).to(self.device, dtype=torch.float32).transpose(0, 1)
@@ -212,6 +223,12 @@ class PhaseDataset(Dataset):
         return self.Nphases
 
     def __getitem__(self, idx):
+        """Return phase in radians and fitted modal coefficients.
+
+        With ModalBasis='Zernike', phase is retained and piston is removed over
+        the full circular pupil of diameter D, including obscured regions.
+        The WFS applies its physical amplitude pupil during propagation.
+        """
         
         device = self.fsqr.device  # Ensure tensors stay on the same device
         # Generate batch of random parameters
@@ -238,9 +255,9 @@ class PhaseDataset(Dataset):
         phaseMap = torch.fft.ifft2(sqrt_fftshift_PSD * (randMap_real + 1j * randMap_imag), dim=(-2, -1), norm="ortho").real
         
 
-        phaseMap = phaseMap - torch.mean(phaseMap[:, self.pupil.bool()], dim=-1, keepdim=True).unsqueeze(-1)
+        phaseMap = phaseMap - torch.mean(phaseMap[:, self.projection_pupil.bool()], dim=-1, keepdim=True).unsqueeze(-1)
         # Amplitude transmission attenuates the field, not the phase in radians.
-        phaseMap = (self.pupil > 0) * phaseMap
+        phaseMap = (self.projection_pupil > 0) * phaseMap
 
         # Compute Zernike decomposition
         Ze = torch.matmul(phaseMap.flatten(1,2), self.invZ)
@@ -336,7 +353,8 @@ class PhaseDataset(Dataset):
     
         Returns:
             Tuple of:
-                - phaseMap (torch.Tensor): Current phase map.
+                - phaseMap (torch.Tensor): Current phase in radians, retained on
+                  the full circular pupil when using the Zernike basis.
                 - Ze (torch.Tensor): Corresponding Zernike coefficients.
                 - Nphotons (torch.Tensor): Photon count.
                 - RON (torch.Tensor): Read-out noise.
@@ -375,9 +393,9 @@ class PhaseDataset(Dataset):
         return phaseMap, Ze, self.Nphotons, self.RON, self.r0_moving, torch.stack((self.windSpeedVector_x,self.windSpeedVector_y)), self.fractionalr0
     
     def RemovePiston(self, phaseMap):
-        mask = self.pupil.unsqueeze(0)  # shape (1, H, W)
+        mask = self.projection_pupil.unsqueeze(0)  # shape (1, H, W)
         
-        masked_mean = (phaseMap * mask).sum(dim=(-2, -1), keepdim=True) / self.pupilSum
+        masked_mean = (phaseMap * mask).sum(dim=(-2, -1), keepdim=True) / self.projection_pupil_sum
         return phaseMap - masked_mean * mask
     
     def CompressAtmosphere(self):
@@ -390,7 +408,7 @@ class PhaseDataset(Dataset):
         layeredPhase = torch.fft.fft2(self.movingWavefrontGenerator, dim=(-2, -1), norm="ortho").real
         croppedLayeredPhase = layeredPhase[:, :, :self.Nres, :self.Nres]
         phaseMap = (torch.sqrt(self.fractionalr0) * croppedLayeredPhase).sum(dim=0)
-        phaseMap = self.pupil * phaseMap  # Apply pupil mask
+        phaseMap = self.projection_pupil * phaseMap  # Retain the phase on its fitting pupil
         return phaseMap
         
     
