@@ -7,6 +7,7 @@ Build locally from the repo root with:
 Read the Docs builds the same thing from `.readthedocs.yaml`.
 """
 
+import inspect
 import shutil
 import sys
 from pathlib import Path
@@ -55,9 +56,30 @@ autodoc_default_options = {
     "undoc-members": True,
 }
 autodoc_typehints = "description"
-# Hardware-only SDKs used by BenchCalibrationUtils / DAO_Utils; not installable on the
-# docs builder.
-autodoc_mock_imports = ["pycuda", "tensorrt"]
+# autodoc imports every module to read its docstrings. Rather than install PyTorch on the
+# docs builder, torch is replaced by a placeholder ("mocked"); pycuda/tensorrt are the
+# hardware-only SDKs used by BenchCalibrationUtils / DAO_Utils.
+autodoc_mock_imports = ["torch", "pycuda", "tensorrt"]
+
+
+def _constructor_signature(app, what, name, obj, options, signature, return_annotation):
+    """With torch mocked, classes deriving from nn.Module get the mock base's
+    `(*args, **kwargs)` signature; show the class's own __init__ signature instead."""
+    if what != "class" or signature != "(*args, **kwargs)":
+        return None
+    init = obj.__dict__.get("__init__")
+    if init is None:
+        return None
+    try:
+        sig = inspect.signature(init)
+    except (TypeError, ValueError):
+        return None
+    params = list(sig.parameters.values())[1:]  # drop `self`
+    return str(sig.replace(parameters=params, return_annotation=inspect.Signature.empty)), None
+
+
+def setup(app):
+    app.connect("autodoc-process-signature", _constructor_signature)
 
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
