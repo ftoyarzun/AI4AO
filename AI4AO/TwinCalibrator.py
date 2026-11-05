@@ -67,9 +67,7 @@ class TwinCalibrator:
             loss_fn = lambda ref, dig: (torch.abs(ref - dig) ** 2).sum()
 
         wfs = self.wfs
-        # weight_decay=0: decay would pull physical parameters (mask slopes/shifts,
-        # DM amplitude, pupil offsets...) toward 0 for no physical reason
-        optimizer = torch.optim.AdamW(params_to_optimize, lr, weight_decay=0, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.Adam(params_to_optimize, lr, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         if live_plot:
@@ -111,7 +109,7 @@ class TwinCalibrator:
         """
         wfs = self.wfs
         loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.AdamW([wfs.rooftop], lr, weight_decay=0, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.Adam([wfs.rooftop], lr, fused=fused_optimizer_supported(self.device))
         wfs.train()
 
         half = reference_frame.shape[-1] // 2
@@ -363,8 +361,7 @@ class TwinCalibrator:
             wfs.BuildMask()
         IF = self.dm.IF.detach()
 
-        optimizer = torch.optim.AdamW(self._static_param_groups(residual_lr_factor), lr,
-                                      weight_decay=0, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.Adam(self._static_param_groups(residual_lr_factor), lr, fused=fused_optimizer_supported(self.device))
         self._set_static_lr(optimizer, lr)
 
         if live_plot:
@@ -479,7 +476,7 @@ class TwinCalibrator:
             g["lr"] = g["lr_factor"] * 10 ** lr_offset_start
         param_groups += static_groups
 
-        optimizer = torch.optim.AdamW(param_groups, weight_decay=0, fused=fused_optimizer_supported(self.device))
+        optimizer = torch.optim.Adam(param_groups, fused=fused_optimizer_supported(self.device))
 
         final_loss = None
         for u in range(n_iter):

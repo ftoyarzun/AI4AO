@@ -431,16 +431,14 @@ def DrawAOParameters(Nphases, nLayersRange, r0Range, L0Range, levelOfCorrectionR
     layerHeights, _ = torch.sort(layerHeights, dim=0, descending=True)
 
     windSpeed = torch.empty(nLayers, Nphases, device=device).uniform_(*windSpeedRange)
-    windSpeedVector_x = torch.empty(nLayers, Nphases, device=device).uniform_(*[-1, 1])
-    windSpeedVector_y = torch.empty(nLayers, Nphases, device=device).uniform_(*[-1, 1])
+    windDirection = torch.empty(nLayers, Nphases, device=device).uniform_(0, 2*torch.pi)
+    
+    # currentIntegratedWindSpeed = torch.sum(
+    #     fractionalr0 * torch.abs(windSpeed) ** (5 / 3), dim=0
+    # ) ** (3 / 5)
 
-    currentIntegratedWindSpeed = torch.sum(
-        fractionalr0 * torch.sqrt(windSpeedVector_x**2 + windSpeedVector_y**2) ** (5 / 3), dim=0
-    ) ** (3 / 5)
-
-    normalization = windSpeed / currentIntegratedWindSpeed
-    windSpeedVector_x = windSpeedVector_x * normalization
-    windSpeedVector_y = windSpeedVector_y * normalization
+    windSpeedVector_x = windSpeed * torch.cos(windDirection)
+    windSpeedVector_y = windSpeed * torch.sin(windDirection)
 
     return {
         "r0": r0,
