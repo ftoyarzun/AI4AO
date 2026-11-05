@@ -1,5 +1,7 @@
 # AI4AO
 
+[![Documentation Status](https://readthedocs.org/projects/ai4ao/badge/?version=latest)](https://ai4ao.readthedocs.io/en/latest/)
+
 AI4AO ("Artificial Intelligence for Adaptive Optics") is a PyTorch-based,
 fully differentiable end-to-end simulation framework for
 adaptive optics (AO): atmospheric turbulence, wavefront sensor (WFS)
@@ -14,6 +16,19 @@ The project is under active research development — conventions and module
 APIs still shift, so treat in-repo docstrings/code as more authoritative than
 this README where they disagree. It was initially built for personal use and
 is now intended for outside collaborators too.
+
+## Documentation
+
+The full documentation is at **<https://ai4ao.readthedocs.io>**. It covers
+installation, the main concepts (pipeline, units, tensor conventions), the
+`Tutorials/basics` notebooks and an API reference generated from the
+docstrings. It is rebuilt automatically on every push to `main`. To build it
+locally:
+
+```bash
+python -m pip install -r docs/requirements.txt
+python -m sphinx -b html docs docs/_build/html   # then open docs/_build/html/index.html
+```
 
 ## Pipeline
 
