@@ -161,3 +161,47 @@ def test_draw_ao_parameters_matches_phase_dataset(phase_dataset, tiny_atmos_para
     assert torch.equal(params["loop_gain"], phase_dataset.loopGain.reshape(-1))
     assert torch.equal(params["wind"][0], phase_dataset.windSpeedVector_x.reshape(params["wind"][0].shape))
     assert torch.equal(params["fractional_r0"], phase_dataset.fractionalr0.reshape(params["fractional_r0"].shape))
+
+
+# ---------------------------------------------------------------------------
+# Loop transfer functions at the pole of a leak-free integrator
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_transfer_functions_finite_at_leak_free_integrator_pole(dtype):
+    """leak = 1 puts the controller's pole at zero temporal frequency (z = 1):
+    H_ol is infinite there, so 1 / (1 + H_ol) used to give NaN (in float32 the
+    old 1 - 1e-8 guard rounds to exactly 1). The limits are CLTF = 0, NTF = 1."""
+    freq = torch.tensor([0.0, 1e-7, 1e-3, 1.0, 100.0], dtype=dtype)
+    ki, leak = torch.tensor(0.4, dtype=dtype), torch.tensor(1.0, dtype=dtype)
+    cltf = PSD.closedLoopTransferFunction(freq, 500.0, ki, leak, 1)
+    ntf = PSD.noiseTransferFunction(freq, 500.0, ki, leak, 1)
+    assert torch.isfinite(cltf).all() and torch.isfinite(ntf).all()
+    assert cltf[0] == 0
+    assert ntf[0] == 1
+    assert torch.allclose(cltf + ntf, torch.ones_like(cltf))
+
+
+@pytest.mark.parametrize("leak", [0.95, 1.0])
+def test_transfer_functions_match_open_loop_away_from_pole(leak):
+    freq = torch.linspace(1.0, 249.0, 50, dtype=torch.float64)
+    H = PSD.openLoopTransferFunction(freq, 500.0, 0.4, leak, 1)
+    cltf = PSD.closedLoopTransferFunction(freq, 500.0, 0.4, leak, 1)
+    ntf = PSD.noiseTransferFunction(freq, 500.0, 0.4, leak, 1)
+    assert torch.allclose(cltf, 1 / (1 + H), rtol=1e-6)
+    assert torch.allclose(ntf, H / (1 + H), rtol=1e-6)
+
+
+def test_temporal_psds_finite_for_leak_free_integrator_and_diagonal_wind():
+    """With wind (5, 5), the grid frequencies fx = -fy have f . v = 0 exactly in
+    float32 (TemporalFrequency's +1e-7 offsets round away), i.e. they sit on the
+    pole of a leak-free integrator."""
+    dF, fx, fy = GetSpatialFrequencies(3.0, 32)
+    args = dict(freq=500.0, ki=torch.tensor(0.4), leak=torch.tensor(1.0), delayFrames=1,
+                windSpeedVector_x=torch.tensor(5.0), windSpeedVector_y=torch.tensor(5.0))
+    error = PSD.GetTemporalErrorPSD(fx, fy, **args)
+    noise = PSD.GetTemporalNoisePSD(fx, fy, **args)
+    assert torch.isfinite(error).all() and torch.isfinite(noise).all()
+    on_pole = (fx * 5.0 + 1e-7) + (fy * 5.0 + 1e-7) == 0
+    assert on_pole.any()  # the case this test is about is really on the grid
+    assert (error[on_pole] == 0).all()

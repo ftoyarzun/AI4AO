@@ -100,22 +100,18 @@ parallel and summed, so the frame keeps its shape. Pass `collapse_wvl=False` to 
 one frame per wavelength.
 
 ```python
-wfs.useNoise = False      # see the note below
 wfs.wavelength = torch.linspace(500e-9, 800e-9, 4)
 with torch.no_grad():
-    broadband = wfs.Propagator(batch["opd"])
-    per_wavelength = wfs.Propagator(batch["opd"], collapse_wvl=False)
+    broadband = wfs.Propagator(batch["opd"])                        # detector frame, with noise
+    per_wavelength = wfs.Propagator(batch["opd"], collapse_wvl=False)   # noiseless, per wavelength
 print(broadband.shape, per_wavelength.shape)   # (16, 120, 120) and (16, 4, 120, 120)
 
 wfs.wavelength = WFSParams["Wavelength"]       # back to monochromatic
-wfs.useNoise = WFSParams["useNoise"]
 ```
 
-```{note}
-`collapse_wvl=False` currently works only without detector noise when the photon
-counts differ per sample (as they do after `SetPhotonsAndRON(batch["nphotons"], ...)`).
-The default, collapsed path works with noise.
-```
+The per-wavelength frames are a diagnostic view of the optics. Detector noise applies
+to the frame the detector records, which is their sum, so `collapse_wvl=False` frames
+never get noise, whatever `useNoise` says.
 
 ## Preparing frames for a network
 

@@ -71,7 +71,7 @@ These keys shape the temporal evolution and, in closed-loop mode
 | `windSpeedVector` | `[min, max]`, m/s | Wind speed per layer. Directions are uniform in 0–2π. | PhaseDataset, PSFDataset |
 | `levelOfCorrection` | `[min, max]` | Fraction of the correctable band that the loop corrects (0 = open loop, 1 = full correction) | PhaseDataset, PSFDataset |
 | `loopGain` | `[min, max]` | Integrator gain | PhaseDataset, PSFDataset |
-| `loopLeak` | `[min, max]` | Integrator leak (1 = no leak) | PhaseDataset, PSFDataset |
+| `loopLeak` | `[min, max]` | Integrator leak, as in `command = leak * command + gain * measurement` (1 = pure integrator, no leak) | PhaseDataset, PSFDataset |
 
 ## `DMParams`: deformable mirror
 

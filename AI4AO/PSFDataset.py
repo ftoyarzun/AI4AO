@@ -141,7 +141,7 @@ class PSFModel:
         >>> params = {                                 # two PSFs, one turbulent layer
         ...     "r0": torch.tensor([0.08, 0.15]), "L0": torch.tensor([25.0, 25.0]),
         ...     "fractional_r0": torch.ones(1, 2), "wind": torch.full((2, 1, 2), 5.0),
-        ...     "loop_gain": torch.tensor([0.4, 0.4]), "loop_leak": torch.tensor([0.99, 0.99]),
+        ...     "loop_gain": torch.tensor([0.4, 0.4]), "loop_leak": torch.tensor([1.0, 1.0]),
         ...     "level_of_correction": torch.tensor([1.0, 1.0]),
         ... }
         >>> psf = model.PSF(params)                    # (B, fov * sampling, fov * sampling)

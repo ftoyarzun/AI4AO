@@ -557,3 +557,30 @@ def test_get_psf_same_parity_crop_unchanged(device):
     N, size = full.shape[-1], 10
     start = (N - size) // 2
     assert torch.equal(wfs.GetPSF(opd, fov_pix=size), full[..., start:start + size, start:start + size])
+
+
+def test_propagator_collapse_wvl_false_skips_noise(tiny_wfs_params, device):
+    """Per-wavelength frames are a noiseless diagnostic view: with useNoise=True
+    and per-sample photon counts (as set from a PhaseDataset batch) they used to
+    crash on broadcasting; now they are returned without noise, while the
+    collapsed detector frame still gets it."""
+    from AI4AO.PyramidWFS import PyramidWFS
+
+    params = dict(tiny_wfs_params(), useNoise=True)
+    wfs = PyramidWFS(params, device).eval()
+    wfs.wavelength = torch.tensor([635e-9, 750e-9, 900e-9], device=device)
+    B = 2
+    wfs.SetPhotonsAndRON(torch.full((B, 1, 1), 1e3, device=device),
+                         torch.full((B, 1, 1), 2.0, device=device))
+    opd = 1e-7 * torch.randn(B, wfs.Nres, wfs.Nres, device=device)
+
+    with torch.no_grad():
+        per_wavelength = wfs.Propagator(opd, collapse_wvl=False)
+        noisy = wfs.Propagator(opd)
+        wfs.useNoise = False
+        noiseless_per_wavelength = wfs.Propagator(opd, collapse_wvl=False)
+        noiseless = wfs.Propagator(opd)
+
+    assert per_wavelength.shape == (B, 3, wfs.Npix, wfs.Npix)
+    assert torch.equal(per_wavelength, noiseless_per_wavelength)
+    assert not torch.allclose(noisy, noiseless)

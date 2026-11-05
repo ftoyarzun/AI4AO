@@ -294,8 +294,16 @@ class WFS(nn.Module):
                for every wavelength is computed in parallel and the wavelength channel is summed
                away before returning (mirroring how the pre-existing mask/modulation channel is
                summed), so the return shape is always NphasesxNresxNres regardless of Nwavelength.
+           pupil (torch tensor, optional): Pupil amplitude (e.g. a PhaseDataset batch's
+               "pupil"); defaults to the WFS pupil.
+           collapse_wvl (bool): True (default) returns the detector frame, summed over
+               wavelengths. False keeps one frame per wavelength, (Nphases, Nwavelength,
+               H, W), each normalized to 1. This is a diagnostic view of the optics only:
+               detector noise belongs to the summed frame, so it is never added here,
+               whatever `useNoise` says.
         Returns:
-           torch tensor: Sensor measurement NphasesxNresxNres
+           torch tensor: Sensor measurement NphasesxNresxNres (with a wavelength axis
+           when collapse_wvl is False)
 
         """
         if pupil is None:
@@ -323,7 +331,9 @@ class WFS(nn.Module):
             self.frame_no_noise = self.frame_no_noise.sum(dim=(-3)) # Collapse only mask and maintain color info
         self.frame_no_noise /= self.frame_no_noise.sum(dim=(-2, -1), keepdim=True)
 
-        if not self.useNoise:
+        # Per-wavelength frames (collapse_wvl=False) are a noiseless diagnostic view:
+        # the detector only ever records their sum.
+        if not self.useNoise or not collapse_wvl:
             return self.frame_no_noise
 
         self.frame_with_noise = self.AddNoiseToFrame()

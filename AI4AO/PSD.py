@@ -217,23 +217,45 @@ def openLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
     return H
 
 
-def closedLoopTransferFunction(*args, **kwargs):
-    """
-    Return the temporal closed loop transfer function.
-    See the open_loop_transfer arguments.
-    Source: AOPERA (R. Fetick)
-    """
-    return 1/(1+openLoopTransferFunction(*args, **kwargs))
+def _LoopPolynomials(freq, ao_freq, ki, leak, nb_frame_delay):
+    """Numerator and denominator of the open-loop transfer function,
+    H_ol = plant / controller_den, with controller_den = 1 - leak / z and
+    plant = ki z^-(d+1) sinc(f / F): the same H_ol as openLoopTransferFunction.
+
+    The closed-loop and noise transfer functions are built from these two
+    without ever forming H_ol, which is infinite at the pole of a leak-free
+    integrator (leak = 1, z = 1, i.e. zero temporal frequency)."""
+    z = torch.exp(2j * torch.pi * freq / ao_freq)
+    controller_den = 1 - leak / z
+    plant = ki * z ** (-(nb_frame_delay + 1)) * torch.sinc(freq / ao_freq)
+    return controller_den, plant
 
 
-def noiseTransferFunction(*args, **kwargs):
+def closedLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
+    """
+    Return the temporal closed loop transfer function 1 / (1 + H_ol).
+    Same arguments as openLoopTransferFunction. Source: AOPERA (R. Fetick)
+
+    Computed as controller_den / (controller_den + plant) (see
+    _LoopPolynomials), which equals 1 / (1 + H_ol) but stays finite at the
+    pole of a leak-free integrator: there it gives exactly 0, the limit of
+    1 / (1 + H_ol) as H_ol -> infinity.
+    """
+    controller_den, plant = _LoopPolynomials(freq, ao_freq, ki, leak, nb_frame_delay)
+    return controller_den / (controller_den + plant)
+
+
+def noiseTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
     """
     Return the noise transfer function H_ol / (1 + H_ol) = 1 - CLTF.
-    See the open_loop_transfer arguments.
+    Same arguments as openLoopTransferFunction.
     Source: AOPERA (R. Fetick), control.noise_transfer
+
+    Computed as plant / (controller_den + plant) (see _LoopPolynomials), so
+    it is exactly 1 at the pole of a leak-free integrator instead of NaN.
     """
-    H = openLoopTransferFunction(*args, **kwargs)
-    return H / (1 + H)
+    controller_den, plant = _LoopPolynomials(freq, ao_freq, ki, leak, nb_frame_delay)
+    return plant / (controller_den + plant)
 
 
 def NoiseTransferGain(ao_freq, ki, leak, nb_frame_delay, n_freq=1024):
@@ -253,9 +275,9 @@ def NoiseTransferGain(ao_freq, ki, leak, nb_frame_delay, n_freq=1024):
     ki = torch.as_tensor(ki, dtype=torch.float32)
     leak = torch.as_tensor(leak, dtype=torch.float32, device=ki.device)
     nu = torch.linspace(0, ao_freq / 2, n_freq, device=ki.device)
-    # Evaluate slightly off nu = 0, where a leak-free integrator's pole makes
-    # H_ol infinite (in float32, 1 - 0.99999999 * leak / z is exactly 0 there).
-    ntf = noiseTransferFunction(nu + 1e-7, ao_freq, ki.unsqueeze(-1), leak.unsqueeze(-1), nb_frame_delay)
+    # The +1e-7 Hz offset predates the pole-free noiseTransferFunction (which is
+    # finite at nu = 0 even for leak = 1); it is kept so the gain is unchanged.
+    ntf =noiseTransferFunction(nu + 1e-7, ao_freq, ki.unsqueeze(-1), leak.unsqueeze(-1), nb_frame_delay)
     return torch.trapezoid(ntf.abs() ** 2, nu, dim=-1) * 2 / ao_freq
 
 

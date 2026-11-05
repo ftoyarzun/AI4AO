@@ -390,3 +390,17 @@ def test_gradients_with_random_sampling(device):
     for key in FIT_PARAMS:
         assert torch.isfinite(leaves[key].grad).all(), key
         assert leaves[key].grad.abs().sum() > 0, key
+
+
+def test_servo_and_aliasing_finite_for_leak_free_integrator(device):
+    """loop_leak = 1 (a pure integrator) with a diagonal wind used to give NaN
+    PSFs (servo term) because some grid frequencies sit on the integrator's pole."""
+    _, ds = build(device, terms=("fitting", "servo", "aliasing"), psf={"fov": 12})
+    params = ds.DrawRandomParameters()
+    params["wind"] = torch.full_like(params["wind"], 5.0)
+    leak_free = dict(params, loop_leak=torch.ones_like(params["loop_leak"]))
+    almost = dict(params, loop_leak=torch.full_like(params["loop_leak"], 1 - 1e-6))
+    psf = ds.model.PSF(leak_free)
+    assert torch.isfinite(psf).all()
+    strehl = ds.model.Strehl(ds.model.OTF(leak_free))
+    assert torch.allclose(strehl, ds.model.Strehl(ds.model.OTF(almost)), rtol=1e-3)
