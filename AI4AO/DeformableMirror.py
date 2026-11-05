@@ -6,6 +6,45 @@ from .PhaseDataset import Zernike
 from .paths import ensure_parent
 
 class DeformableMirror(nn.Module):
+    """
+    Deformable mirror: zonal commands to a mirror surface (OPD, meters).
+
+    Actuators sit on an ``Nactuator x Nactuator`` grid clipped to the pupil
+    (``totalAct`` of them), each with a Moffat influence function
+    (``moffatParam``, ``MechCoupling``) and stroke ``signedAmplitude`` (m per
+    unit command). ``forward(coefs)`` maps commands (B, totalAct) to surfaces
+    (B, Nres, Nres). ``MakeZernikeM2C()`` gives the modes-to-commands matrix
+    (totalAct, Nmodes) of a Zernike basis in which a coefficient of 1 is 1 rad
+    RMS at the sensing wavelength.
+
+    The geometry relative to the WFS pupil (rotation, shift, anamorphic
+    scaling, flips) and the influence-function shape are learnable, for
+    calibration (see ``TwinCalibrator``). ``misreg`` sets the geometry at
+    construction: a dict with ``rotationAngle`` and ``anamorphosisAngle``
+    (degrees), ``shiftX`` and ``shiftY`` (m), ``radialScaling`` and
+    ``tangentialScaling`` (percent of the diameter). ``GetMisreg()`` returns the
+    current values.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import DeformableMirror
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> dm = DeformableMirror(p.WFSParams, p.DMParams, "cpu").eval()   # eval() rebuilds the grid
+    Total number of actuators: 101
+    Total number of actuators: 101
+    >>> M2C = dm.MakeZernikeM2C()          # (totalAct, Nmodes)
+    >>> M2C.shape
+    torch.Size([101, 64])
+    >>> z = torch.zeros(1, 64)
+    >>> z[0, 3] = 1.0                       # 1 rad RMS of the 4th mode
+    >>> surface = dm(z @ M2C.T)             # (B, Nres, Nres), meters
+    >>> rms_nm = surface[0][dm.pupil].std() * 1e9      # wavelength / 2 pi = 101 nm
+    >>> round(rms_nm.item())
+    101
+    """
+
     def __init__(self, WFSDict, DMDict, device, offset_to_fit_number_of_actuators = 0.2, misreg = None, per_actuator_calibration = False):
         super().__init__()
 

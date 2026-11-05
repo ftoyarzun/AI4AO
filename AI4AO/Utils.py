@@ -139,15 +139,17 @@ def estimate_psf_sampling(psf):
     attenuate it inside but don't move the cutoff, so a close-to-diffraction-
     limited PSF is enough.
 
-    psf: square 2-D image (tensor or array), background not subtracted. It
-        needs a noise floor (any real camera image has one): on a noiseless,
-        cropped synthetic image the crop's leakage beyond the cutoff biases
-        the result.
+    Args:
+        psf: square 2-D image (tensor or array), background not subtracted. It
+            needs a noise floor (any real camera image has one): on a noiseless,
+            cropped synthetic image the crop's leakage beyond the cutoff biases
+            the result.
 
     Steps:
-    1. Subtract the median of the image border, take |FFT| normalized to 1 at
+
+    1. Subtract the median of the image border, take ``|FFT|`` normalized to 1 at
        zero frequency, and average it in rings of 1/N cycles per pixel.
-    2. Noise floor: the median |OTF| beyond 0.5 cycles per pixel (the corners,
+    2. Noise floor: the median ``|OTF|`` beyond 0.5 cycles per pixel (the corners,
        outside the support whenever sampling >= 2). It is removed from the
        profile in quadrature.
     3. Near the cutoff the OTF falls as (1 - f/f_c)^(3/2), also with a central

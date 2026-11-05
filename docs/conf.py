@@ -56,6 +56,8 @@ autodoc_default_options = {
     "undoc-members": True,
 }
 autodoc_typehints = "description"
+# Several classes (WFS, Trainer, ...) document their arguments in __init__; show both.
+autoclass_content = "both"
 # autodoc imports every module to read its docstrings. Rather than install PyTorch on the
 # docs builder, torch is replaced by a placeholder ("mocked"); pycuda/tensorrt are the
 # hardware-only SDKs used by BenchCalibrationUtils / DAO_Utils.

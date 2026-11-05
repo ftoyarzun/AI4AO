@@ -273,13 +273,13 @@ class StemEncoderCNN(nn.Module):
     `Data/BestCNN/BestCNN.pth` loads directly. The switches come from
     `Ideas/18-SearchingForABetterCNN.md`:
 
-    cross_pupil : learnable 1x1 conv in front, initialized to `pyramid_combinations`
-        (flux, x-slope, y-slope, cross term). Needs `pupil_centers` and 4 pupils.
-    ceil_pool : MaxPool2d(2, ceil_mode=True), so odd-sized maps keep their last row/column.
-    spatial_head : drop the last stage's pool and the global average pool; a 1x1 conv
-        squeezes the last map to `head_channels`, flattened into the linear head (keeps
-        where features are instead of averaging them away).
-    max_channels : stop doubling the stage width at this value (None: no cap).
+    - ``cross_pupil``: learnable 1x1 conv in front, initialized to `pyramid_combinations`
+      (flux, x-slope, y-slope, cross term). Needs `pupil_centers` and 4 pupils.
+    - ``ceil_pool``: MaxPool2d(2, ceil_mode=True), so odd-sized maps keep their last row/column.
+    - ``spatial_head``: drop the last stage's pool and the global average pool; a 1x1 conv
+      squeezes the last map to `head_channels`, flattened into the linear head (keeps
+      where features are instead of averaging them away).
+    - ``max_channels``: stop doubling the stage width at this value (None: no cap).
 
     The compact configuration from that study, 1,005,170 parameters, about 1.8 nm RMS
     behind BestCNN in closed loop under the same training recipe:

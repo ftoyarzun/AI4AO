@@ -122,12 +122,34 @@ class PSFModel:
         wfs (WFS): supplies the pupil (with central obstruction), D, Nres and
             the GetPSF convention. Any WFS subclass works; only GetPSF is used.
         WFSParams, AtmosParams, LoopParams, DMParams, PSFParams (dict): instrument
-            params dicts (see Ideas/14-PSFDataset.md for the PSFParams keys).
+            params dicts (see the "Params reference" page of the documentation
+            for the PSFParams keys).
         terms (tuple): error terms to include, a subset of ALL_TERMS.
         psd_integral (str): "grid" takes the residual variance as the sum over
             the PSD grid, like GetPSF(PhaseDataset) screens; "infinite" adds the
             analytic Kolmogorov tail beyond the grid (maoppy), better for
             fitting real data.
+
+    Examples:
+        >>> import torch
+        >>> from mmengine import Config
+        >>> from AI4AO import WFS, PSFModel
+        >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+        >>> model = PSFModel(WFS(p.WFSParams, "cpu"), p.WFSParams, p.AtmosParams, p.LoopParams,
+        ...                  p.DMParams, {"Wavelength": 1.2e-6, "sampling": 3, "fov": 24},
+        ...                  "cpu", terms=("fitting", "servo"))
+        >>> params = {                                 # two PSFs, one turbulent layer
+        ...     "r0": torch.tensor([0.08, 0.15]), "L0": torch.tensor([25.0, 25.0]),
+        ...     "fractional_r0": torch.ones(1, 2), "wind": torch.full((2, 1, 2), 5.0),
+        ...     "loop_gain": torch.tensor([0.4, 0.4]), "loop_leak": torch.tensor([0.99, 0.99]),
+        ...     "level_of_correction": torch.tensor([1.0, 1.0]),
+        ... }
+        >>> psf = model.PSF(params)                    # (B, fov * sampling, fov * sampling)
+        >>> psf.shape
+        torch.Size([2, 72, 72])
+        >>> strehl = model.Strehl(model.OTF(params))   # better seeing -> higher Strehl
+        >>> bool(strehl[1] > strehl[0])
+        True
     """
 
     def __init__(self, wfs, WFSParams, AtmosParams, LoopParams, DMParams, PSFParams, device,
@@ -345,12 +367,12 @@ class PSFModel:
     def ResidualPSD(self, params, return_terms=False):
         """
         Residual OPD PSD (m^2 m^2), (B, N, N), centred (fftshift convention),
-        on the grid of params' sampling.
+        on the grid of params' sampling. The terms::
 
-        fitting:  (1 - c LP) Phi_atm
-        servo:    c LP Phi_atm sum_l fr0_l |CLTF(f . v_l)|^2
-        aliasing: c LP sum_l fr0_l |NTF(f . v_l)|^2 sum_{shifts} Phi_atm(f - shift)
-        noise:    c LP G_n sigma_n^2 (lambda_wfs / 2 pi)^2 d_wfs^2
+            fitting:  (1 - c LP) Phi_atm
+            servo:    c LP Phi_atm sum_l fr0_l |CLTF(f . v_l)|^2
+            aliasing: c LP sum_l fr0_l |NTF(f . v_l)|^2 sum_{shifts} Phi_atm(f - shift)
+            noise:    c LP G_n sigma_n^2 (lambda_wfs / 2 pi)^2 d_wfs^2
 
         With return_terms, also returns a dict of the individual terms.
         """
@@ -522,9 +544,25 @@ class PSFDataset(Dataset):
         complete params dict: model.PSF(batch) reproduces batch["psf"].
 
     Args:
-        wfs, WFSParams, AtmosParams, LoopParams, DMParams, PSFParams, device,
-        terms, psd_integral: see PSFModel.
+        wfs, WFSParams, AtmosParams, LoopParams, DMParams, PSFParams, device, terms, psd_integral:
+            see PSFModel.
         return_short_exposure (bool): also return one short-exposure PSF per sample.
+
+    Examples:
+        >>> from mmengine import Config
+        >>> from AI4AO import WFS, PSFDataset
+        >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+        >>> PSFParams = {"Wavelength": 1.2e-6, "sampling": 3, "fov": 24,
+        ...              "NCPA": [10e-9, 40e-9], "Jitter": [1.0, 5.0],
+        ...              "NoisePhotonFactor": 0.25, "NoiseRONFactor": 1.0}
+        >>> dataset = PSFDataset(WFS(p.WFSParams, "cpu"), p.WFSParams, p.AtmosParams,
+        ...                      p.LoopParams, p.DMParams, PSFParams, "cpu")
+        >>> batch = dataset[0]
+        >>> batch["psf"].shape, batch["strehl"].shape
+        (torch.Size([16, 72, 72]), torch.Size([16]))
+        >>> recomputed = dataset.model.PSF(batch)      # the batch is a full params dict
+        >>> bool(torch.allclose(recomputed, batch["psf"]))
+        True
     """
 
     def __init__(self, wfs, WFSParams, AtmosParams, LoopParams, DMParams, PSFParams, device,

@@ -49,7 +49,11 @@ variable. The `Tutorials/basics/` series needs no bench data.
 
 ## First steps
 
-Work through the {doc}`tutorials <tutorials/01_Dataset>` in order. Notebooks 1–3 build a
+For a quick tour of each part with short, runnable examples, read the user guide pages,
+starting with {doc}`guide/atmosphere`. The {doc}`params` page lists every configuration
+key.
+
+For a longer walkthrough, work through the {doc}`tutorials <tutorials/01_Dataset>` in order. Notebooks 1–3 build a
 synthetic, uncalibrated instrument. Notebook 4 calibrates it against a synthetic "fake
 bench" with known parameters, and notebook 5 trains a reconstructor on the calibrated
 twin. Notebook 6 shows the PSD-based PSF model.

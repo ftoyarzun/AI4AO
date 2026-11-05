@@ -44,6 +44,36 @@ class TwinCalibrator:
     Switching between representations (or between DM bases) keeps the
     current static OPD: it is least-squares projected onto the new one (see
     `project_static_opd_to_dm`).
+
+    Examples
+    --------
+    A synthetic "bench" whose DM is rotated by 90 degrees, and a coarse search
+    that finds the rotation (the fine fit is `fit_dm_and_offsets`):
+
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import PyramidWFS, DeformableMirror, TwinCalibrator
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> WFSParams = dict(p.WFSParams, useNoise=False, Modulation=3.0)
+    >>> misreg = dict(rotationAngle=90.0, shiftX=0.0, shiftY=0.0, anamorphosisAngle=0.0,
+    ...               radialScaling=0.0, tangentialScaling=0.0)
+    >>> bench_wfs = PyramidWFS(WFSParams, "cpu").eval()
+    >>> bench_dm = DeformableMirror(WFSParams, p.DMParams, "cpu", misreg=misreg).eval()
+    Total number of actuators: 101
+    ...
+    >>> M2C = bench_dm.MakeZernikeM2C()
+    >>> with torch.no_grad():
+    ...     bench_wfs.BuildInteractionMatrix(bench_dm(M2C.T))
+    >>> bench_iMat = bench_wfs.iMat.clone()          # on a real bench: loaded from a file
+    >>> twin_dm = DeformableMirror(WFSParams, p.DMParams, "cpu")
+    Total number of actuators: 101
+    >>> calibrator = TwinCalibrator(PyramidWFS(WFSParams, "cpu"), twin_dm, "cpu")
+    >>> calibrator.rough_calibrate_dm(bench_iMat, M2C)
+    Best configuration found to be:
+    Rotation angle: 90.0
+    ...
+    >>> twin_dm.GetMisreg()[0]["rotationAngle"]
+    90.0
     """
 
     STATIC_OPD_MODES = ("pixel", "dm", "dm+pixel")
@@ -612,7 +642,7 @@ class TwinCalibrator:
         Simulated camera images for zonal DM `commands` `(n, totalAct)`,
         normalized to sum 1, using the current DM, static offsets (amplitude
         `ref_pupil` and NCPA `ref_opd`, without its tip-tilt) and the per-frame
-        tip-tilt and background of the last PSF fit or rough search:
+        tip-tilt and background of the last PSF fit or rough search::
 
             I = (1 - sum(b)) * P / sum(P) + b,
             P = GetPSF(dm(c) + NCPA - TT(NCPA) + TT(a), pupil=ref_pupil,

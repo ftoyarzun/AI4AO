@@ -305,6 +305,52 @@ class StepDraw:
 # =====================================================================
 
 class Trainer:
+    """
+    Closed-loop training and evaluation of reconstructors on a frozen WFS/DM twin.
+
+    Each training step draws turbulence from `dataset`, propagates the residual
+    through `wfs`, preprocesses the frame with `framePreprocessor`, predicts modal
+    coefficients with the network, applies them with `dm` through `M2C`, and
+    backpropagates `loss` through the whole chain. The WFS and DM are put in eval
+    mode: only the networks train.
+
+    Main entry points: `train_many` (several `TrainingRun` on shared draws, on a
+    timeline of `Stage`, each with its `Recipe`) and `evaluate_many` (closed-loop
+    rollouts under identical seeds, against the `linear` and `oracle` references).
+    `train` and `evaluate` are single-network wrappers.
+
+    Examples
+    --------
+    >>> import torch.nn as nn
+    >>> from mmengine import Config
+    >>> from AI4AO import PhaseDataset, PyramidWFS, FramePreprocess, DeformableMirror, Trainer
+    >>> from AI4AO.Trainer import Stage, TrainingRun
+    >>> from AI4AO.LossFunctions import LogResidualVarianceLoss
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> dataset = PhaseDataset(p.WFSParams, p.AtmosParams, p.LoopParams, p.DMParams, "cpu")
+    >>> dataset.generateClosedLoop = True
+    >>> wfs = PyramidWFS(p.WFSParams, "cpu").eval()
+    >>> dm = DeformableMirror(p.WFSParams, p.DMParams, "cpu").eval()
+    Total number of actuators: 101
+    ...
+    >>> preprocess = FramePreprocess(p.WFSParams, wfs, "cpu")
+    >>> preprocess.ProcessReference(wfs.reference_intensity)
+    >>> M2C = dm.MakeZernikeM2C()
+    >>> trainer = Trainer(wfs, preprocess, dm, M2C, dataset=dataset,
+    ...                   loss=LogResidualVarianceLoss(dataset.pupil, wfs.wavelength))
+    >>> net = nn.Sequential(nn.Conv2d(4, 8, 5, padding=2), nn.AdaptiveAvgPool2d(1),
+    ...                     nn.Flatten(), nn.Linear(8, M2C.shape[1]))
+    >>> report = trainer.train_many([TrainingRun("tiny", net)], [Stage(frames=4)], seed=0)
+    tiny: training from scratch
+    >>> report.runs["tiny"].loss[0].shape          # one loss value per optimizer step
+    torch.Size([4])
+    >>> evaluation = trainer.evaluate_many({"tiny": net}, seeds=(1,), n_steps=10,
+    ...                                    references=("linear",), baseline="linear")
+    seed 1: tiny=... linear=...
+    >>> sorted(evaluation.nm_rms)                   # per-seed nm RMS of every reconstructor
+    ['linear', 'tiny']
+    """
+
     def __init__(self, wfs, framePreprocessor, dm, M2C, phaseReconstructor=None, dataset=None,
                  loss=None, optimizer=None):
         """`phaseReconstructor`, `loss` and `optimizer` are optional, so a comparison can build
@@ -453,6 +499,7 @@ class Trainer:
         stage from its recipe, except legacy runs given an `optimizer`.
 
         What happens to each run:
+
         1. Skip: with skip_trained=True, a run with no `init` whose `output` exists is
            loaded from it and not trained. If that file doesn't fit the model, this raises
            (delete it, or pass skip_trained=False to retrain).

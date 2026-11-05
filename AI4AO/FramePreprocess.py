@@ -4,6 +4,33 @@ import torch.nn.functional as F # type: ignore[import]
 
 
 class FramePreprocess:
+    """
+    Turns raw WFS detector frames into the input of a reconstructor network.
+
+    ``ProcessFrame`` crops one image per pupil around ``wfs.pupil_centers``
+    (``Nres + Extract_pupils_pad`` pixels), bins it by ``Bin_factor``, subtracts
+    the reference (``Substract_Reference``) and normalizes it. With
+    ``add_pupil_noise=True`` (the default, for training) each crop is jittered
+    in position (``Center_noise`` pixels) and size (``Pupil_size_noise``) so the
+    network learns to tolerate small pupil misregistrations; pass ``False`` for
+    evaluation. Call ``ProcessReference`` once with the WFS reference intensity
+    before processing frames, and again whenever the reference changes.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import PyramidWFS, FramePreprocess
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> wfs = PyramidWFS(p.WFSParams, "cpu").eval()
+    >>> preprocess = FramePreprocess(p.WFSParams, wfs, "cpu")
+    >>> preprocess.ProcessReference(wfs.reference_intensity)
+    >>> with torch.no_grad():
+    ...     x = preprocess.ProcessFrame(wfs(torch.zeros(2, 40, 40)), add_pupil_noise=False)
+    >>> x.shape                    # (B, pupils, Nres + pad, Nres + pad)
+    torch.Size([2, 4, 46, 46])
+    """
+
     def __init__(self, wfsParams, wfs, device):
         self.reference = 1.0
         self.normalization = 1.0

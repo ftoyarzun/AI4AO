@@ -25,27 +25,49 @@ def PoissonNoise(x):
 
 
 class WFS(nn.Module):
+    """
+    Base optical propagator shared by every wavefront sensor.
+
+    Owns the pupil, the Fourier propagation (FFT, or a zoomed matrix Fourier
+    transform when ``Use_MTF``), the detector noise, PSFs (``GetPSF``) and the
+    classical interaction/reconstruction matrices. It is also the one place
+    where OPD (meters) becomes phase (radians), at ``self.wavelength``, which may
+    be a scalar or a 1-D tensor of wavelengths (polychromatic propagation).
+    Sensor types subclass it and provide the focal-plane mask (``BuildMask``):
+    see ``PyramidWFS`` and ``ZernikeWFS``. The base class itself has no mask
+    and is mainly used for PSFs.
+
+    ``.eval()`` builds the mask and the reference intensity and freezes the
+    learnable parameters; ``.train()`` re-enables them, e.g. for calibration.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import WFS
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> wfs = WFS(p.WFSParams, "cpu")
+    >>> opd = torch.zeros(2, 40, 40)                 # (B, Nres, Nres), meters
+    >>> psf = wfs.GetPSF(opd, sampling=4, fov=20)    # 4 pixels per lambda/D, 20 lambda/D
+    >>> psf.shape
+    torch.Size([2, 80, 80])
+    """
+
     def __init__(self, ParamsDict, device):
         """
-        The wavefront sensor object is in charge of the propagation and reconstruction of the OPD aberrations.
-
         Parameters
         ----------
-        resolution : int
-            Number of pixels in the diameter of the telescope.
-        sampling : int
-            Zero padding factor to be used in the fourier transforms.
-        diameter : float
-            diameter of the telescope.
-        Nphotons : int
-            number of photons in a single integration of the detector.
-        RON : int
-            read-out noise in units of electrons per frame per pixel.
+        ParamsDict : dict
+            The instrument's ``WFSParams``. Read here: ``Nres`` (pupil diameter,
+            pixels), ``sampling`` (zero-padding factor: frames are
+            ``Nres * sampling`` pixels across), ``D`` (m), ``Wavelength`` (m),
+            ``useNoise``, ``centralObstruction``, and optionally ``pupilShiftX``,
+            ``pupilShiftY``, ``pupilUpscale`` and ``Use_MTF``.
+        device : str or torch.device
+            Where the tensors live.
 
-        Returns
-        -------
-        None.
-
+        Photons per frame and read-out noise are not params keys: set them with
+        ``SetPhotonsAndRON`` (e.g. from a ``PhaseDataset`` batch).
         """
         super().__init__()
         self.device = device

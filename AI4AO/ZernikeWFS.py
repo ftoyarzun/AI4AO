@@ -5,6 +5,30 @@ from .TorchPropagator import WFS
 from .Utils import MakePupil
 
 class ZernikeWFS(WFS):
+    """
+    Zernike wavefront sensor (one phase dot) or vector Zernike WFS (two dots).
+
+    ``WFSParams["MaskType"]`` selects the sensor: ``"zwfs"``/``"zernike"`` for a
+    single dot (default diameter 2 lambda_c/D, depth pi/2), or ``"vzwfs"`` (and
+    aliases) for two masks of opposite-sign depths. ``Use_MTF=True`` propagates
+    with a zoomed matrix Fourier transform of ``MTF_upscale`` (better sampling of
+    the small dot); ``False`` uses the plain FFT. The dot ``depths``,
+    ``diameters`` and ``positions`` are learnable parameters.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import ZernikeWFS
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> params = dict(p.WFSParams, MaskType="zwfs", Use_MTF=False, MTF_upscale=4, useNoise=False)
+    >>> zwfs = ZernikeWFS(params, "cpu").eval()
+    >>> with torch.no_grad():
+    ...     frame = zwfs(torch.zeros(2, 40, 40))
+    >>> frame.shape
+    torch.Size([2, 120, 120])
+    """
+
     def __init__(self, ParamsDict, device):
         super().__init__(ParamsDict, device)
 

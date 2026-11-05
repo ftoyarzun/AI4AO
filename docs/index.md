@@ -28,6 +28,14 @@ documentation and the code disagree, the docstrings in the code are the referenc
 
 getting_started
 concepts
+params
+guide/atmosphere
+guide/wavefront_sensing
+guide/deformable_mirror
+guide/training
+guide/calibration
+guide/psf
+guide/diagnostics
 ```
 
 ```{toctree}

@@ -4,6 +4,33 @@ import numpy as np
 from .TorchPropagator import WFS
 
 class PyramidWFS(WFS):
+    """
+    Pyramid wavefront sensor, with optional circular modulation.
+
+    The four-faced pyramid mask splits the focal plane into four pupil images
+    on the detector. ``WFSParams["Modulation"]`` is the modulation radius in
+    lambda_c/D (0 = unmodulated); it can be changed later through the
+    ``modulation`` property, which rebuilds the mask. The mask geometry is
+    learnable, so it can be calibrated to a bench: ``mainSlope`` (facet slope,
+    sets the pupil separation), ``maskShifts`` (per-facet shifts, (4, 2)) and
+    ``rooftop`` (edge width).
+
+    Examples
+    --------
+    >>> import torch
+    >>> from mmengine import Config
+    >>> from AI4AO import PyramidWFS
+    >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+    >>> wfs = PyramidWFS(p.WFSParams, "cpu").eval()   # eval() builds the mask and reference
+    >>> wfs.useNoise = False
+    >>> with torch.no_grad():
+    ...     frame = wfs(torch.zeros(2, 40, 40))       # (B, Nres, Nres) OPD in meters
+    >>> frame.shape                                    # Nres * sampling pixels across
+    torch.Size([2, 120, 120])
+    >>> wfs.pupil_centers.shape                        # one (row, col) center per pupil image
+    (4, 2)
+    """
+
     def __init__(self, ParamsDict, device):
         super().__init__(ParamsDict, device)
 
@@ -111,7 +138,7 @@ class PyramidWFS(WFS):
     def PyramidMask(self, x_offset=0, y_offset=0, sampling=None):
         """Pyramid phase mask for tip offsets (x_offset, y_offset), in focal-plane pixels.
 
-        The output shape is (*S, H, W), where S is the broadcast shape of the
+        The output shape is ``(*S, H, W)``, where S is the broadcast shape of the
         offsets and of `sampling`. Scalar offsets give a single (H, W) mask, and
         1-D offsets of length C give (C, H, W), one mask per offset pair.
         `sampling` (focal-plane pixels per lambda/D) sets the rooftop width in

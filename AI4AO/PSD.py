@@ -118,7 +118,7 @@ def GetAtmospherePSD(fsqr, dF, r0, L0, f_slope=11.0 / 6.0):
 
 
 def VonKarmanTail(r0, f_max):
-    """OPD variance (m^2) of the Kolmogorov PSD outside the disk |f| > f_max,
+    """OPD variance (m^2) of the Kolmogorov PSD outside the disk ``|f| > f_max``,
     0.023 (6 pi / 5) r0^(-5/3) f_max^(-5/3), with L0 neglected. Source:
     maoppy Psfao.psd ("integral to infinity")."""
     phase = KOLMOGOROV_CONSTANT * 6 * torch.pi / 5 * r0 ** (-5 / 3) * f_max ** (-5 / 3)
@@ -177,7 +177,7 @@ def GetFittingPSD(fx, fy, dF, D, Nactuator, levelOfCorrection=1):
 
     Returns:
         torch array: High-pass filter for the fitting PSD, 1 - levelOfCorrection
-        inside the square corrected band |fx|, |fy| < fc, 1 outside.
+        inside the square corrected band ``|fx|, |fy| < fc``, 1 outside.
     """
     # DM pitch is D / (Nactuator - 1) (see DeformableMirror.MakeActGrid)
     fc = (Nactuator - 1) / 2 / D
@@ -192,6 +192,7 @@ def openLoopTransferFunction(freq, ao_freq, ki, leak, nb_frame_delay):
     """
     Return the temporal open loop transfer function for a integrator controller.
     Source: AOPERA (R. Fetick)
+
     Parameters
     ----------
     freq : np.array
@@ -237,7 +238,7 @@ def noiseTransferFunction(*args, **kwargs):
 
 def NoiseTransferGain(ao_freq, ki, leak, nb_frame_delay, n_freq=1024):
     """
-    Noise propagation gain of the loop, (2 / F) * integral_0^{F/2} |NTF(nu)|^2 dnu:
+    Noise propagation gain of the loop, ``(2 / F) * integral_0^{F/2} |NTF(nu)|^2 dnu``:
     the factor by which white measurement noise reaches the residual. Source:
     AOPERA simulation (2-D mode, `ntf_integral`).
 
@@ -282,7 +283,7 @@ def GetTemporalErrorPSD(
         windSpeedVector_x, windSpeedVector_y (torch array): Wind speed vector [vx, vy]
 
     Returns:
-        torch array: |CLTF(f . v)|^2, the servo-lag rejection of each frequency
+        torch array: ``|CLTF(f . v)|^2``, the servo-lag rejection of each frequency
     """
     f_temporal = TemporalFrequency(fx, fy, windSpeedVector_x, windSpeedVector_y)
 
@@ -295,7 +296,7 @@ def GetTemporalErrorPSD(
 def GetTemporalNoisePSD(
     fx, fy, freq, ki, leak, delayFrames, windSpeedVector_x, windSpeedVector_y
 ):
-    """|NTF(f . v)|^2 under frozen flow, the temporal filter AOPERA applies to
+    """``|NTF(f . v)|^2`` under frozen flow, the temporal filter AOPERA applies to
     the aliasing PSD (2-D mode). Same arguments as GetTemporalErrorPSD."""
     f_temporal = TemporalFrequency(fx, fy, windSpeedVector_x, windSpeedVector_y)
     return torch.abs(noiseTransferFunction(f_temporal, freq, ki, leak, delayFrames)) ** 2
@@ -322,7 +323,7 @@ def GetNoisePSD(corrected, noise_gain, variance_rad, sensing_wavelength, pitch):
     White WFS-noise OPD PSD (m^2 m^2) propagated through the loop:
     corrected * G_n * variance * (lambda_wfs / 2 pi)^2 * pitch^2. Per-pixel
     variance sigma^2 sampled at pitch d is white with PSD sigma^2 d^2 over
-    |f| < 1/(2d); only the corrected band (`corrected`, c * LP) reaches the DM.
+    ``|f| < 1/(2d)``; only the corrected band (`corrected`, c * LP) reaches the DM.
     Source: AOPERA aopsd.psd_noise (2-D mode).
 
     Args:

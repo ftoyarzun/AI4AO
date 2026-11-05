@@ -127,6 +127,25 @@ class CNNDiagnostics:
     *before* the following nonlinearity. `dead_frac` is therefore exact for a ReLU
     and only indicative for smooth activations (GELU/SiLU). It is NaN for the layer
     whose output is the model's output, since no nonlinearity follows it.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch.nn as nn
+    >>> from AI4AO import CNNDiagnostics
+    >>> model = nn.Sequential(nn.Conv2d(4, 8, 3, padding=1), nn.ReLU(),
+    ...                       nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(8, 10))
+    >>> diag = CNNDiagnostics(model)
+    >>> list(diag.layers)                            # hooked layers, by named_modules() path
+    ['0', '4']
+    >>> x = torch.randn(2, 4, 16, 16)                # e.g. preprocessed WFS frames
+    >>> output = diag.run(x, input_grad=True)        # forward + backward, recorded
+    >>> J = diag.jacobian(x, modes=[0, 1])           # d(output mode) / d(input)
+    >>> J.shape                                      # (modes, batch, C, H, W)
+    torch.Size([2, 2, 4, 16, 16])
+
+    In a training loop, wrap the steps to inspect in ``capture()`` and call
+    ``record(step)`` after them (see the module docstring).
     """
 
     def __init__(
@@ -679,7 +698,7 @@ class CNNDiagnostics:
 
     def plot_gradient_flow(self, source="weight", fig=None, axes=None, figsize=None):
         """
-        Mean and max |grad| per layer in forward order, log scale -- the classic
+        Mean and max ``|grad|`` per layer in forward order, log scale -- the classic
         vanishing/exploding-gradient check. `source="weight"` uses parameter grads,
         `source="activation"` the stored dLoss/d(layer output) (first `max_samples`
         samples, all stored calls pooled).
@@ -781,7 +800,7 @@ class CNNDiagnostics:
                       fig=None, axes=None, figsize=None):
         """Input frames next to dLoss/d(input) on a symmetric diverging scale, one
         boxed group per sample (needs `capture(input_grad=True)` or `run()`). The
-        scale is the `percentile` of |grad| rather than its max, so a few extreme
+        scale is the `percentile` of ``|grad|`` rather than its max, so a few extreme
         pixels do not wash out the rest (use 100 for the plain max)."""
         x = self.input[call] if isinstance(self.input, list) else self.input
         g = self.input_grad[call] if isinstance(self.input_grad, list) else self.input_grad
@@ -806,7 +825,7 @@ class CNNDiagnostics:
                       fig=None, axes=None, figsize=None):
         """One panel per mode showing `J[k, sample]` (from `jacobian()`), preceded by
         the input frame when `x` is given. Signed maps use a symmetric diverging
-        scale per mode, set by the `percentile` of |J|; `signed=False` shows |J|."""
+        scale per mode, set by the `percentile` of ``|J|``; `signed=False` shows ``|J|``."""
         J = _to_numpy(J)
         modes = list(range(J.shape[0])) if modes is None else list(modes)
         items = []

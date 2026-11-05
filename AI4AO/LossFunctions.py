@@ -17,17 +17,44 @@ class AOLoss(nn.Module):
     Static, per-instrument context (e.g. a pupil mask) still belongs in
     __init__, the same way LogResidualVarianceLoss takes `pupil` there.
 
-    forward args:
-        Ze (Tensor): Ground-truth residual modal coefficients for this iteration.
-        z_estimated (Tensor): Predicted modal coefficients for this iteration
-            (Trainer's `z_output`, i.e. the reconstructor's raw prediction).
-        residual_opd (Tensor): Residual wavefront (OPD, in meters) *before*
-            this iteration's correction is applied -- what was actually fed
-            into the WFS to produce `wfs_frames`.
-        corrected_residual_opd (Tensor): Residual wavefront *after* this
-            iteration's correction is applied -- the quantity you're actually
-            trying to minimize.
-        wfs_frames (Tensor): Raw WFS detector frame(s) for this iteration.
+    Arguments of ``forward`` (and ``compute``), in order:
+
+    - ``Ze`` (Tensor): Ground-truth residual modal coefficients for this iteration.
+    - ``z_estimated`` (Tensor): Predicted modal coefficients for this iteration
+      (Trainer's `z_output`, i.e. the reconstructor's raw prediction).
+    - ``pupil`` (Tensor): The batch's pupil, (B, Nres, Nres): a boolean mask,
+      or the scintillated amplitude when scintillation is on.
+    - ``residual_opd`` (Tensor): Residual wavefront (OPD, in meters) *before*
+      this iteration's correction is applied -- what was actually fed
+      into the WFS to produce `wfs_frames`.
+    - ``corrected_residual_opd`` (Tensor): Residual wavefront *after* this
+      iteration's correction is applied -- the quantity you're actually
+      trying to minimize.
+    - ``wfs_frames`` (Tensor): Raw WFS detector frame(s) for this iteration.
+
+    Losses combine with ``+`` and ``*`` into a ``WeightedLossSum``.
+
+    Examples:
+        A custom loss, combined with a built-in one:
+
+        >>> import torch
+        >>> from AI4AO.LossFunctions import AOLoss, RMSELoss
+        >>> class ResidualRMS(AOLoss):
+        ...     '''RMS of the corrected residual OPD over the telescope aperture, in nm.'''
+        ...     def __init__(self, aperture):
+        ...         super().__init__()
+        ...         self.aperture = aperture          # (Nres, Nres) bool, e.g. dataset.pupil
+        ...     def compute(self, Ze, z_estimated, pupil, residual_opd,
+        ...                 corrected_residual_opd, wfs_frames):
+        ...         return corrected_residual_opd[:, self.aperture].pow(2).mean().sqrt() * 1e9
+        >>> aperture = torch.ones(8, 8, dtype=torch.bool)
+        >>> loss = ResidualRMS(aperture) + 0.5 * RMSELoss()
+        >>> type(loss).__name__, loss.weights
+        ('WeightedLossSum', [1.0, 0.5])
+        >>> residual = torch.full((2, 8, 8), 50e-9)          # 50 nm everywhere
+        >>> z = torch.zeros(2, 5)
+        >>> round(loss(z, z, aperture.expand(2, 8, 8), residual, residual, None).item(), 3)
+        50.0
     """
 
     def forward(self, Ze, z_estimated, pupil, residual_opd, corrected_residual_opd, wfs_frames):

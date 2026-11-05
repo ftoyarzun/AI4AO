@@ -151,48 +151,53 @@ def Zernike(pupil, j = 100):
 
 class PhaseDataset(Dataset):
     """
-    PhaseDataset is a custom PyTorch dataset used to generate synthetic wavefront phase maps 
-    and corresponding mode decompositions for training neural networks in adaptive optics systems.
+    Synthetic atmospheric OPD screens (meters), generated on the fly from a
+    von Karman PSD, for training and evaluating AO reconstructors.
 
     It supports:
-    - Static and dynamic (moving) wavefront generation.
-    - Randomized atmospheric parameters such as Fried parameter (r0), outer scale (L0), and wind.
-    - Configurable parameters from wavefront sensor (WFS), atmospheric, and control loop settings.
-    - PSD-based generation of phase maps using Fourier domain techniques.
+
+    - Multi-layer frozen-flow turbulence, each layer moving with its own wind.
+    - Random conditions per batch element: Fried parameter (r0), outer scale (L0),
+      wind, layer weights, photons and read-out noise, loop gain/leak.
+    - Open-loop screens, or closed-loop residuals (``generateClosedLoop = True``).
+    - Optional scintillation (angular-spectrum propagation of the layers).
+
+    ``dataset[0]`` draws new conditions and new screens for a batch of
+    ``AtmosParams["Nphases"]``; ``dataset[i]`` for i > 0 advances the same screens
+    by i loop periods. Every call returns a dict with ``opd`` (B, Nres, Nres) in
+    meters, ``pupil``, ``nphotons``, ``ron``, ``r0``, ``L0``, ``wind``,
+    ``fractional_r0``, ``loop_gain``, ``loop_leak`` and ``level_of_correction``.
+    Random draws use the global torch RNG (see ``Utils.seed_everything``).
 
     Attributes:
-        D (float): Aperture diameter.
-        Nres (int): Resolution of the wavefront map (number of pixels).
-        Nmodes (int): Number of modes to generate.
-        photonRange (tuple): Log-scale range of photon count per measurement.
-        RONRange (tuple): Read-Out Noise (RON) range.
-        Nactuator (int): Number of actuators for the deformable mirror.
-        r0Range (tuple): Range for the Fried parameter.
-        L0Range (tuple): Range for the atmospheric outer scale.
-        Nphases (int): Number of phase maps to generate in each sample.
-        nLayers (int): Number of atmospheric turbulence layers.
-        loopFrequency (float): Adaptive optics loop frequency.
-        delayFrames (int): Control loop delay in frames.
-        windSpeedRange (tuple): Range of wind speed values for each layer.
-        pupil (Tensor): Circular aperture mask.
-        z_FullRes (Tensor): Precomputed full-resolution modes.
-        testDatasetPath (str): File path for cached static dataset.
-        movingTestDatasetPath (str): File path for cached moving dataset.
+        D (float): Aperture diameter (m).
+        Nres (int): Pupil diameter on the grid (pixels).
+        Nphases (int): Batch size.
+        pupil (Tensor): Circular aperture mask (Nres, Nres).
+        generateClosedLoop (bool): Return closed-loop residuals instead of
+            open-loop screens.
 
-    Usage:
-        dataset = PhaseDataset(WFSParams, AtmosParams, LoopParams, device)
-        sample = dataset[idx]  # Returns opdMap (meters), modes coefficients, photons, RON, r0
+    Examples:
+        >>> from mmengine import Config
+        >>> from AI4AO import PhaseDataset
+        >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+        >>> dataset = PhaseDataset(p.WFSParams, p.AtmosParams, p.LoopParams, p.DMParams, "cpu")
+        >>> batch = dataset[0]        # new conditions, new screens
+        >>> batch["opd"].shape        # (Nphases, Nres, Nres), meters
+        torch.Size([16, 40, 40])
+        >>> later = dataset[1]        # the same screens, one loop period later
     """
     def __init__(self, WFSParams, AtmosParams, LoopParams, DMParams, device):
         """
         Initialize the PhaseDataset.
-    
+
         Parameters:
-            WFSParams (dict): Parameters related to the wavefront sensor.
-            AtmosParams (dict): Parameters describing atmospheric conditions.
-            LoopParams (dict): Parameters for the adaptive optics control loop.
+            WFSParams (dict): Telescope/sensor parameters (Nres, D, Wavelength, Nphotons, RON).
+            AtmosParams (dict): Turbulence parameters (r0, L0, Nphases, Layers, f_slope, Scintillation).
+            LoopParams (dict): AO loop parameters (loopFrequency, delayFrames, windSpeedVector,
+                levelOfCorrection, loopGain, loopLeak).
+            DMParams (dict): DM parameters (Nactuator, which sets the correctable band).
             device (torch.device): Device to store tensors (CPU or GPU).
-            transform (callable, optional): Transform to apply on the data.
         """    
         
         self.D = WFSParams['D']

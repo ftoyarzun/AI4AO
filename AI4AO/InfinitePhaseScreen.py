@@ -4,7 +4,7 @@ InfinitePhaseScreen: a drop-in alternative to PhaseDataset whose turbulent
 layers never repeat and carry the right low-order (tip/tilt) power.
 
 PhaseDataset moves each layer with a Fourier phase ramp on a 2D-wide FFT
-screen. That screen is a torus, so the atmosphere repeats exactly after 2D/|v|,
+screen. That screen is a torus, so the atmosphere repeats exactly after ``2D/|v|``,
 and it has no spatial frequencies below 1/(2D), so tip/tilt is ~0.4 of the
 von Karman value. This class keeps PhaseDataset's constructor, batch dict and
 public attributes, but generates the layers with the engine designed in
@@ -22,9 +22,10 @@ Ideas/16-infinite-frozen-flow.md (prototype: prototyping/InfiniteFrozenFlow.ipyn
   redrawn only while its weight is exactly zero over the whole visible region,
   so the pupil sees one infinite frozen field.
 - Optional boiling: a per-coefficient AR(1) update that keeps the PSD exact,
-  with coherence time boilingTime * (|f| D)^(-2/3).
+  with coherence time ``boilingTime * (|f| D)^(-2/3)``.
 
 Differences from PhaseDataset's contract:
+
 - `dataset[idx]` must be called with idx = 0 (new sequence) or with idx >= the
   previous index (frames in between are stepped through, so a jump equals
   stepping one by one). A backward idx raises.
@@ -78,7 +79,7 @@ def FFTFriendlyOdd(n):
 def CrossfadeWeights(u):
     """
     The three crossfade weights at moving-frame coordinate u = xi / R (any
-    shape) -> (3, *u.shape). With a = (u - k) mod 3, w_k = sin(pi a / 2) on
+    shape) -> ``(3, *u.shape)``. With a = (u - k) mod 3, w_k = sin(pi a / 2) on
     [0, 1), cos(pi (a - 1) / 2) on [1, 2) and 0 on [2, 3), so sum_k w_k^2 = 1.
     """
     k = torch.arange(3, device=u.device, dtype=u.dtype).reshape(3, *([1] * u.dim()))
@@ -110,26 +111,39 @@ class InfinitePhaseScreen(Dataset):
     """
     Non-repeating, multi-scale frozen-flow OPD screens with PhaseDataset's API.
 
-    Usage (same as PhaseDataset):
+    Usage (same as PhaseDataset)::
+
         dataset = InfinitePhaseScreen(WFSParams, AtmosParams, LoopParams, DMParams, device)
         batch = dataset[0]            # new conditions and new screens
         batch = dataset[1]            # next frame, ...
 
     Extra keyword arguments (algorithmic options, not params-dict keys). They
-    are plain attributes and take effect at the next dataset[0]:
-        subharmonicLevels (int or None): number of coarse levels below the
-            full-resolution screen. None (default) chooses the smallest number
-            whose outer torus is at least 3 * max(AtmosParams["L0"]). 0 gives a
-            single crossfaded full-band torus (non-repeating, but with the
-            torus's tip/tilt deficit and a few % high-order blend bias).
-        boiling (bool): enable the AR(1) boiling update. Default False.
-        boilingTime (float or [min, max]): coherence time tau_b (s) at spatial
-            frequency 1/D; tau(f) = tau_b (|f| D)^(-2/3). A [min, max] range is
-            drawn uniformly per batch element at dataset[0]. Required when
-            boiling is True.
+    are plain attributes and take effect at the next ``dataset[0]``:
+
+    - ``subharmonicLevels`` (int or None): number of coarse levels below the
+      full-resolution screen. None (default) chooses the smallest number
+      whose outer torus is at least ``3 * max(AtmosParams["L0"])``. 0 gives a
+      single crossfaded full-band torus (non-repeating, but with the
+      torus's tip/tilt deficit and a few % high-order blend bias).
+    - ``boiling`` (bool): enable the AR(1) boiling update. Default False.
+    - ``boilingTime`` (float or [min, max]): coherence time tau_b (s) at spatial
+      frequency 1/D; ``tau(f) = tau_b (|f| D)^(-2/3)``. A [min, max] range is
+      drawn uniformly per batch element at ``dataset[0]``. Required when
+      boiling is True.
 
     Further attributes: `subharmonicHole` (m, default 4) and
     `subharmonicRefinement` (q, odd, default 3) set the level geometry.
+
+    Examples:
+        >>> from mmengine import Config
+        >>> from AI4AO import InfinitePhaseScreen
+        >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+        >>> screens = InfinitePhaseScreen(p.WFSParams, p.AtmosParams, p.LoopParams, p.DMParams,
+        ...                               "cpu", boiling=True, boilingTime=0.05)
+        >>> first = screens[0]                  # new sequence
+        >>> frames = [screens[i]["opd"] for i in range(1, 4)]   # indices never go backwards
+        >>> frames[-1].shape
+        torch.Size([16, 40, 40])
     """
 
     def __init__(self, WFSParams, AtmosParams, LoopParams, DMParams, device,
@@ -342,9 +356,9 @@ class InfinitePhaseScreen(Dataset):
         Physical OPD PSDs (m^2 m^2) of every layer at arbitrary frequencies
         fx (along dim -2), fy (1/m), before the fractional-r0 weighting.
 
-        Returns (total, atmosphere): total is (nLayers, Nphases, *fx.shape),
+        Returns (total, atmosphere): total is ``(nLayers, Nphases, *fx.shape)``,
         the open-loop atmosphere or, with generateClosedLoop, the fitting +
-        servo-lag residual; atmosphere is the open-loop PSD, (Nphases, *fx.shape).
+        servo-lag residual; atmosphere is the open-loop PSD, ``(Nphases, *fx.shape)``.
         """
         atmosphere = VonKarmanPSD(fx**2 + fy**2, self.r0_moving, self.L0, self.f_slope)
         atmosphere = atmosphere * (self.referenceWavelength / (2 * torch.pi)) ** 2
@@ -385,7 +399,8 @@ class InfinitePhaseScreen(Dataset):
     def BuildLevels(self, stepPx):
         """
         Geometry of the nested frequency lattices for a maximum motion of
-        `stepPx` pixels per frame (cached). Returns a dict with
+        `stepPx` pixels per frame (cached). Returns a dict with::
+
             levels: list of per-level dicts -- index, L (torus side, m),
                 R = L / 2, N, f1d (N,) float64 1/m (FFT order for level 0),
                 keep (N, N) bool (the lattice points this level carries)
