@@ -19,6 +19,8 @@ import numpy as np
 import torch  # type: ignore[import]
 from torch.utils.data import Dataset  # type: ignore[import]
 
+from .Utils import CenterCrop
+
 from .PSD import (
     REFERENCE_WAVELENGTH,
     CenterCrop,
@@ -453,11 +455,7 @@ class PSFModel:
         fov = self.FOV(params)
         if fov is None:
             return psf
-        fov_pix = int(np.round(fov * self.Sampling(params)))
-        Ny, Nx = psf.shape[-2], psf.shape[-1]
-        y0 = (Ny - fov_pix) // 2
-        x0 = (Nx - fov_pix) // 2
-        return psf[..., y0 : y0 + fov_pix, x0 : x0 + fov_pix]
+        return CenterCrop(psf, int(np.round(fov * self.Sampling(params))))
 
     def PSF(self, params):
         """Long-exposure PSF (B, H, W), in WFS.GetPSF units."""

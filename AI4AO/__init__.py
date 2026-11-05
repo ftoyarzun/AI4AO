@@ -7,7 +7,7 @@ from .DeformableMirror import DeformableMirror
 from .FramePreprocess import FramePreprocess
 from .ZernikeWFS import ZernikeWFS
 from .PyramidWFS import PyramidWFS
-from .Utils import imshow, imshow_multiple
+from .Utils import imshow, imshow_multiple, estimate_psf_sampling
 from .Trainer import Trainer
 from .TwinCalibrator import TwinCalibrator
 from .CNNDiagnostics import CNNDiagnostics

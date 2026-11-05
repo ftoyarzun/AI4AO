@@ -257,3 +257,33 @@ def test_delay_line_negative_delay_raises():
 def test_delay_line_read_before_push_raises():
     with pytest.raises(RuntimeError):
         DelayLine(1).read()
+
+
+# ---------------------------------------------------------------------------
+# estimate_psf_sampling
+# ---------------------------------------------------------------------------
+
+def _noisy_psf(sampling, device, Nres=48, crop=None, photons=1e7, background=5.0):
+    from AI4AO.TorchPropagator import WFS
+    wfs = WFS({"Nres": Nres, "sampling": 3.0, "D": 1.0, "centralObstruction": 0.3,
+               "useNoise": False, "Wavelength": 700e-9}, device)
+    opd = 20e-9 * torch.randn(1, Nres, Nres, device=device)    # close to diffraction limited
+    psf = wfs.GetPSF(opd, sampling=sampling, fov_pix=crop)[0]
+    psf = psf / psf.sum()
+    return torch.poisson(psf * photons + background)
+
+
+@pytest.mark.parametrize("k", [26, 34, 48])         # samplings (48 + 2k) / 48: 2.08, 2.42, 3.0
+@pytest.mark.parametrize("crop_fraction", [None, 0.6])
+def test_estimate_psf_sampling_recovers_sampling(device, k, crop_fraction):
+    from AI4AO.Utils import estimate_psf_sampling
+    sampling = (48 + 2 * k) / 48                    # exactly what GetPSF produces
+    crop = None if crop_fraction is None else int(crop_fraction * sampling * 48)
+    estimate = estimate_psf_sampling(_noisy_psf(sampling, device, crop=crop))
+    assert estimate == pytest.approx(sampling, rel=0.01)
+
+
+def test_estimate_psf_sampling_raises_below_nyquist(device):
+    from AI4AO.Utils import estimate_psf_sampling
+    with pytest.raises(ValueError, match="Nyquist"):
+        estimate_psf_sampling(_noisy_psf(1.5, device))

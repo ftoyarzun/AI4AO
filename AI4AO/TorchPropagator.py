@@ -12,7 +12,7 @@ import numpy as np
 
 from torch.fft import fft2, fftshift, ifft2, ifftshift # type: ignore[import]
 
-from .Utils import MakePupil, set_frozen
+from .Utils import MakePupil, set_frozen, CenterCrop
 from .paths import ensure_parent
 
 
@@ -326,7 +326,7 @@ class WFS(nn.Module):
         frame_with_noise /= frame_with_noise.sum(dim=(-2, -1), keepdim=True)
         return frame_with_noise
 
-    def GetPSF(self, opd, pupil = None, sampling = None, fov = None, wl = None, collapse_wvl = True):
+    def GetPSF(self, opd, pupil = None, sampling = None, fov = None, wl = None, collapse_wvl = True, fov_pix = None):
         """
         Computes the Point Spread Function (PSF) for a given OPD aberration.
 
@@ -343,14 +343,21 @@ class WFS(nn.Module):
                 output grid implied by the *shortest* wavelength (self.wavelength[0])
                 before being summed away. Return shape is always NphasesxNresxNres.
             fov (float, optional): Output field of view, in lambda/D. The frame is
-                center-cropped to fov * sampling pixels. If None, the full frame
-                is returned.
+                center-cropped to round(fov * sampling) pixels. If both fov and
+                fov_pix are None, the full frame is returned.
             wl (float/array, optional): wavelength to use for the PSF computation. It
-                can be a single float, or an array (list, np.array, torch.tensor) for a 
+                can be a single float, or an array (list, np.array, torch.tensor) for a
                 polychromatic simulation. If defaults to the same as for the sensing.
+            fov_pix (int, optional): Output field of view in pixels (a square
+                fov_pix x fov_pix crop), e.g. to match a camera window. Give either
+                fov or fov_pix, not both.
+            Either crop keeps the optical axis (pixel N // 2 of the full frame) at
+            pixel fov_pix // 2 of the crop, for any parity of the two sizes.
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
+        if fov is not None and fov_pix is not None:
+            raise ValueError("GetPSF: give either fov (lambda/D) or fov_pix (pixels), not both.")
 
         if sampling is None:
             sampling = self.sampling
@@ -368,14 +375,12 @@ class WFS(nn.Module):
 
         psf = self._GetPolychromaticPSF(opd, pupil, sampling, wl, collapse_wvl)
 
-        if fov is None:
+        if fov is None and fov_pix is None:
             return psf
 
-        fov_pix = int(np.round(fov * sampling))
-        Ny, Nx = psf.shape[-2], psf.shape[-1]
-        y0 = (Ny - fov_pix) // 2
-        x0 = (Nx - fov_pix) // 2
-        return psf[..., y0 : y0 + fov_pix, x0 : x0 + fov_pix]
+        if fov_pix is None:
+            fov_pix = int(np.round(fov * sampling))
+        return CenterCrop(psf, int(fov_pix))
 
     def _GetPolychromaticPSF(self, opd, pupil, sampling, wl, collapse_wvl):
         """Multi-wavelength branch of GetPSF (see its docstring). Runs one shared

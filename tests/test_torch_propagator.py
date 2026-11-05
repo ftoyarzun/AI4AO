@@ -515,3 +515,45 @@ def test_eval_train_round_trip_keeps_manually_frozen_parameter(pyramid_wfs):
     pyramid_wfs.train()
     assert not pyramid_wfs.rooftop.requires_grad
     assert pyramid_wfs.mainSlope.requires_grad and pyramid_wfs.maskShifts.requires_grad
+
+
+# ---------------------------------------------------------------------------
+# GetPSF field of view in pixels and crop centering
+# ---------------------------------------------------------------------------
+
+def _base_wfs(Nres, device):
+    params = {"Nres": Nres, "sampling": 3.0, "D": 1.0, "centralObstruction": 0.3,
+              "useNoise": False, "Wavelength": 700e-9}
+    return WFS(params, device)
+
+
+def test_get_psf_fov_pix_crop(device):
+    wfs = _base_wfs(12, device)
+    opd = 50e-9 * torch.randn(2, 12, 12, device=device)
+
+    assert wfs.GetPSF(opd, fov_pix=17).shape == (2, 17, 17)
+    # fov_pix = round(fov * sampling) is the same crop as fov
+    assert torch.equal(wfs.GetPSF(opd, fov_pix=18), wfs.GetPSF(opd, fov=6))
+    with pytest.raises(ValueError):
+        wfs.GetPSF(opd, fov=6, fov_pix=18)
+
+
+@pytest.mark.parametrize("Nres", [12, 13])      # even and odd full-frame sizes
+@pytest.mark.parametrize("size", [9, 10])       # odd and even crops
+def test_get_psf_crop_keeps_optical_axis_at_center(device, Nres, size):
+    """The unaberrated PSF peaks on the optical axis, pixel N // 2 of the full
+    frame; every crop must keep it at pixel size // 2."""
+    wfs = _base_wfs(Nres, device)
+    psf = wfs.GetPSF(torch.zeros(1, Nres, Nres, device=device), fov_pix=size)[0]
+    assert divmod(int(torch.argmax(psf)), size) == (size // 2, size // 2)
+
+
+def test_get_psf_same_parity_crop_unchanged(device):
+    """Crops whose parity matches the frame's are identical to the old
+    (N - size) // 2 crop."""
+    wfs = _base_wfs(12, device)
+    opd = 50e-9 * torch.randn(1, 12, 12, device=device)
+    full = wfs.GetPSF(opd)
+    N, size = full.shape[-1], 10
+    start = (N - size) // 2
+    assert torch.equal(wfs.GetPSF(opd, fov_pix=size), full[..., start:start + size, start:start + size])

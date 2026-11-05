@@ -311,14 +311,16 @@ class TwinCalibrator:
 
         return uncaptured_rms
 
-    def _static_param_groups(self, residual_lr_factor):
+    def _static_param_groups(self, residual_lr_factor, include_amplitude=True):
         """Optimizer groups for the static offsets. Each carries an
         `lr_factor`, so a schedule sets `lr = lr_factor * base_lr`. The
         per-pixel residual of "dm+pixel" mode gets `residual_lr_factor`, so
-        the DM command captures as much of the static OPD as it can."""
-        groups = [{"params": [self._log_ref_pupil], "lr_factor": 1.0}]
+        the DM command captures as much of the static OPD as it can.
+        `include_amplitude=False` leaves the static amplitude out (not fitted)."""
+        first = [self._log_ref_pupil] if include_amplitude else []
         if self._static_coefs is not None:
-            groups[0]["params"].append(self._static_coefs)
+            first.append(self._static_coefs)
+        groups = [{"params": first, "lr_factor": 1.0}] if first else []
         if self._ref_opd_pixel is not None:
             factor = residual_lr_factor if self.static_opd_mode == "dm+pixel" else 1.0
             groups.append({"params": [self._ref_opd_pixel], "lr_factor": factor})
@@ -595,6 +597,362 @@ class TwinCalibrator:
         plt.plot(torch.diag(cov).cpu().detach())
 
         return cov
+
+    # ------------------------------------------------------------------
+    # PSF path (science camera): DM relay geometry and NCPA from PSFs.
+    # Design: Ideas/21-psf-dm-misregistration.md
+    # ------------------------------------------------------------------
+
+    # DM parameters describing the mirror itself; they are frozen when fitting
+    # the science-path relay geometry (every other DM parameter is geometry).
+    DM_INTRINSIC_PARAMETERS = ("_sign", "_moffatParameter", "_mechCoupling")
+
+    def psf_model(self, commands, sampling, wavelength):
+        """
+        Simulated camera images for zonal DM `commands` `(n, totalAct)`,
+        normalized to sum 1, using the current DM, static offsets (amplitude
+        `ref_pupil` and NCPA `ref_opd`, without its tip-tilt) and the per-frame
+        tip-tilt and background of the last PSF fit or rough search:
+
+            I = (1 - sum(b)) * P / sum(P) + b,
+            P = GetPSF(dm(c) + NCPA - TT(NCPA) + TT(a), pupil=ref_pupil,
+                       sampling, wl=wavelength, fov_pix=H)
+
+        `sampling` is in pixels per lambda/D (e.g. from `estimate_psf_sampling`);
+        GetPSF uses the closest value its padding allows.
+        """
+        return self._psf_model(commands, self._psf_sampling(sampling), wavelength)
+
+    def rough_calibrate_dm_to_psfs(self, commands, psfs, sampling, wavelength, rotation_step=10.0):
+        """
+        Coarse search of the DM orientation on the science camera: the
+        rotation over the full +-180 degrees in `rotation_step` steps, each
+        with `flip_lr` off and on (flip_tb + flip_lr is a 180 degree
+        rotation, so flip_tb needs no search). The DM sign is never searched:
+        a PSF can't tell (geometry G, sign s) from (G rotated 180 degrees,
+        sign -s), so the sign stays the WFS-path value. Sets the best
+        rotation/flip on the DM and leaves the per-frame tip-tilt and
+        background initialized for it, as at the start of `fit_dm_to_psfs`.
+
+        Use low-order probes here: their capture range in rotation is
+        large, so `rotation_step` only has to be within it.
+        """
+        dm = self.dm
+        sampling = self._psf_sampling(sampling, report=True)
+
+        best_loss, best = float("inf"), None
+        with torch.no_grad():
+            for flip_lr in (dm.flip_lr, not dm.flip_lr):
+                dm.flip_lr = flip_lr
+                for rotation in np.arange(-180.0, 180.0, rotation_step):
+                    dm.rotationAngle = float(rotation)
+                    self._init_psf_nuisances(commands, psfs, sampling, wavelength)
+                    loss = float(self._psf_loss(psfs, self._psf_model(commands, sampling, wavelength)))
+                    if loss < best_loss:
+                        best_loss, best = loss, (float(rotation), flip_lr)
+            dm.flip_lr = best[1]
+            dm.rotationAngle = best[0]
+        self._init_psf_nuisances(commands, psfs, sampling, wavelength)
+
+        print(f"Best orientation: rotation {best[0]:.1f} deg, flip_lr {best[1]}")
+        return best_loss
+
+    def fit_dm_to_psfs(self, commands, psfs, sampling, wavelength, *,
+                       static_M2C=None, static_opd_mode="dm", residual_lr_factor=0.1,
+                       ref_pupil=None, fit_amplitude=False,
+                       background="scalar", n_iter=500,
+                       lr_geometry=3e-3, lr_nuisance=1e-2,
+                       lr_offset_start=-4, lr_offset_end=-2,
+                       loss_fn=None, live_plot=True, plot_frame_idx=4):
+        """
+        Fits the DM relay geometry, a shared NCPA, an independent tip-tilt per
+        frame, a background and (if `fit_amplitude`) the pupil amplitude, so
+        that `psf_model(commands)` matches the camera images `psfs`
+        `(n, H, H)`, each normalized to sum 1. `estimate_ncpa` is the same fit
+        with the DM fixed.
+
+        - Relay geometry: every trainable DM parameter except
+          `DM_INTRINSIC_PARAMETERS` (sign, Moffat shape, coupling), which stay
+          at the WFS-path calibration. The DM is left in train mode, as after
+          `fit_dm_and_offsets`.
+        - NCPA: the static OPD in `static_opd_mode`/`static_M2C`, exactly as
+          in `fit_dm_and_offsets` (e.g. `dm.MakeZernikeM2C()[:, :10]` for the
+          first 10 modes; "dm+pixel" adds a per-pixel residual). The model
+          removes its piston/tip/tilt, which belong to the per-frame tip-tilt;
+          at the end of the fit they are also removed from the stored
+          parameters, so `static_correction_command()` contains no tilt.
+        - Per-frame tip-tilt (in lambda/D, `psf_tiptilt`) and background
+          (`psf_background`) are re-initialized at every call: the tip-tilt
+          from each frame's centroid relative to the model's, the background
+          from the frames' border median. `background="scalar"` fits one value,
+          "map" a value per pixel.
+        - `ref_pupil`, if given, sets the pupil amplitude (e.g. the WFS-path
+          calibrator's `ref_pupil`); otherwise the current one is kept.
+        - Loss: sum((psfs - model)^2) / sum(psfs^2) by default; `loss_fn(psfs,
+          model)` replaces it (e.g. to mask bad or saturated pixels).
+
+        Tips: fit low-order probes first, then call again with all frames
+        (slice `commands`/`psfs`). Tip/tilt pokes carry no geometry
+        information, since each frame's tip-tilt is free.
+
+        Returns the final loss and the actuator positions before and after
+        the fit (for `plot_actuator_and_offsets`).
+        """
+        dm = self.dm
+        original_positions = dm.rotate_coordinates(dm.anamorphosis_coordinates(dm.actuator_positions)).detach()
+        dm.train()
+        intrinsic = [getattr(dm, name) for name in self.DM_INTRINSIC_PARAMETERS]
+        intrinsic_flags = [p.requires_grad for p in intrinsic]
+        for p in intrinsic:
+            p.requires_grad_(False)
+        try:
+            final_loss = self._fit_psfs(
+                commands, psfs, sampling, wavelength, static_M2C=static_M2C,
+                static_opd_mode=static_opd_mode, residual_lr_factor=residual_lr_factor,
+                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude, background=background,
+                n_iter=n_iter, lr_geometry=lr_geometry, lr_nuisance=lr_nuisance,
+                lr_offset_start=lr_offset_start, lr_offset_end=lr_offset_end,
+                loss_fn=loss_fn, live_plot=live_plot, plot_frame_idx=plot_frame_idx)
+        finally:
+            for p, flag in zip(intrinsic, intrinsic_flags):
+                p.requires_grad_(flag)
+
+        print(dm.GetMisreg())
+        transformed_positions = dm.rotate_coordinates(dm.anamorphosis_coordinates(dm.actuator_positions)).detach()
+        return final_loss, original_positions, transformed_positions
+
+    def estimate_ncpa(self, commands, psfs, sampling, wavelength, *,
+                      static_M2C=None, static_opd_mode="dm", residual_lr_factor=0.1,
+                      ref_pupil=None, fit_amplitude=False, background="scalar", n_iter=300,
+                      lr_nuisance=1e-2, lr_offset_start=-4, lr_offset_end=-2,
+                      loss_fn=None, live_plot=True, plot_frame_idx=4):
+        """
+        NCPA from camera PSFs with the DM fixed: the same fit as
+        `fit_dm_to_psfs` (same arguments), but only the NCPA, per-frame
+        tip-tilt, background and (if `fit_amplitude`) the pupil amplitude are
+        fitted. The DM and WFS are left exactly as they were (parameters,
+        influence functions, train/eval mode, requires_grad flags).
+
+        Use it as the NCPA step after `fit_dm_to_psfs` on the same calibrator,
+        or for an already-calibrated system:
+        `TwinCalibrator(wfs, science_path_dm, device).estimate_ncpa(...)`.
+        The result goes into this calibrator's static offsets: `ref_opd` (the
+        NCPA in meters, without piston/tip/tilt), `static_correction_command()`
+        ("dm" and "dm+pixel" modes), `static_opd_parts()`, `ref_pupil`, plus
+        `psf_tiptilt` and `psf_background`. So don't call it on the calibrator
+        of the WFS path: it would overwrite the WFS-path static offsets. Use a
+        separate calibrator, even for the same DM.
+
+        `commands` are absolute, i.e. they include any NCPA correction already
+        applied, so the result is always the total NCPA, and
+        `static_correction_command()` replaces (doesn't add to) the applied
+        correction. Iterating a correction is calling this again on frames
+        recorded with the latest one applied.
+
+        Returns the final loss.
+        """
+        was_training = self.dm.training
+        self.dm.eval()      # freezes every DM parameter, so no geometry is fitted
+        try:
+            return self._fit_psfs(
+                commands, psfs, sampling, wavelength, static_M2C=static_M2C,
+                static_opd_mode=static_opd_mode, residual_lr_factor=residual_lr_factor,
+                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude, background=background,
+                n_iter=n_iter, lr_geometry=None, lr_nuisance=lr_nuisance,
+                lr_offset_start=lr_offset_start, lr_offset_end=lr_offset_end,
+                loss_fn=loss_fn, live_plot=live_plot, plot_frame_idx=plot_frame_idx)
+        finally:
+            if was_training:
+                self.dm.train()
+
+    def _fit_psfs(self, commands, psfs, sampling, wavelength, *, static_M2C, static_opd_mode,
+                  residual_lr_factor, ref_pupil, fit_amplitude, background, n_iter, lr_geometry,
+                  lr_nuisance, lr_offset_start, lr_offset_end, loss_fn, live_plot, plot_frame_idx):
+        """The loop shared by `fit_dm_to_psfs` and `estimate_ncpa`. The DM
+        geometry is fitted through whatever DM parameters are trainable (none
+        in eval mode). Returns the final loss."""
+        if background not in ("scalar", "map"):
+            raise ValueError(f"background must be 'scalar' or 'map', got {background!r}")
+        assert torch.allclose(psfs.sum(dim=(-2, -1)), torch.ones(len(psfs), device=psfs.device), atol=1e-3), \
+            "the PSF fit expects every PSF frame normalized to sum 1"
+
+        dm = self.dm
+        sampling = self._psf_sampling(sampling, report=True)
+        if loss_fn is None:
+            loss_fn = self._psf_loss
+        if ref_pupil is not None:
+            amplitude = torch.as_tensor(ref_pupil, device=self.device, dtype=torch.float32).detach()
+            self._log_ref_pupil = torch.nn.Parameter(torch.log(amplitude.clamp_min(1e-12)))
+        self._prepare_static_offsets(static_opd_mode, static_M2C)
+        self._init_psf_nuisances(commands, psfs, sampling, wavelength)
+        self._log_ref_pupil.requires_grad_(fit_amplitude)
+
+        try:
+            param_groups = [{"params": [self._psf_tiptilt, self._psf_background], "lr": lr_nuisance}]
+            geometry = [p for p in dm.parameters() if p.requires_grad]
+            if geometry:
+                param_groups.append({"params": geometry, "lr": lr_geometry})
+            static_groups = self._static_param_groups(residual_lr_factor, include_amplitude=fit_amplitude)
+            for g in static_groups:
+                g["lr"] = g["lr_factor"] * 10 ** lr_offset_start
+            param_groups += static_groups
+            optimizer = torch.optim.Adam(param_groups, fused=fused_optimizer_supported(self.device))
+
+            if live_plot:
+                fig, ax = imshow_multiple([
+                    {"tensor": psfs, "title": "Camera PSF", "same_scale": True},
+                    {"tensor": psfs, "title": "Model PSF", "same_scale": True},
+                    {"tensor": psfs - psfs, "title": "Difference", "scale_reference": psfs},
+                ], max_channel_number=plot_frame_idx)
+
+            warmup_iters = max(n_iter // 2, 1)
+            final_loss = None
+            for u in range(n_iter):
+                exponent = lr_offset_start + min(u / warmup_iters, 1.0) * (lr_offset_end - lr_offset_start)
+                self._set_static_lr(optimizer, 10 ** exponent)
+
+                optimizer.zero_grad()
+                model = self._psf_model(commands, sampling, wavelength, scalar_background=background == "scalar")
+                l = loss_fn(psfs, model)
+                l.backward()
+                optimizer.step()
+                final_loss = l.item()
+
+                if live_plot and u % 10 == 0:
+                    clear_output(wait=True)
+                    imshow_multiple([
+                        {"tensor": psfs, "title": "Camera PSF", "same_scale": True},
+                        {"tensor": model.detach(), "title": "Model PSF", "same_scale": True},
+                        {"tensor": (psfs - model).detach(), "title": "Difference", "scale_reference": psfs},
+                    ], fig=fig, axes=ax, max_channel_number=plot_frame_idx)
+                    display(fig, clear=True)
+                    plt.pause(0.1)
+                    print(f"loss = {final_loss:.5e}")
+
+            if live_plot:
+                plt.close(fig)
+
+            with torch.no_grad():
+                if background == "scalar":
+                    self._psf_background.fill_(self._psf_background.mean())
+            self._remove_static_tiptilt()
+        finally:
+            self._log_ref_pupil.requires_grad_(True)
+        return final_loss
+
+    @property
+    def psf_tiptilt(self):
+        """Per-frame tip-tilt of the last PSF fit, `(n, 2)` in lambda/D
+        (x = columns, y = rows), or None."""
+        return getattr(self, "_psf_tiptilt", None)
+
+    @property
+    def psf_background(self):
+        """Background of the last PSF fit, `(H, H)` in the units of the
+        sum-1 normalized frames, or None. Its sum is the fraction of each
+        frame's flux that is background."""
+        raw = getattr(self, "_psf_background", None)
+        return None if raw is None else raw / raw[0].numel()
+
+    def _psf_sampling(self, sampling, report=False):
+        """The sampling GetPSF actually uses for `sampling`: its padding only
+        gives Npix / Nres, in steps of 2 / Nres."""
+        Nres = self.wfs.Nres
+        effective = (Nres + 2 * (int(np.round(Nres * (sampling - 1))) // 2)) / Nres
+        if report:
+            print(f"PSF sampling: requested {sampling:.4f}, GetPSF uses {effective:.4f} "
+                  f"({100 * (effective / sampling - 1):+.2f}%) pixels per lambda/D")
+        return effective
+
+    @staticmethod
+    def _psf_loss(psfs, model):
+        return ((psfs - model) ** 2).sum() / (psfs ** 2).sum()
+
+    def _psf_model(self, commands, sampling, wavelength, scalar_background=False):
+        if self.psf_tiptilt is None:
+            raise ValueError("No PSF tip-tilt/background yet: run rough_calibrate_dm_to_psfs or fit_dm_to_psfs first.")
+        if len(commands) != len(self._psf_tiptilt):
+            raise ValueError(f"{len(commands)} commands but {len(self._psf_tiptilt)} frames in the last PSF fit.")
+        opd = self.dm(commands)
+        static = self._static_opd(self.dm.IF)    # after dm(...): this iteration's influence functions
+        if torch.is_tensor(static):
+            opd = opd + self._remove_tiptilt(static)
+        ramps = self._tiptilt_basis()[1:]
+        opd = opd + wavelength / self.wfs.Nres * torch.einsum('nk,kwh->nwh', self._psf_tiptilt, ramps)
+
+        background = self.psf_background
+        psf = self.wfs.GetPSF(opd, pupil=self.ref_pupil, sampling=sampling, wl=wavelength,
+                              fov_pix=background.shape[-1])
+        psf = psf / psf.sum(dim=(-2, -1), keepdim=True)
+        if scalar_background:
+            background = background.mean().expand_as(background)
+        return (1 - background.sum()) * psf + background
+
+    def _tiptilt_basis(self):
+        """`(3, Nres, Nres)`: piston, then the x (columns) and y (rows) ramps in
+        pixels from the pupil centre. An OPD of wavelength * a * ramp / Nres
+        moves the PSF by `a` lambda/D."""
+        c = torch.arange(self.wfs.Nres, device=self.device, dtype=torch.float32) - (self.wfs.Nres - 1) / 2
+        y, x = torch.meshgrid(c, c, indexing="ij")
+        return torch.stack([torch.ones_like(x), x, y])
+
+    def _remove_tiptilt(self, opd):
+        """`opd` minus its least-squares piston/tip/tilt over the WFS pupil (differentiable)."""
+        basis = self._tiptilt_basis()
+        pupil = self.wfs.pupil.bool()
+        coefs = opd[..., pupil] @ torch.linalg.pinv(basis[:, pupil])
+        return opd - torch.einsum('...k,kwh->...wh', coefs, basis)
+
+    def _remove_static_tiptilt(self):
+        """Removes piston/tip/tilt from the stored static OPD: from the DM part
+        by least squares in its basis, then whatever is left from the
+        per-pixel part (exactly, when there is one)."""
+        pupil = self.wfs.pupil.bool()
+        with torch.no_grad():
+            IF = self.dm.IF.detach()
+            if self._static_coefs is not None:
+                basis_opd = IF[:, pupil] if self._static_M2C is None else self._static_M2C.T @ IF[:, pupil]
+                dm_opd = torch.einsum('a,awh->wh', self.static_dm_command(), IF)
+                tiptilt = dm_opd - self._remove_tiptilt(dm_opd)
+                self._static_coefs -= (tiptilt[pupil] @ torch.linalg.pinv(basis_opd)) / self._static_coef_scale
+            if self._ref_opd_pixel is not None:
+                total = self._static_opd(IF)
+                self._ref_opd_pixel -= (total - self._remove_tiptilt(total)) / 1e-6
+
+    def _init_psf_nuisances(self, commands, psfs, sampling, wavelength):
+        """Initial per-frame tip-tilt and background, by comparing the frames
+        with the model at zero tip-tilt and background: the background is the
+        excess of the frames' border median over the model's (the border of a
+        small window is still PSF halo), and each frame's tip-tilt is the
+        offset of its centroid from the model's (pixels -> lambda/D), since
+        the probes move the centroid themselves (e.g. coma)."""
+        H = psfs.shape[-1]
+        self._psf_tiptilt = torch.nn.Parameter(torch.zeros(len(psfs), 2, device=self.device))
+        # Stored as (per-pixel background) * H^2, i.e. in units of the total
+        # flux, so that it is O(1) like the other fitted parameters (Adam moves
+        # every parameter by ~lr per step, whatever its scale).
+        self._psf_background = torch.nn.Parameter(torch.zeros(H, H, device=self.device))
+        with torch.no_grad():
+            model = self._psf_model(commands, sampling, wavelength)
+            background = (self._border(psfs).median() - self._border(model).median()).clamp_min(0)
+            self._psf_background.fill_(float(background) * H * H)
+            offset = self._centroid(psfs - background) - self._centroid(model)
+            self._psf_tiptilt.copy_(offset / sampling)
+
+    @staticmethod
+    def _border(images):
+        return torch.cat([images[:, 0], images[:, -1], images[:, 1:-1, 0], images[:, 1:-1, -1]], dim=-1)
+
+    @staticmethod
+    def _centroid(images):
+        """`(n, 2)` centroids (x = columns, y = rows) in pixels from the centre
+        pixel H // 2, ignoring negative values."""
+        images = images.clamp_min(0)
+        offset = torch.arange(images.shape[-1], device=images.device, dtype=images.dtype) - images.shape[-1] // 2
+        flux = images.sum(dim=(-2, -1))
+        x = (images.sum(dim=-2) * offset).sum(dim=-1) / flux
+        y = (images.sum(dim=-1) * offset).sum(dim=-1) / flux
+        return torch.stack([x, y], dim=-1)
 
     def _twin_paths(self, instrument_name, data_dir):
         """`(wfs_path, dm_path)` for an instrument. `data_dir` defaults to the

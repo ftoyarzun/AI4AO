@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Shared parameter file for the NCPA-estimation notebook (NCPAEstimation.ipynb).
-See Ideas/06-ncpa-estimation.md for the full plan. This is a fictional demo
-instrument (no real bench behind it), built purely to demonstrate the
-diversity-command / PSF-fitting technique -- the same "no real bench" framing
+Shared parameter file for the NCPA-estimation notebook (NCPAEstimation.ipynb):
+calibration of the DM misregistration on the science camera and NCPA
+estimation from PSFs. See Ideas/21-psf-dm-misregistration.md. This is a
+fictional demo instrument (no real bench behind it), built purely to
+demonstrate the technique -- the same "no real bench" framing
 ../SystemDesign/TwoStageAO.ipynb and DualSensorFusion.ipynb already use for their own demo twins.
 
 Unlike the other Tutorials/Advanced params files, this notebook never touches
 PhaseDataset or Trainer -- NCPA is measured on a static internal source with
 zero atmosphere, so there is no AtmosParams/LoopParams/TrainParams here, only
 the WFSParams/DMParams needed to build the DM+PSF forward model, plus an
-NCPAParams dict for the fit itself.
+NCPAParams dict for the probes and the fit.
 """
 
 # %% Set general parameters
@@ -31,9 +32,9 @@ WFSParams = dict(
     }
 )
 
-## The DM whose "previously calibrated" misregistration this notebook mostly
-## treats as fixed (see Ideas/06-ncpa-estimation.md step 2/8). "Nmodes" is a
-## placeholder resolved in the notebook from dm.totalAct, exactly like
+## The DM as calibrated on the WFS path; the notebook copies it and calibrates
+## the copy's relay geometry on the science camera. "Nmodes" is a placeholder
+## resolved in the notebook from dm.totalAct, exactly like
 ## ../SystemDesign/DualSensorFusion_params.py.
 DMParams = dict(
     {
@@ -47,41 +48,31 @@ DMParams = dict(
     }
 )
 
-## NCPA-fit-specific settings. Diversity amplitudes/ground-truth injected values
-## are chosen only to make this demo's synthetic self-consistency check well-posed
-## (see DiversityAmplitudes below) -- not measured from any real instrument
-## (see CLAUDE.md's "never invent real hardware parameters" rule).
+## Probes and fit settings. The "demo only" keys describe the synthetic camera
+## data, chosen to make this demo's self-consistency check well-posed -- not
+## measured from any real instrument (see CLAUDE.md's "never invent real
+## hardware parameters" rule). On a bench, the plate scale comes from
+## estimate_psf_sampling and the frames from the camera.
 NCPAParams = dict(
     {
-        "ScienceWavelength": 635e-9,  # GetPSF's wl= override; equal to WFSParams["Wavelength"] here,
-                                       # but kept as its own key since the science camera and the WFS
-                                       # sensing path need not share a wavelength in general.
-        "PSFSampling": 4,             # GetPSF's `sampling` kwarg (oversampling factor -> plate scale)
-        "PSFFov": 20,                 # GetPSF's `fov` kwarg, in lambda/D
-        "DiversityModeColumns": [2, 3, 4, 5, 6],  # M2C columns 0-1 are tip/tilt (skipped -- see
-                                                    # Ideas/06-ncpa-estimation.md step 7); 2 is focus,
-                                                    # 3-4 are astigmatism, 5-6 are coma (Noll ordering,
-                                                    # AI4AO/PhaseDataset.py:Zernike).
-        "DiversityAmplitudes": [0.3, 0.7, 1.1],  # dimensionless MakeZernikeM2C coefficients -- NOT
-                                             # meters. MakeZernikeM2C's z already carries a
-                                             # 1/wavenumber OPD-per-unit-coefficient scaling
-                                             # internally (DeformableMirror.py:230), so a
-                                             # coefficient of 1.0 corresponds to a physically
-                                             # large OPD; these values were chosen to land the
-                                             # resulting diversity pokes at an NCPA-scale ~30-80nm
-                                             # OPD RMS for this demo instrument, verified directly
-                                             # against dm_model(C).
-        "NIterations": 1000,
-        "LearningRateNCPA": 1e-2,      # applied to c_ncpa's raw, 1e-6-reparametrized optimizer
-                                        # variable (see NCPA_COMMAND_SCALE in the notebook's
-                                        # fit_ncpa) -- NOT to the physical meters-valued command,
-                                        # matching DeformableMirror.sign's own scaling convention
-        "LearningRateGeometry": 1e-3,
-        "RegularizationWeight": 0.0,  # Tikhonov weight on ||c_ncpa_raw||^2 (the dimensionless,
-                                       # 1e-6-reparametrized optimizer variable, not the physical
-                                       # command); keep at 0 unless the synthetic recovery check
-                                       # shows a noisy/non-physical fit
-        "FitDMGeometry": True,       # optional step 8 toggle -- also fit rotationAngle/
-                                       # radialScaling/tangentialScaling alongside c_ncpa
+        "ScienceWavelength": 635e-9,  # GetPSF's wl= override; the science camera and the WFS
+                                       # sensing path need not share a wavelength.
+        "TrueSampling": 130 / 48,     # demo only: plate scale (pixels per lambda/D) of the synthetic
+                                       # images; a value GetPSF can produce exactly (Npix / Nres)
+        "PSFWindow": 96,              # camera window in pixels (GetPSF's fov_pix)
+        "Photons": 1e7,               # demo only: photons per frame
+        "BackgroundCounts": 1.0,      # demo only: background per pixel, in photons
+        # Probes: M2C columns (Noll ordering, AI4AO/PhaseDataset.py:Zernike): 0-1 are tip/tilt
+        # (never used as probes: each frame has its own free tip-tilt), 2 is focus, 3-4
+        # astigmatism, 5-6 coma, ...
+        "LowOrderProbes": [2, 3, 4, 5, 6, 7, 8, 9],
+        "HighOrderProbes": [10, 13, 16, 19, 22, 25, 28],
+        "ProbeAmplitude": 1.0,        # dimensionless MakeZernikeM2C coefficient -- NOT meters; its
+                                       # z carries a 1/wavenumber scaling, so 1.0 is a large
+                                       # (~1 rad) poke
+        "NDiversity": 10,             # random diversity commands (Ideas/06 style)
+        "DiversityAmplitude": 0.3,
+        "NCPAModes": 30,              # NCPA basis: the first NCPAModes columns of the Zernike M2C
+        "NIterations": 500,
     }
 )

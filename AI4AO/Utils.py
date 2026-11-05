@@ -121,6 +121,84 @@ def MakePupil(nPx, device, Rpx=None, central_obstruction=0.0, shift_x=0.0, shift
     return pupil
 
 
+def CenterCrop(image, size):
+    """Square `size` x `size` crop of the last two axes that keeps pixel N // 2
+    of the input (the optical axis of an fftshifted PSF) at pixel size // 2 of
+    the output, for any parity of N and size."""
+    Ny, Nx = image.shape[-2], image.shape[-1]
+    y0 = Ny // 2 - size // 2
+    x0 = Nx // 2 - size // 2
+    return image[..., y0 : y0 + size, x0 : x0 + size]
+
+
+def estimate_psf_sampling(psf):
+    """
+    Plate scale of a camera image, in pixels per lambda/D, from the cutoff
+    frequency of its OTF. The OTF of an aperture of diameter D vanishes beyond
+    D/lambda, i.e. beyond f_c = 1/sampling cycles per pixel. Aberrations
+    attenuate it inside but don't move the cutoff, so a close-to-diffraction-
+    limited PSF is enough.
+
+    psf: square 2-D image (tensor or array), background not subtracted. It
+        needs a noise floor (any real camera image has one): on a noiseless,
+        cropped synthetic image the crop's leakage beyond the cutoff biases
+        the result.
+
+    Steps:
+    1. Subtract the median of the image border, take |FFT| normalized to 1 at
+       zero frequency, and average it in rings of 1/N cycles per pixel.
+    2. Noise floor: the median |OTF| beyond 0.5 cycles per pixel (the corners,
+       outside the support whenever sampling >= 2). It is removed from the
+       profile in quadrature.
+    3. Near the cutoff the OTF falls as (1 - f/f_c)^(3/2), also with a central
+       obstruction (the overlap of the two shifted pupils is then at the outer
+       rim). So OTF^(2/3) is linear in f: fit a line over the contiguous rings
+       where the OTF goes from 0.1 down to 3x the floor, and take its zero.
+       A plain threshold on the OTF would be biased by the noise level.
+
+    Raises ValueError below Nyquist (sampling < 2), where the support aliases,
+    or when too few rings lie between 0.1 and the noise floor.
+    """
+    psf = torch.as_tensor(psf, dtype=torch.float64)
+    if psf.dim() != 2 or psf.shape[0] != psf.shape[1]:
+        raise ValueError(f"estimate_psf_sampling expects a square 2-D image, got shape {tuple(psf.shape)}")
+    N = psf.shape[-1]
+
+    border = torch.cat([psf[0], psf[-1], psf[1:-1, 0], psf[1:-1, -1]])
+    otf = torch.fft.fftshift(torch.fft.fft2(psf - border.median())).abs()
+    otf = otf / otf[N // 2, N // 2]
+
+    k = torch.arange(N, dtype=torch.float64, device=psf.device) - N // 2
+    ring = torch.sqrt(k[:, None] ** 2 + k[None, :] ** 2)    # radius in units of 1/N cycles per pixel
+    floor = otf[ring > N / 2].median()
+
+    # Radial profile up to 0.5 cycles per pixel, with each ring's mean radius
+    bins = torch.round(ring).long().flatten()
+    n_rings = N // 2 + 1
+    keep = bins < n_rings
+    count = torch.bincount(bins[keep], minlength=n_rings)
+    zeros = torch.zeros(n_rings, dtype=torch.float64, device=psf.device)
+    profile = zeros.index_add(0, bins[keep], otf.flatten()[keep]) / count
+    radius = zeros.index_add(0, bins[keep], ring.flatten()[keep]) / count
+    signal = torch.sqrt((profile ** 2 - floor ** 2).clamp_min(0))
+
+    edge = torch.nonzero(signal < 0.1).flatten()
+    start = int(edge[0]) if len(edge) else n_rings
+    stop = start
+    while stop < n_rings and signal[stop] > 3 * floor:
+        stop += 1
+    if stop - start < 3:
+        raise ValueError(
+            "estimate_psf_sampling: no OTF edge found below 0.5 cycles per pixel. The image is "
+            "sampled below Nyquist (sampling < 2) or too noisy; give the sampling explicitly."
+        )
+
+    f = radius[start:stop] / N
+    A = torch.stack([torch.ones_like(f), f], dim=1)
+    a, b = torch.linalg.lstsq(A, signal[start:stop, None] ** (2 / 3)).solution.flatten()
+    return float(-b / a)
+
+
 def imshow(
     tensor,
     max_batch_number=None,
