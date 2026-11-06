@@ -400,7 +400,7 @@ def test_psf_model_tiptilt_moves_psf_by_lambda_over_d(device):
     wfs, dm, _ = _psf_twin(device)
     calibrator = TwinCalibrator(wfs, dm, device)
     calibrator._psf_tiptilt = torch.nn.Parameter(torch.tensor([[1.0, 0.0], [0.0, -2.0]], device=device))
-    calibrator._psf_background = torch.nn.Parameter(torch.zeros(48, 48, device=device))
+    calibrator._psf_window = 48
     with torch.no_grad():
         psf = calibrator.psf_model(torch.zeros(2, int(dm.totalAct), device=device), 3.0, PSF_WAVELENGTH)
     assert divmod(int(torch.argmax(psf[0])), 48) == (24, 24 + 3)
@@ -420,7 +420,7 @@ def test_psf_fit_gradients_reach_every_fitted_parameter(device):
     calibrator._psf_loss(psfs, calibrator._psf_model(commands, 3.0, PSF_WAVELENGTH)).backward()
 
     for p in (dm._rotationAngle, dm._grid_shift, dm._radialScaling,
-              calibrator._static_coefs, calibrator._psf_tiptilt, calibrator._psf_background):
+              calibrator._static_coefs, calibrator._psf_tiptilt):
         assert p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
 
 
@@ -447,7 +447,6 @@ def test_fit_dm_to_psfs_freezes_intrinsics_and_amplitude(device):
         assert getattr(dm, name).requires_grad == flags[name]
     assert torch.allclose(calibrator.ref_pupil, amplitude)
     assert calibrator.psf_tiptilt.shape == (len(commands), 2)
-    assert calibrator.psf_background.shape == (48, 48)
 
 
 @pytest.mark.parametrize("static_opd_mode", ["pixel", "dm", "dm+pixel"])
@@ -542,7 +541,7 @@ def test_psf_calibration_recovers_geometry_and_ncpa(device):
         ramps = calibrator._tiptilt_basis()[1:]
         opd = dm_true(commands + ncpa_command) + PSF_WAVELENGTH / 32 * torch.einsum('nk,kwh->nwh', tiptilt, ramps)
         psf = wfs.GetPSF(opd, sampling=sampling, wl=PSF_WAVELENGTH, fov_pix=size)
-        psfs = torch.poisson(psf / psf.sum(dim=(-2, -1), keepdim=True) * 1e8 + 2.0)
+        psfs = torch.poisson(psf / psf.sum(dim=(-2, -1), keepdim=True) * 1e8 + 2.0) - 2.0   # background-subtracted
         psfs = psfs / psfs.sum(dim=(-2, -1), keepdim=True)
 
     n_low = len(low)

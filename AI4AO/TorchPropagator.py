@@ -384,7 +384,10 @@ class WFS(nn.Module):
                 fov_pix x fov_pix crop), e.g. to match a camera window. Give either
                 fov or fov_pix, not both.
             Either crop keeps the optical axis (pixel N // 2 of the full frame) at
-            pixel fov_pix // 2 of the crop, for any parity of the two sizes.
+            pixel fov_pix // 2 of the crop, for any parity of the two sizes. The
+            crop can't exceed the full frame, N = Nres + 2 * (round(Nres *
+            (sampling - 1)) // 2) pixels, i.e. about Nres lambda/D; a larger
+            fov or fov_pix raises a ValueError.
         Returns:
             torch tensor: Point Spread Function (PSF) in the focal plane
         """
@@ -393,6 +396,18 @@ class WFS(nn.Module):
 
         if sampling is None:
             sampling = self.sampling
+
+        if fov is not None:
+            fov_pix = int(np.round(fov * sampling))
+        if fov_pix is not None:
+            n_full = self.Nres + 2 * (int(np.round(self.Nres * (sampling - 1))) // 2)
+            if int(fov_pix) > n_full:
+                requested = f"fov = {fov} lambda/D ({fov_pix} pixels)" if fov is not None else f"fov_pix = {fov_pix}"
+                raise ValueError(
+                    f"GetPSF: {requested} exceeds the full PSF frame, {n_full} pixels "
+                    f"({n_full / sampling:.1f} lambda/D) for Nres = {self.Nres} at sampling {sampling:.3f}. "
+                    "Reduce the field of view or increase Nres."
+                )
 
         if pupil is None:
             pupil = self.pupil.unsqueeze(0)
@@ -407,11 +422,8 @@ class WFS(nn.Module):
 
         psf = self._GetPolychromaticPSF(opd, pupil, sampling, wl, collapse_wvl)
 
-        if fov is None and fov_pix is None:
-            return psf
-
         if fov_pix is None:
-            fov_pix = int(np.round(fov * sampling))
+            return psf
         return CenterCrop(psf, int(fov_pix))
 
     def _GetPolychromaticPSF(self, opd, pupil, sampling, wl, collapse_wvl):

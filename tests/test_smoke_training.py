@@ -63,7 +63,8 @@ def test_trainer_train_and_evaluate_end_to_end(pyramid_wfs, deformable_mirror, p
     assert torch.isfinite(loss_tracker_ideal).all()
     assert not torch.allclose(reconstructor.net.weight, initial_weight)
 
-    result = trainer.evaluate(n_steps=3, dataset=phase_dataset)
+    # psf_fov: the Trainer's default 20 lambda/D exceeds the Nres = 12 twin's 12 lambda/D PSF frame
+    result = trainer.evaluate(n_steps=3, dataset=phase_dataset, psf_fov=10)
 
     n_steps = 3
     assert result.opd.shape[0] == n_steps

@@ -642,11 +642,14 @@ class TwinCalibrator:
         Simulated camera images for zonal DM `commands` `(n, totalAct)`,
         normalized to sum 1, using the current DM, static offsets (amplitude
         `ref_pupil` and NCPA `ref_opd`, without its tip-tilt) and the per-frame
-        tip-tilt and background of the last PSF fit or rough search::
+        tip-tilt of the last PSF fit or rough search::
 
-            I = (1 - sum(b)) * P / sum(P) + b,
+            I = P / sum(P),
             P = GetPSF(dm(c) + NCPA - TT(NCPA) + TT(a), pupil=ref_pupil,
                        sampling, wl=wavelength, fov_pix=H)
+
+        There is no background term: subtract the background from the camera
+        frames before normalizing them.
 
         `sampling` is in pixels per lambda/D (e.g. from `estimate_psf_sampling`);
         GetPSF uses the closest value its padding allows.
@@ -661,8 +664,8 @@ class TwinCalibrator:
         rotation, so flip_tb needs no search). The DM sign is never searched:
         a PSF can't tell (geometry G, sign s) from (G rotated 180 degrees,
         sign -s), so the sign stays the WFS-path value. Sets the best
-        rotation/flip on the DM and leaves the per-frame tip-tilt and
-        background initialized for it, as at the start of `fit_dm_to_psfs`.
+        rotation/flip on the DM and leaves the per-frame tip-tilt
+        initialized for it, as at the start of `fit_dm_to_psfs`.
 
         Use low-order probes here: their capture range in rotation is
         large, so `rotation_step` only has to be within it.
@@ -689,17 +692,17 @@ class TwinCalibrator:
 
     def fit_dm_to_psfs(self, commands, psfs, sampling, wavelength, *,
                        static_M2C=None, static_opd_mode="dm", residual_lr_factor=0.1,
-                       ref_pupil=None, fit_amplitude=False,
-                       background="scalar", n_iter=500,
+                       ref_pupil=None, fit_amplitude=False, n_iter=500,
                        lr_geometry=3e-3, lr_nuisance=1e-2,
                        lr_offset_start=-4, lr_offset_end=-2,
                        loss_fn=None, live_plot=True, plot_frame_idx=4):
         """
         Fits the DM relay geometry, a shared NCPA, an independent tip-tilt per
-        frame, a background and (if `fit_amplitude`) the pupil amplitude, so
-        that `psf_model(commands)` matches the camera images `psfs`
-        `(n, H, H)`, each normalized to sum 1. `estimate_ncpa` is the same fit
-        with the DM fixed.
+        frame and (if `fit_amplitude`) the pupil amplitude, so that
+        `psf_model(commands)` matches the camera images `psfs` `(n, H, H)`.
+        Each frame must be background-subtracted (the model has no background
+        term), then normalized to sum 1. `estimate_ncpa` is the same fit with
+        the DM fixed.
 
         - Relay geometry: every trainable DM parameter except
           `DM_INTRINSIC_PARAMETERS` (sign, Moffat shape, coupling), which stay
@@ -711,11 +714,8 @@ class TwinCalibrator:
           removes its piston/tip/tilt, which belong to the per-frame tip-tilt;
           at the end of the fit they are also removed from the stored
           parameters, so `static_correction_command()` contains no tilt.
-        - Per-frame tip-tilt (in lambda/D, `psf_tiptilt`) and background
-          (`psf_background`) are re-initialized at every call: the tip-tilt
-          from each frame's centroid relative to the model's, the background
-          from the frames' border median. `background="scalar"` fits one value,
-          "map" a value per pixel.
+        - Per-frame tip-tilt (in lambda/D, `psf_tiptilt`) is re-initialized at
+          every call, from each frame's centroid relative to the model's.
         - `ref_pupil`, if given, sets the pupil amplitude (e.g. the WFS-path
           calibrator's `ref_pupil`); otherwise the current one is kept.
         - Loss: sum((psfs - model)^2) / sum(psfs^2) by default; `loss_fn(psfs,
@@ -739,7 +739,7 @@ class TwinCalibrator:
             final_loss = self._fit_psfs(
                 commands, psfs, sampling, wavelength, static_M2C=static_M2C,
                 static_opd_mode=static_opd_mode, residual_lr_factor=residual_lr_factor,
-                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude, background=background,
+                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude,
                 n_iter=n_iter, lr_geometry=lr_geometry, lr_nuisance=lr_nuisance,
                 lr_offset_start=lr_offset_start, lr_offset_end=lr_offset_end,
                 loss_fn=loss_fn, live_plot=live_plot, plot_frame_idx=plot_frame_idx)
@@ -753,14 +753,14 @@ class TwinCalibrator:
 
     def estimate_ncpa(self, commands, psfs, sampling, wavelength, *,
                       static_M2C=None, static_opd_mode="dm", residual_lr_factor=0.1,
-                      ref_pupil=None, fit_amplitude=False, background="scalar", n_iter=300,
+                      ref_pupil=None, fit_amplitude=False, n_iter=300,
                       lr_nuisance=1e-2, lr_offset_start=-4, lr_offset_end=-2,
                       loss_fn=None, live_plot=True, plot_frame_idx=4):
         """
         NCPA from camera PSFs with the DM fixed: the same fit as
-        `fit_dm_to_psfs` (same arguments), but only the NCPA, per-frame
-        tip-tilt, background and (if `fit_amplitude`) the pupil amplitude are
-        fitted. The DM and WFS are left exactly as they were (parameters,
+        `fit_dm_to_psfs` (same arguments, same background-subtracted, sum-1
+        frames), but only the NCPA, per-frame tip-tilt and (if
+        `fit_amplitude`) the pupil amplitude are fitted. The DM and WFS are left exactly as they were (parameters,
         influence functions, train/eval mode, requires_grad flags).
 
         Use it as the NCPA step after `fit_dm_to_psfs` on the same calibrator,
@@ -769,7 +769,7 @@ class TwinCalibrator:
         The result goes into this calibrator's static offsets: `ref_opd` (the
         NCPA in meters, without piston/tip/tilt), `static_correction_command()`
         ("dm" and "dm+pixel" modes), `static_opd_parts()`, `ref_pupil`, plus
-        `psf_tiptilt` and `psf_background`. So don't call it on the calibrator
+        `psf_tiptilt`. So don't call it on the calibrator
         of the WFS path: it would overwrite the WFS-path static offsets. Use a
         separate calibrator, even for the same DM.
 
@@ -787,7 +787,7 @@ class TwinCalibrator:
             return self._fit_psfs(
                 commands, psfs, sampling, wavelength, static_M2C=static_M2C,
                 static_opd_mode=static_opd_mode, residual_lr_factor=residual_lr_factor,
-                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude, background=background,
+                ref_pupil=ref_pupil, fit_amplitude=fit_amplitude,
                 n_iter=n_iter, lr_geometry=None, lr_nuisance=lr_nuisance,
                 lr_offset_start=lr_offset_start, lr_offset_end=lr_offset_end,
                 loss_fn=loss_fn, live_plot=live_plot, plot_frame_idx=plot_frame_idx)
@@ -796,13 +796,11 @@ class TwinCalibrator:
                 self.dm.train()
 
     def _fit_psfs(self, commands, psfs, sampling, wavelength, *, static_M2C, static_opd_mode,
-                  residual_lr_factor, ref_pupil, fit_amplitude, background, n_iter, lr_geometry,
+                  residual_lr_factor, ref_pupil, fit_amplitude, n_iter, lr_geometry,
                   lr_nuisance, lr_offset_start, lr_offset_end, loss_fn, live_plot, plot_frame_idx):
         """The loop shared by `fit_dm_to_psfs` and `estimate_ncpa`. The DM
         geometry is fitted through whatever DM parameters are trainable (none
         in eval mode). Returns the final loss."""
-        if background not in ("scalar", "map"):
-            raise ValueError(f"background must be 'scalar' or 'map', got {background!r}")
         assert torch.allclose(psfs.sum(dim=(-2, -1)), torch.ones(len(psfs), device=psfs.device), atol=1e-3), \
             "the PSF fit expects every PSF frame normalized to sum 1"
 
@@ -818,7 +816,7 @@ class TwinCalibrator:
         self._log_ref_pupil.requires_grad_(fit_amplitude)
 
         try:
-            param_groups = [{"params": [self._psf_tiptilt, self._psf_background], "lr": lr_nuisance}]
+            param_groups = [{"params": [self._psf_tiptilt], "lr": lr_nuisance}]
             geometry = [p for p in dm.parameters() if p.requires_grad]
             if geometry:
                 param_groups.append({"params": geometry, "lr": lr_geometry})
@@ -842,7 +840,7 @@ class TwinCalibrator:
                 self._set_static_lr(optimizer, 10 ** exponent)
 
                 optimizer.zero_grad()
-                model = self._psf_model(commands, sampling, wavelength, scalar_background=background == "scalar")
+                model = self._psf_model(commands, sampling, wavelength)
                 l = loss_fn(psfs, model)
                 l.backward()
                 optimizer.step()
@@ -862,9 +860,6 @@ class TwinCalibrator:
             if live_plot:
                 plt.close(fig)
 
-            with torch.no_grad():
-                if background == "scalar":
-                    self._psf_background.fill_(self._psf_background.mean())
             self._remove_static_tiptilt()
         finally:
             self._log_ref_pupil.requires_grad_(True)
@@ -875,14 +870,6 @@ class TwinCalibrator:
         """Per-frame tip-tilt of the last PSF fit, `(n, 2)` in lambda/D
         (x = columns, y = rows), or None."""
         return getattr(self, "_psf_tiptilt", None)
-
-    @property
-    def psf_background(self):
-        """Background of the last PSF fit, `(H, H)` in the units of the
-        sum-1 normalized frames, or None. Its sum is the fraction of each
-        frame's flux that is background."""
-        raw = getattr(self, "_psf_background", None)
-        return None if raw is None else raw / raw[0].numel()
 
     def _psf_sampling(self, sampling, report=False):
         """The sampling GetPSF actually uses for `sampling`: its padding only
@@ -898,9 +885,9 @@ class TwinCalibrator:
     def _psf_loss(psfs, model):
         return ((psfs - model) ** 2).sum() / (psfs ** 2).sum()
 
-    def _psf_model(self, commands, sampling, wavelength, scalar_background=False):
+    def _psf_model(self, commands, sampling, wavelength):
         if self.psf_tiptilt is None:
-            raise ValueError("No PSF tip-tilt/background yet: run rough_calibrate_dm_to_psfs or fit_dm_to_psfs first.")
+            raise ValueError("No PSF tip-tilt yet: run rough_calibrate_dm_to_psfs or fit_dm_to_psfs first.")
         if len(commands) != len(self._psf_tiptilt):
             raise ValueError(f"{len(commands)} commands but {len(self._psf_tiptilt)} frames in the last PSF fit.")
         opd = self.dm(commands)
@@ -910,13 +897,9 @@ class TwinCalibrator:
         ramps = self._tiptilt_basis()[1:]
         opd = opd + wavelength / self.wfs.Nres * torch.einsum('nk,kwh->nwh', self._psf_tiptilt, ramps)
 
-        background = self.psf_background
         psf = self.wfs.GetPSF(opd, pupil=self.ref_pupil, sampling=sampling, wl=wavelength,
-                              fov_pix=background.shape[-1])
-        psf = psf / psf.sum(dim=(-2, -1), keepdim=True)
-        if scalar_background:
-            background = background.mean().expand_as(background)
-        return (1 - background.sum()) * psf + background
+                              fov_pix=self._psf_window)
+        return psf / psf.sum(dim=(-2, -1), keepdim=True)
 
     def _tiptilt_basis(self):
         """`(3, Nres, Nres)`: piston, then the x (columns) and y (rows) ramps in
@@ -950,28 +933,16 @@ class TwinCalibrator:
                 self._ref_opd_pixel -= (total - self._remove_tiptilt(total)) / 1e-6
 
     def _init_psf_nuisances(self, commands, psfs, sampling, wavelength):
-        """Initial per-frame tip-tilt and background, by comparing the frames
-        with the model at zero tip-tilt and background: the background is the
-        excess of the frames' border median over the model's (the border of a
-        small window is still PSF halo), and each frame's tip-tilt is the
-        offset of its centroid from the model's (pixels -> lambda/D), since
-        the probes move the centroid themselves (e.g. coma)."""
-        H = psfs.shape[-1]
+        """Sets the camera window size and the initial per-frame tip-tilt: the
+        offset of each frame's centroid from the model's at zero tip-tilt
+        (pixels -> lambda/D), since the probes move the centroid themselves
+        (e.g. coma)."""
+        self._psf_window = psfs.shape[-1]
         self._psf_tiptilt = torch.nn.Parameter(torch.zeros(len(psfs), 2, device=self.device))
-        # Stored as (per-pixel background) * H^2, i.e. in units of the total
-        # flux, so that it is O(1) like the other fitted parameters (Adam moves
-        # every parameter by ~lr per step, whatever its scale).
-        self._psf_background = torch.nn.Parameter(torch.zeros(H, H, device=self.device))
         with torch.no_grad():
             model = self._psf_model(commands, sampling, wavelength)
-            background = (self._border(psfs).median() - self._border(model).median()).clamp_min(0)
-            self._psf_background.fill_(float(background) * H * H)
-            offset = self._centroid(psfs - background) - self._centroid(model)
+            offset = self._centroid(psfs) - self._centroid(model)
             self._psf_tiptilt.copy_(offset / sampling)
-
-    @staticmethod
-    def _border(images):
-        return torch.cat([images[:, 0], images[:, -1], images[:, 1:-1, 0], images[:, 1:-1, -1]], dim=-1)
 
     @staticmethod
     def _centroid(images):

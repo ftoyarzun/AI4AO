@@ -538,6 +538,22 @@ def test_get_psf_fov_pix_crop(device):
         wfs.GetPSF(opd, fov=6, fov_pix=18)
 
 
+def test_get_psf_fov_larger_than_frame_raises(device):
+    """Nres = 12 at sampling 3 gives a 36-pixel frame (12 lambda/D): a crop up
+    to that size works and equals the full frame; anything larger raises
+    instead of slicing with a negative start."""
+    wfs = _base_wfs(12, device)
+    opd = 50e-9 * torch.randn(1, 12, 12, device=device)
+    full = wfs.GetPSF(opd)
+    assert full.shape[-1] == 36
+    assert torch.equal(wfs.GetPSF(opd, fov_pix=36), full)
+    assert torch.equal(wfs.GetPSF(opd, fov=12), full)
+    with pytest.raises(ValueError, match="exceeds the full PSF frame"):
+        wfs.GetPSF(opd, fov_pix=37)
+    with pytest.raises(ValueError, match="exceeds the full PSF frame"):
+        wfs.GetPSF(opd, fov=12.5)                  # round(37.5) = 38 pixels
+
+
 @pytest.mark.parametrize("Nres", [12, 13])      # even and odd full-frame sizes
 @pytest.mark.parametrize("size", [9, 10])       # odd and even crops
 def test_get_psf_crop_keeps_optical_axis_at_center(device, Nres, size):

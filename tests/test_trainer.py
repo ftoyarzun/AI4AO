@@ -22,6 +22,10 @@ from AI4AO.Trainer import (
 )
 from AI4AO.Utils import seed_everything
 
+# Field of view (lambda/D) of the PSF Strehl metric in these tests. The Trainer's default, 20,
+# exceeds the PSF frame of the Nres = 12 test twin (12 lambda/D), which GetPSF refuses.
+PSF_FOV = 10
+
 
 class _StubWFS:
     """Trainer.__init__ only reads wfs.device; nothing else is touched
@@ -230,7 +234,7 @@ def _reference_train(self, training_steps=1000, closed_loop_iterations=1):
 
 
 @torch.no_grad()
-def _reference_evaluate(self, n_steps = 100, dataset = None, gain = None, leak = None, psf_sampling = 4, psf_fov = 20):
+def _reference_evaluate(self, n_steps = 100, dataset = None, gain = None, leak = None, psf_sampling = 4, psf_fov = PSF_FOV):
     dataset = dataset if dataset is not None else self.dataset
 
     if self.dm.training:
@@ -335,7 +339,7 @@ def test_evaluate_with_old_window_is_bit_identical_to_frozen_reference(noisy_twi
     seed_everything(9)
     ref = _reference_evaluate(trainer, n_steps=10)
     seed_everything(9)
-    new = trainer.evaluate(n_steps=10, loop_start=0.3)
+    new = trainer.evaluate(n_steps=10, loop_start=0.3, psf_fov=PSF_FOV)
 
     for key, value in ref.items():
         assert torch.equal(getattr(new, key), value), key
@@ -416,13 +420,14 @@ def test_optional_constructor_arguments(noisy_twin):
     trainer = Trainer(noisy_twin.wfs, noisy_twin.fp, noisy_twin.dm, noisy_twin.M2C,
                       dataset=noisy_twin.dataset, loss=noisy_twin.loss)
     assert trainer.phaseReconstructor is None and trainer.optimizer is None
-    for call in (lambda: trainer.train(2, 1), lambda: trainer.evaluate(n_steps=2),
+    for call in (lambda: trainer.train(2, 1), lambda: trainer.evaluate(n_steps=2, psf_fov=PSF_FOV),
                  lambda: trainer.save_checkpoint("unused.pth"),
                  lambda: trainer.load_checkpoint("unused.pth")):
         with pytest.raises(ValueError, match="phaseReconstructor"):
             call()
     # evaluate_many works on a trainer with no reconstructor of its own
-    report = trainer.evaluate_many({"oracle": trainer.oracle_reconstructor()}, seeds=[0], n_steps=4)
+    report = trainer.evaluate_many({"oracle": trainer.oracle_reconstructor()}, seeds=[0], n_steps=4,
+                                   psf_fov=PSF_FOV)
     assert np.isfinite(report.nm_rms["oracle"][0])
 
     # positional construction is unchanged
@@ -490,7 +495,7 @@ def test_rollout_window_and_metrics_match_hand_computation(noisy_twin):
     n = 10
     seed_everything(1)
     metrics, res = trainer._rollout(trainer.oracle_reconstructor(), ds, n, loop_start=0.2,
-                                    record_start=0.3, keep_trajectories=True)
+                                    record_start=0.3, keep_trajectories=True, psf_fov=PSF_FOV)
     assert res.metrics == metrics
 
     # the integrator stays at zero for i <= 0.2 n, then closes
@@ -500,7 +505,7 @@ def test_rollout_window_and_metrics_match_hand_computation(noisy_twin):
     pupil = ds.pupil.bool()
     v = res.residual_opd[3:][..., pupil].double()           # frames int(0.3 n) .. n-1
     assert metrics["nm_rms"] == pytest.approx(float(v.pow(2).mean().sqrt()) * 1e9, rel=1e-9)
-    peak0 = noisy_twin.wfs.GetPSF(torch.zeros_like(res.opd[0][:1]), res.pupil[0][:1], 4, 20).amax()
+    peak0 = noisy_twin.wfs.GetPSF(torch.zeros_like(res.opd[0][:1]), res.pupil[0][:1], 4, PSF_FOV).amax()
     strehl = (res.psfs[3:].flatten(2).amax(2) / peak0).mean()
     assert metrics["strehl"] == pytest.approx(float(strehl), rel=1e-6)
     k = 2 * np.pi / float(torch.as_tensor(noisy_twin.wfs.wavelength).double().reshape(-1).mean())
@@ -515,7 +520,7 @@ def test_rollout_residual_grows_with_loop_delay(noisy_twin):
     nm = []
     for delay in (0, 1, 2):
         report = trainer.evaluate_many({"oracle": oracle}, seeds=[4], n_steps=40, delay=delay,
-                                       gain=0.4, leak=1.0, loop_start=0.0, record_start=0.5)
+                                       gain=0.4, leak=1.0, loop_start=0.0, record_start=0.5, psf_fov=PSF_FOV)
         nm.append(report.nm_rms["oracle"][0])
     assert nm[0] < nm[1] < nm[2]
 
@@ -526,7 +531,7 @@ def test_evaluate_many_pairs_models_and_reports(noisy_twin):
     recs = {"cnn": model, "cnn_again": model, "oracle": trainer.oracle_reconstructor(),
             "linear": trainer.linear_reconstructor()}
     report = trainer.evaluate_many(recs, seeds=[0, 1], n_steps=6, baseline="cnn",
-                                   keep_trajectories=True)
+                                   keep_trajectories=True, psf_fov=PSF_FOV)
 
     assert report.nm_rms["cnn"] == report.nm_rms["cnn_again"]
     assert report.strehl["cnn"] == report.strehl["cnn_again"]
@@ -549,19 +554,19 @@ def test_evaluate_many_references(noisy_twin):
     trainer = _trainer(noisy_twin)
     model = noisy_twin.make_model()
     report = trainer.evaluate_many({"cnn": model}, seeds=[0, 1], n_steps=6, baseline="cnn",
-                                   references=("linear", "oracle"))
+                                   references=("linear", "oracle"), psf_fov=PSF_FOV)
     assert list(report.nm_rms) == ["cnn", "linear", "oracle"]
 
     # the references are the same rollouts as passing the reconstructors by hand
     by_hand = trainer.evaluate_many({"cnn": model, "linear": trainer.linear_reconstructor(),
                                      "oracle": trainer.oracle_reconstructor()},
-                                    seeds=[0, 1], n_steps=6)
+                                    seeds=[0, 1], n_steps=6, psf_fov=PSF_FOV)
     assert report.nm_rms == by_hand.nm_rms
     assert report.nm_rms["oracle"][0] < report.nm_rms["linear"][0]
     assert "linear" in report.table() and "oracle" in report.table()
 
     only_oracle = trainer.evaluate_many({"cnn": model}, seeds=[0], n_steps=4, references="oracle",
-                                        baseline="oracle")
+                                        baseline="oracle", psf_fov=PSF_FOV)
     assert list(only_oracle.nm_rms) == ["cnn", "oracle"]
     with pytest.raises(ValueError, match="unknown references"):
         trainer.evaluate_many({"cnn": model}, seeds=[0], n_steps=2, references=("lmmse",))
@@ -573,7 +578,7 @@ def test_evaluate_many_single_seed_has_no_error_bar(noisy_twin):
     trainer = _trainer(noisy_twin)
     model = noisy_twin.make_model()
     report = trainer.evaluate_many({"a": model, "oracle": trainer.oracle_reconstructor()},
-                                   seeds=[0], n_steps=4, baseline="a")
+                                   seeds=[0], n_steps=4, baseline="a", psf_fov=PSF_FOV)
     assert np.isnan(report.paired_delta("oracle")[1])
     assert report.trajectories is None
     table = report.table()
