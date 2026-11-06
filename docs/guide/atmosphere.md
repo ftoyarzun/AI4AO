@@ -16,10 +16,11 @@ instrument defined in `Tutorials/basics/wfs_params_exp.py` (see {doc}`../params`
 ## Setup
 
 ```python
+import matplotlib.pyplot as plt
 import torch
 from mmengine import Config
 
-from AI4AO import PhaseDataset, InfinitePhaseScreen
+from AI4AO import PhaseDataset, InfinitePhaseScreen, imshow, imshow_multiple
 
 device = "cpu"  # or "cuda"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -51,6 +52,15 @@ print(rms_nm[:3])
 next_frame = dataset[1]["opd"]   # the same screens, one loop period later
 ```
 
+To look at the screens, {func}`~AI4AO.Utils.imshow` takes a `(H, W)`, `(C, H, W)` or
+`(B, C, H, W)` tensor and draws one panel per image. Masking with the pupil hides the
+values outside the aperture:
+
+```python
+imshow(opd[:4] * pupil[:4] * 1e9)    # the first four screens
+plt.show()
+```
+
 The batch dict also carries the conditions that were drawn, so that the WFS noise and
 the loop can be configured to match:
 
@@ -77,7 +87,18 @@ dataset.generateClosedLoop = True
 residual = dataset[0]["opd"]
 print(residual[:, dataset.pupil].std(dim=-1).mean() * 1e9, "nm RMS on average")
 dataset.generateClosedLoop = False
+
+# Side by side, each on its own color scale
+imshow_multiple([
+    {"tensor": opd[0] * dataset.pupil * 1e9, "title": "open loop (nm)"},
+    {"tensor": residual[0] * dataset.pupil * 1e9, "title": "closed-loop residual (nm)"},
+], colorbar=True)
+plt.show()
 ```
+
+{func}`~AI4AO.Utils.imshow_multiple` takes a list of tensors, or of dicts that add a
+`title` and per-panel `imshow` options. The keyword arguments given to it apply to every
+panel.
 
 ## Reproducibility
 
@@ -105,6 +126,9 @@ scint_params = dict(AtmosParams, Scintillation=True)
 scint_dataset = PhaseDataset(WFSParams, scint_params, LoopParams, DMParams, device)
 amplitude = scint_dataset[0]["pupil"]
 print(amplitude.dtype, float(amplitude[0][scint_dataset.pupil].std()))
+
+imshow(amplitude[0], colorbar=True)      # pupil amplitude of the first sample
+plt.show()
 ```
 
 ## Non-repeating screens: `InfinitePhaseScreen`

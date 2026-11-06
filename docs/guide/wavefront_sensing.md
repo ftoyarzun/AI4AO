@@ -19,10 +19,12 @@ All examples run from the repository root on CPU. The params come from
 ## Setup
 
 ```python
+import matplotlib.pyplot as plt
 import torch
 from mmengine import Config
 
 from AI4AO import PhaseDataset, PyramidWFS, ZernikeWFS, FramePreprocess, DeformableMirror
+from AI4AO import imshow, imshow_multiple
 
 device = "cpu"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -50,6 +52,12 @@ with torch.no_grad():
 
 print(frame.shape)                       # (16, 120, 120): Nres * sampling pixels
 print(wfs.reference_intensity.shape)     # (120, 120)
+
+imshow_multiple([
+    {"tensor": wfs.reference_intensity, "title": "reference (flat wavefront)"},
+    {"tensor": frame[0], "title": "turbulent frame"},
+], colorbar=True)
+plt.show()
 ```
 
 The frame is normalized to unit sum. With `useNoise=True`, Poisson noise (with
@@ -66,6 +74,12 @@ wfs.modulation = 3
 with torch.no_grad():
     modulated = wfs(batch["opd"])
 wfs.modulation = 0
+
+imshow_multiple([
+    {"tensor": frame[0], "title": "unmodulated"},
+    {"tensor": modulated[0], "title": "modulation 3 λ/D"},
+])
+plt.show()
 ```
 
 ## A Zernike WFS
@@ -79,6 +93,9 @@ zwfs = ZernikeWFS(zernike_params, device).eval()
 with torch.no_grad():
     zframe = zwfs(batch["opd"])
 print(zframe.shape)
+
+imshow(zframe[0], colorbar=True)
+plt.show()
 ```
 
 ## PSFs
@@ -91,7 +108,19 @@ psf = wfs.GetPSF(batch["opd"], sampling=4, fov=20)
 psf_perfect = wfs.GetPSF(torch.zeros_like(batch["opd"][:1]), sampling=4, fov=20)
 strehl = psf.amax(dim=(-2, -1)) / psf_perfect.max()
 print(psf.shape, strehl[:3])     # (16, 80, 80)
+
+def log_psf(x):
+    """log10 of a PSF relative to the diffraction-limited peak, floored at 1e-6."""
+    return torch.log10(x / psf_perfect.max()).clamp_min(-6)
+
+imshow_multiple([
+    {"tensor": log_psf(psf_perfect[0]), "title": "diffraction limited"},
+    {"tensor": log_psf(psf[0]), "title": f"turbulent, Strehl {strehl[0]:.2f}"},
+], scale_reference=log_psf(psf_perfect[0]), colorbar=True)
+plt.show()
 ```
+
+`scale_reference` puts both panels on the color scale of the diffraction-limited PSF.
 
 ## Polychromatic sensing
 
@@ -107,6 +136,10 @@ with torch.no_grad():
 print(broadband.shape, per_wavelength.shape)   # (16, 120, 120) and (16, 4, 120, 120)
 
 wfs.wavelength = WFSParams["Wavelength"]       # back to monochromatic
+
+# One panel per wavelength, on a common color scale
+imshow(per_wavelength[0], same_scale=True)
+plt.show()
 ```
 
 The per-wavelength frames are a diagnostic view of the optics. Detector noise applies
@@ -128,6 +161,9 @@ with torch.no_grad():
     x = preprocess.ProcessFrame(frame)                          # with pupil-position/size jitter
     x_clean = preprocess.ProcessFrame(frame, add_pupil_noise=False)
 print(x.shape)    # (16, 4, 46, 46): Nres + Extract_pupils_pad pixels per side
+
+imshow(x_clean[0])     # the four pupil images the network sees
+plt.show()
 ```
 
 The jitter (`Center_noise`, `Pupil_size_noise`) is a training-time augmentation that
@@ -147,6 +183,9 @@ with torch.no_grad():
     wfs.BuildReconstructionMatrix(modes_opd)
     z = wfs.GetReconstructedOPD(wfs(batch["opd"]))   # modal coefficients
 print(wfs.iMat.shape, z.shape)      # (64, 120, 120) and (16, 64)
+
+imshow(wfs.iMat[:8])                # the WFS response to the first eight modes
+plt.show()
 ```
 
 Higher-level code rarely calls these methods directly:

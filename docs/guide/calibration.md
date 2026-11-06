@@ -23,10 +23,11 @@ CPU (see {doc}`../params` for the params).
 ```python
 import tempfile
 
+import matplotlib.pyplot as plt
 import torch
 from mmengine import Config
 
-from AI4AO import PyramidWFS, DeformableMirror, TwinCalibrator
+from AI4AO import PyramidWFS, DeformableMirror, TwinCalibrator, imshow_multiple
 
 device = "cpu"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -90,6 +91,15 @@ for key in ("rotationAngle", "shiftX", "shiftY"):
 ```python
 modes = calibrator.rebuild_reconstruction_matrix(M2C)    # rebuild the twin's iMat
 cross_talk = calibrator.crosstalk_diagnostic(bench_iMat)  # twin vs. bench, per mode
+
+# The response to one mode: bench, twin and their difference, on the bench's scale
+k = 10
+imshow_multiple([
+    {"tensor": bench_iMat[k], "title": f"bench, mode {k}"},
+    {"tensor": wfs.iMat[k], "title": "twin"},
+    {"tensor": bench_iMat[k] - wfs.iMat[k], "title": "bench - twin"},
+], scale_reference=bench_iMat[k], colorbar=True)
+plt.show()
 ```
 
 `save` and `load` store the calibrated WFS and DM under `DATA_DIR / <instrument>`, or

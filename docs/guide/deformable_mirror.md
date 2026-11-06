@@ -13,10 +13,11 @@ All examples run from the repository root on CPU. The params come from
 ## Setup
 
 ```python
+import matplotlib.pyplot as plt
 import torch
 from mmengine import Config
 
-from AI4AO import PhaseDataset, PyramidWFS, DeformableMirror
+from AI4AO import PhaseDataset, PyramidWFS, DeformableMirror, imshow, imshow_multiple
 
 device = "cpu"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -48,6 +49,9 @@ wavelength**: an OPD of λ/2π, about 101 nm for the 635 nm demo sensor.
 ```python
 modes = dm(M2C.T)                    # every mode as a surface, (Nmodes, Nres, Nres)
 print(modes[:4][:, dm.pupil].std(dim=-1) * 1e9)    # ~101 nm each
+
+imshow(modes[:12] * dm.pupil)        # the first twelve modes
+plt.show()
 ```
 
 To project an OPD onto the modes (the "oracle" measurement), use the pseudo-inverse of
@@ -72,6 +76,16 @@ dm_rotated = DeformableMirror(WFSParams, DMParams, device, misreg=misreg).eval()
 
 geometry, dm_config = dm_rotated.GetMisreg()
 print(round(geometry["rotationAngle"], 3), dm_config["MechCoupling"])
+
+# The same mode on both mirrors: the rotated DM turns (and shifts) the surface
+nominal = dm(M2C.T[4:5])[0] * dm.pupil
+rotated = dm_rotated(M2C.T[4:5])[0] * dm.pupil
+imshow_multiple([
+    {"tensor": nominal, "title": "nominal"},
+    {"tensor": rotated, "title": "rotated by 10°"},
+    {"tensor": rotated - nominal, "title": "difference"},
+], scale_reference=nominal)
+plt.show()
 ```
 
 Parameters with a property setter, for example `dm.flip_lr`, `dm.rotationAngle` or
@@ -103,6 +117,15 @@ with torch.no_grad():
 open_loop = opd[:, dm.pupil].std(dim=-1).mean() * 1e9
 closed_loop = residual[:, dm.pupil].std(dim=-1).mean() * 1e9
 print(f"{open_loop:.0f} nm -> {closed_loop:.0f} nm RMS")
+
+# Last iteration of the first sample, all on the color scale of the turbulence
+turbulence = opd[0] * dm.pupil * 1e9
+imshow_multiple([
+    {"tensor": turbulence, "title": "turbulence (nm)"},
+    {"tensor": correction[0] * dm.pupil * 1e9, "title": "DM correction (nm)"},
+    {"tensor": residual[0] * dm.pupil * 1e9, "title": "residual (nm)"},
+], scale_reference=turbulence, colorbar=True)
+plt.show()
 ```
 
 ## Saving and loading a calibrated DM

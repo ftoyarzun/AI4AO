@@ -6,7 +6,8 @@ stale when an API changes.
   in one namespace per page, from the repository root (the examples load
   Tutorials/basics/wfs_params_exp.py by relative path). Blocks written as
   ```{code-block} python are illustrative only and are not run. Printed values are not
-  checked, only that the code runs.
+  checked, only that the code runs. Figures are drawn (Agg backend, see conftest.py)
+  but `plt.show()` is a no-op, so the examples can call it as a script would.
 - Docstring examples (`>>>` lines in AI4AO/): run as doctests, also from the
   repository root, and their printed output IS checked (with ELLIPSIS and
   NORMALIZE_WHITESPACE).
@@ -56,6 +57,7 @@ def test_guide_pages_exist():
 @pytest.mark.parametrize("page", guide_pages())
 def test_guide_page_runs(page, monkeypatch):
     monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setattr(plt, "show", lambda *args, **kwargs: None)
     blocks = PYTHON_BLOCK.findall(page.read_text(encoding="utf-8"))
     assert blocks, f"{page.name} has no ```python blocks"
     namespace = {"__name__": f"docs_guide_{page.stem}"}

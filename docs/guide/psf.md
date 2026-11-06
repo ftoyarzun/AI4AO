@@ -20,10 +20,11 @@ The PSF side has its own params dict. The values below are illustrative, for the
 instrument only.
 
 ```python
+import matplotlib.pyplot as plt
 import torch
 from mmengine import Config
 
-from AI4AO import WFS, PSFDataset, PSFModel
+from AI4AO import WFS, PSFDataset, PSFModel, imshow, imshow_multiple
 
 device = "cpu"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -51,6 +52,14 @@ batch = psf_dataset[0]
 print(batch["psf"].shape)           # (16, 72, 72): fov * sampling pixels
 print(batch["strehl"][:3])          # Strehl ratio at the science wavelength
 print(batch["r0"][:3])              # the conditions behind each PSF are in the batch
+
+def log_psf(psf, floor=1e-6):
+    """log10 of a PSF normalized to its peak, floored so that the wings stay finite."""
+    peak = psf.amax(dim=(-2, -1), keepdim=True)
+    return torch.log10((psf / peak).clamp_min(floor))
+
+imshow(log_psf(batch["psf"][:4]), colorbar=True)
+plt.show()
 ```
 
 ## Using the model directly
@@ -70,6 +79,16 @@ for name, term in terms.items():
 long_exposure = model.PSF(params)                  # (B, H, W)
 short_exposure = model.ShortExposurePSF(params)    # one random instantaneous PSF per sample
 strehl = model.Strehl(model.OTF(params))
+
+imshow_multiple([
+    {"tensor": log_psf(long_exposure[0]), "title": "long exposure"},
+    {"tensor": log_psf(short_exposure[0]), "title": "short exposure"},
+], colorbar=True)
+plt.show()
+
+# The residual PSD of the first sample: the DM corrects inside the central square
+imshow(torch.log10(psd[0] / psd[0].max()).clamp_min(-8), colorbar=True)
+plt.show()
 ```
 
 ## Fitting conditions to a PSF

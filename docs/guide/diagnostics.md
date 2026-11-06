@@ -15,13 +15,12 @@ A small network and a batch of real preprocessed WFS frames to feed it:
 ```python
 from contextlib import nullcontext
 
-import matplotlib
-matplotlib.use("Agg")                    # remove in a notebook to see the plots
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from mmengine import Config
 
-from AI4AO import PhaseDataset, PyramidWFS, FramePreprocess, CNNDiagnostics
+from AI4AO import PhaseDataset, PyramidWFS, FramePreprocess, CNNDiagnostics, imshow
 
 device = "cpu"
 p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
@@ -38,6 +37,9 @@ model = nn.Sequential(
     nn.Conv2d(16, 32, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(1),
     nn.Flatten(), nn.Linear(32, 64),
 )
+
+imshow(x[:2])     # the network input: four pupil images for each of two samples
+plt.show()
 ```
 
 ## A quick look: `run`
@@ -55,6 +57,7 @@ print(diag.summary())
 diag.plot_feature_maps("0", max_channels=8)
 diag.plot_gradient_flow()
 diag.plot_saliency()          # which input pixels the output is most sensitive to
+plt.show()
 ```
 
 ## Per-mode Jacobians
@@ -66,6 +69,7 @@ input frames. It shows which pupil pixels each mode is read from.
 J = diag.jacobian(x[:2], modes=[0, 1, 2])     # (n_modes, batch, 4, 46, 46)
 print(J.shape)
 diag.plot_jacobian(J, x[:2], modes=[0, 1, 2])
+plt.show()
 ```
 
 ## Inside a training loop
@@ -90,6 +94,7 @@ for step in range(20):
 
 diag.plot_history("weight_grad_norm")
 diag.plot_history("update_ratio")
+plt.show()
 ```
 
 {class}`~AI4AO.Trainer.TrainingRun` also takes a `diagnostics=` argument, so
