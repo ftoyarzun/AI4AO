@@ -224,7 +224,7 @@ class WFS(nn.Module):
         psi_zwfs = uin_padded + (
             torch.exp(1j * self.phaseMask) - 1
         ) * self.iMFT_focal_to_pupil(psi_ref)
-        self.frame_no_noise = self.ShiftPupilImages(torch.abs(psi_zwfs) ** 2)
+        self.frame_no_noise = self.ShiftImages(torch.abs(psi_zwfs) ** 2)
 
     def BuildShiftGrid(self, pupil_shift_row, pupil_shift_col):
         """
@@ -252,7 +252,7 @@ class WFS(nn.Module):
         grid_x = grid_x.unsqueeze(0) - (2 * col_shift / (W - 1)).view(-1, 1, 1)  # (Nmask, H, W)
         self.shift_grid = torch.stack([grid_x, grid_y], dim=-1)  # (Nmask, H, W, 2), grid_sample wants (x, y) last
 
-    def ShiftPupilImages(self, frame):
+    def ShiftImages(self, frame):
         """
         Shifts each mask channel of a (..., Nmask, H, W) frame to its own detector
         position with a single batched grid_sample call, using the per-channel

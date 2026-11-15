@@ -259,7 +259,7 @@ def _legacy_mtf_frame(wfs, opd):
     Ep *= 1 / fs ** 2
     phase_mask = torch.ones(1, wfs.number_of_masks, 1, 1, device=wfs.device) * wfs.depths.view(1, -1, 1, 1)
     psi = uin_padded + (torch.exp(1j * phase_mask) - 1) * Ep
-    frame = wfs.ShiftPupilImages(torch.abs(psi) ** 2).sum(dim=(1, -3))
+    frame = wfs.ShiftImages(torch.abs(psi) ** 2).sum(dim=(1, -3))
     return frame / frame.sum(dim=(-2, -1), keepdim=True)
 
 

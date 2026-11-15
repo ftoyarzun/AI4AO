@@ -37,7 +37,7 @@ WFSParams = dict(
 ## Atmosphere parameters
 AtmosParams = dict(
     {
-        "r0": [0.02, 0.1],  # Fired parameter range (m)
+        "r0": [0.05, 0.2],  # Fired parameter range (m)
         "L0": [20, 30.0000],  # Outter scale range (m)
         "Nphases": 16,  # Number of phases in the batch
         "Layers": [5, 10],  # Number of layers in phase range
