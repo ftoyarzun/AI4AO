@@ -37,6 +37,7 @@ DOCTEST_MODULES = [
     "AI4AO.DeformableMirror",
     "AI4AO.PSFDataset",
     "AI4AO.Trainer",
+    "AI4AO.GDReconstructor",
     "AI4AO.TwinCalibrator",
     "AI4AO.LossFunctions",
     "AI4AO.CNNDiagnostics",

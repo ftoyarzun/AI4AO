@@ -108,7 +108,9 @@ retraining them.
 
 `evaluate_many` runs closed-loop rollouts of every reconstructor with the same seeds, so
 they see identical atmosphere and noise, and reports the steady-state residual (nm RMS)
-and Strehl ratios. `references` adds the classical linear reconstructor and the oracle
+and Strehl ratios. The residual is measured over the telescope aperture (`wfs.pupil`),
+so OPD behind a central obstruction, which neither the WFS nor the camera sees, doesn't
+count. `references` adds the classical linear reconstructor and the oracle
 (exact modal projection: the floor any reconstructor can reach).
 
 ```python
@@ -142,3 +144,51 @@ print(result.opd.shape, round(result.metrics["nm_rms"]))   # trajectories are (n
 
 single.save_checkpoint(out_dir / "single.pth")
 ```
+
+## Without training: gradient-descent reconstruction
+
+{class}`~AI4AO.GDReconstructor.GDReconstructor` needs no training. For every frame it
+starts from zero and runs Adam on the OPD until the frozen twin, `wfs(OPD)`, reproduces
+the measured frame. Because it inverts the full nonlinear model, it keeps working where
+the linear reconstructor saturates. Each frame costs `n_iter` forward and backward passes,
+so it is a reference and an analysis tool, not a real-time controller.
+
+By default (`opd_mode="dm"`) it fits the DM coefficients in the basis `M2C`. Adam moves
+every coordinate by about `lr` per step, so each mode is first rescaled by its typical
+amplitude in turbulence, estimated once from the dataset:
+
+```python
+from AI4AO import GDReconstructor
+
+torch.manual_seed(0)
+mode_scale = GDReconstructor.mode_scale_from_dataset(dataset, dm, M2C, n_batches=4)
+gd = GDReconstructor(wfs, dm, M2C, mode_scale=mode_scale, n_iter=50)
+
+c_true = torch.zeros(2, M2C.shape[1])
+c_true[0, 5], c_true[1, 12] = 0.5, -0.5
+wfs.useNoise = False                    # noise-free test frames
+with torch.no_grad():
+    frames = wfs(dm.GetDMShape(c_true @ M2C.T))
+wfs.useNoise = True
+
+c = gd(frames)                          # (B, Nmodes) DM coefficients
+print(c.shape, gd.opd.shape, gd.loss)   # fitted OPD in meters; final relative frame error
+```
+
+`opd_mode="pixel"` fits a free per-pixel OPD map instead, and `"dm+pixel"` fits both, with
+the per-pixel part learning more slowly. In those modes the call still returns DM
+coefficients: the per-pixel part is projected onto the DM. The fitted maps of the last
+call stay available as `gd.opd`, `gd.dm_opd` and `gd.pixel_opd`.
+
+The call signature, `gd(wfs_frames, residual_opd=None)`, is that of a reconstructor
+callable. It works on raw WFS frames, without `FramePreprocess`, and draws no random
+numbers. So it goes straight into `evaluate_many`, next to the references:
+
+```python
+evaluation = trainer.evaluate_many({"gd": gd}, seeds=(1, 2), n_steps=20,
+                                   references=("linear", "oracle"), baseline="linear")
+print(evaluation.table())
+```
+
+The WFS and DM must be in eval mode. The model frame is always noise-free, even when the
+WFS has `useNoise=True`, so measurement noise in the frames is not modelled by the fit.

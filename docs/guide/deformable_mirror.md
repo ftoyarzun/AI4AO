@@ -91,6 +91,23 @@ plt.show()
 Parameters with a property setter, for example `dm.flip_lr`, `dm.rotationAngle` or
 `dm.offset_to_fit_number_of_actuators`, rebuild the actuator grid when assigned.
 
+`GetActuatorPositions()` returns where each influence function is centred on the pupil
+grid, with the anamorphosis, rotation, flips and shift applied: `(totalAct, 2)` as
+`(x, y)` = (column, row) offsets in pupil pixels from the pupil centre.
+
+```python
+nominal_xy = dm.GetActuatorPositions()
+rotated_xy = dm_rotated.GetActuatorPositions()
+
+fig, ax = plt.subplots()
+ax.scatter(*nominal_xy.T.detach(), s=8, label="nominal")
+ax.scatter(*rotated_xy.T.detach(), s=8, label="misregistered")
+ax.set_aspect("equal")
+ax.invert_yaxis()                     # image orientation, rows pointing down
+ax.legend()
+plt.show()
+```
+
 ## A closed loop with a perfect sensor
 
 The pieces combine into an AO loop. Here the "measurement" is the exact modal projection

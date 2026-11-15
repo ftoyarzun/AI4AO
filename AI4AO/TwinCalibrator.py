@@ -491,8 +491,7 @@ class TwinCalibrator:
                     group_boxes=True
                     )
 
-        original_positions = dm.anamorphosis_coordinates(dm.actuator_positions)
-        original_positions = dm.rotate_coordinates(original_positions)
+        original_positions = dm.GetActuatorPositions().detach()
 
         warmup_iters = n_iter // 2
         # Only parameters left trainable are fit, so a caller can exclude one by
@@ -555,14 +554,17 @@ class TwinCalibrator:
 
         print(dm.GetMisreg())
 
-        transformed_positions = dm.anamorphosis_coordinates(dm.actuator_positions)
-        transformed_positions = dm.rotate_coordinates(transformed_positions)
+        transformed_positions = dm.GetActuatorPositions().detach()
 
         return final_loss, original_positions, transformed_positions
 
     def plot_actuator_and_offsets(self, original_positions, transformed_positions):
         """Actuator positions, static amplitude and static OPD (in "dm+pixel"
-        mode also its DM part and per-pixel residual, separately)."""
+        mode also its DM part and per-pixel residual, separately).
+
+        The positions are `DeformableMirror.GetActuatorPositions()` (flips and
+        shift included), drawn in image orientation (row axis pointing down)
+        so they overlay the maps next to them."""
         with torch.no_grad():
             dm_opd, pixel_opd = self.static_opd_parts()
             static_opd = self.ref_opd
@@ -580,6 +582,7 @@ class TwinCalibrator:
         plt.scatter(transformed_positions[:, 0].cpu().detach(), transformed_positions[:, 1].cpu().detach())
         plt.legend(['Old positions', 'New positions'])
         plt.axis('equal')
+        plt.gca().invert_yaxis()
 
         for i, (title, tensor) in enumerate(panels):
             plt.subplot(1, n, i + 2)
@@ -729,7 +732,7 @@ class TwinCalibrator:
         the fit (for `plot_actuator_and_offsets`).
         """
         dm = self.dm
-        original_positions = dm.rotate_coordinates(dm.anamorphosis_coordinates(dm.actuator_positions)).detach()
+        original_positions = dm.GetActuatorPositions().detach()
         dm.train()
         intrinsic = [getattr(dm, name) for name in self.DM_INTRINSIC_PARAMETERS]
         intrinsic_flags = [p.requires_grad for p in intrinsic]
@@ -748,7 +751,7 @@ class TwinCalibrator:
                 p.requires_grad_(flag)
 
         print(dm.GetMisreg())
-        transformed_positions = dm.rotate_coordinates(dm.anamorphosis_coordinates(dm.actuator_positions)).detach()
+        transformed_positions = dm.GetActuatorPositions().detach()
         return final_loss, original_positions, transformed_positions
 
     def estimate_ncpa(self, commands, psfs, sampling, wavelength, *,

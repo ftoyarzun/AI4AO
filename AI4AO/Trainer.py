@@ -249,7 +249,7 @@ class EvaluationResult:
 class EvaluationReport:
     """What evaluate_many returns: per-seed metrics for every reconstructor name."""
     seeds: list[int]
-    nm_rms: dict[str, list[float]]           # steady-state residual OPD, nm RMS over the pupil, per seed
+    nm_rms: dict[str, list[float]]           # steady-state residual OPD, nm RMS over the aperture (wfs.pupil), per seed
     strehl: dict[str, list[float]]           # mean PSF-peak Strehl over the same frames, per seed
     strehl_marechal: dict[str, list[float]]  # exp(-sigma^2), sigma^2 = mean piston-free residual phase variance
     baseline: str | None = None
@@ -690,7 +690,9 @@ class Trainer:
         """Closed-loop rollout of `reconstruct(wfs_frames, residual_opd) -> modes`.
 
         The integrator runs for i > loop_start * n_steps. Metrics are accumulated on the
-        fly over frames i >= int(record_start * n_steps), over dataset.pupil:
+        fly over frames i >= int(record_start * n_steps), over the telescope aperture
+        (wfs.pupil, central obstruction excluded: the OPD behind it is neither sensed
+        nor seen by the science path, so it must not count):
         nm_rms (residual OPD, nm RMS), strehl (PSF peak / diffraction-limited peak, mean)
         and strehl_marechal (exp(-mean per-frame, per-sample piston-free residual phase
         variance), at the WFS wavelength, the band mean if polychromatic). With
@@ -708,7 +710,7 @@ class Trainer:
         line = DelayLine(delay)
 
         record_from = int(n_steps * record_start)
-        pupil = dataset.pupil.bool()
+        pupil = self.wfs.pupil.bool()
         peak0 = self.wfs.GetPSF(torch.zeros_like(opd_gt[:1]), pupil_gt[:1], psf_sampling, psf_fov)
         peak0 = peak0.flatten(1).amax(1)[0]
         wavelength = torch.as_tensor(self.wfs.wavelength, dtype=torch.float64).reshape(-1).mean()

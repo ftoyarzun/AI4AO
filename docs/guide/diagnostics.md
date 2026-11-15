@@ -100,3 +100,52 @@ plt.show()
 {class}`~AI4AO.Trainer.TrainingRun` also takes a `diagnostics=` argument, so
 `Trainer.train_many` records diagnostics every `log_every` steps without a hand-written
 loop.
+
+## Derivative maps of the twin
+
+{func}`~AI4AO.Utils.jacobian_column` gives the derivative of a whole output (a WFS frame, a
+PSF, an iMat) with respect to one scalar parameter, as a map shaped like the output. It
+uses two backward passes, so it also works through the property setters of the twin.
+Here, how a Pyramid frame changes with the DM rotation, per degree:
+
+```python
+from AI4AO import DeformableMirror
+from AI4AO.Utils import jacobian_column
+
+wfs_d = PyramidWFS(dict(p.WFSParams, useNoise=False), device).eval()
+dm_d = DeformableMirror(p.WFSParams, p.DMParams, device).train()
+M2C_d = dm_d.MakeZernikeM2C()
+command = M2C_d[:, 6][None]                    # one mode, 1 rad RMS
+
+frame = wfs_d(dm_d(command))
+# rotationAngle is stored as rotation / 180, so divide by 180 for a derivative per degree
+d_frame_d_rotation = jacobian_column(frame, dm_d._rotationAngle, 0) / 180
+imshow(d_frame_d_rotation[0], colorbar=True)
+plt.show()
+```
+
+## Saving an animation
+
+{func}`~AI4AO.Utils.save_gif` writes frames rendered with
+{func}`~AI4AO.Utils.figure_to_rgb` to a GIF. It is much lighter than embedding
+`FuncAnimation.to_jshtml()` in a notebook. Pass the colormaps used in the frames, so
+the palette keeps every colormap level.
+
+```python
+import os
+import tempfile
+
+from AI4AO.Utils import figure_to_rgb, save_gif
+
+fig, ax = plt.subplots(figsize=(3, 3))
+im = ax.imshow(x[0, 0], cmap="RdBu_r")
+frames = []
+for k in range(4):
+    im.set_data(x[k % x.shape[0], k % x.shape[1]])
+    frames.append(figure_to_rgb(fig))
+plt.close(fig)
+
+path = os.path.join(tempfile.mkdtemp(), "pupils.gif")
+size_mb = save_gif(frames, path, fps=4, cmaps=["RdBu_r"])
+print(f"{size_mb:.3f} MB")
+```

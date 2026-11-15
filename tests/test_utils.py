@@ -287,3 +287,108 @@ def test_estimate_psf_sampling_raises_below_nyquist(device):
     from AI4AO.Utils import estimate_psf_sampling
     with pytest.raises(ValueError, match="Nyquist"):
         estimate_psf_sampling(_noisy_psf(1.5, device))
+
+
+# ---------------------------------------------------------------------------
+# jacobian_column
+# ---------------------------------------------------------------------------
+
+def test_jacobian_column_matches_full_jacobian():
+    from AI4AO.Utils import jacobian_column
+    w = torch.randn(3, requires_grad=True)
+    A = torch.randn(4, 3)
+
+    def f(v):
+        return torch.sin(A @ v) * v.sum()
+
+    J = torch.autograd.functional.jacobian(f, w.detach())
+    y = f(w)
+    for k in range(3):
+        assert torch.allclose(jacobian_column(y, w, k), J[:, k], atol=1e-6)
+
+
+def test_jacobian_column_through_wfs_matches_finite_difference(tiny_wfs_params, device):
+    """d(frame)/d(maskShifts[0, 0]) through the Pyramid propagation, vs a central FD."""
+    from AI4AO import PyramidWFS
+    from AI4AO.Utils import jacobian_column
+    wfs = PyramidWFS(tiny_wfs_params(), device)
+    # Off the nominal maskShifts = 1: there the facet boundaries x = +-y pass through
+    # pixel centres, where the max over facets has a kink (one-sided slopes differ), so
+    # a central difference and autograd's subgradient legitimately disagree.
+    with torch.no_grad():
+        wfs.maskShifts += 0.02 * torch.randn_like(wfs.maskShifts)
+    wfs.train()
+    opd = 30e-9 * torch.randn(1, 12, 12, device=device)
+
+    def frame():
+        wfs.BuildMask()
+        return wfs(opd)
+
+    J = jacobian_column(frame(), wfs.maskShifts, 0)
+    h = 1e-3
+    with torch.no_grad():
+        wfs.maskShifts[0, 0] += h; fp = frame()
+        wfs.maskShifts[0, 0] -= 2 * h; fm = frame()
+        wfs.maskShifts[0, 0] += h
+    fd = (fp - fm) / (2 * h)
+    assert J.shape == fd.shape
+    assert (J - fd).norm() / fd.norm() < 1e-2
+
+
+# ---------------------------------------------------------------------------
+# figure_to_rgb / save_gif
+# ---------------------------------------------------------------------------
+
+def _gif_frames(n=5, cmap="RdBu_r"):
+    from AI4AO.Utils import figure_to_rgb
+    fig, ax = plt.subplots(figsize=(2, 1.5), dpi=40)
+    im = ax.imshow(np.zeros((6, 6)), cmap=cmap, vmin=-1, vmax=1)
+    frames = []
+    for k in range(n):
+        im.set_data(np.sin(np.arange(36).reshape(6, 6) / 3 + k))
+        frames.append(figure_to_rgb(fig))
+    plt.close(fig)
+    return frames
+
+
+def test_figure_to_rgb_shape_and_dtype():
+    frames = _gif_frames(1)
+    assert frames[0].shape == (60, 80, 3) and frames[0].dtype == np.uint8
+
+
+@pytest.mark.parametrize("cmaps", [None, ["RdBu_r"]])
+def test_save_gif_writes_frames_white_background_and_durations(tmp_path, cmaps):
+    from PIL import Image
+    from AI4AO.Utils import save_gif
+    frames = _gif_frames(5)
+    path = tmp_path / "anim.gif"
+    mb = save_gif(frames, path, fps=10, colors=64, cmaps=cmaps, hold_first=0.5, hold_last=1.0)
+    assert mb == pytest.approx(path.stat().st_size / 1e6)
+    im = Image.open(path)
+    assert im.n_frames == 5 and im.size == (80, 60)
+    durations = []
+    for k in range(im.n_frames):
+        im.seek(k)
+        durations.append(im.info["duration"])
+        assert im.convert("RGB").getpixel((0, 0)) == (255, 255, 255)   # figure background
+    assert durations == [600, 100, 100, 100, 1100]
+
+
+def test_save_gif_colormap_palette_keeps_colormap_extremes(tmp_path):
+    """The fixed palette holds the colormap's end colours exactly."""
+    import matplotlib
+    from PIL import Image
+    from AI4AO.Utils import save_gif
+    frames = _gif_frames(3)
+    path = tmp_path / "anim.gif"
+    save_gif(frames, path, colors=64, cmaps=["RdBu_r"])
+    palette = np.array(Image.open(path).convert("P").getpalette()[: 3 * 64]).reshape(-1, 3)
+    for t in (0.0, 1.0):
+        rgb = np.round(np.array(matplotlib.colormaps["RdBu_r"](t)[:3]) * 255)
+        assert (np.abs(palette - rgb).sum(axis=1) == 0).any()
+
+
+def test_save_gif_too_many_colormaps_raises(tmp_path):
+    from AI4AO.Utils import save_gif
+    with pytest.raises(ValueError):
+        save_gif(_gif_frames(2), tmp_path / "a.gif", colors=20, cmaps=["RdBu_r", "viridis", "magma", "gray"])

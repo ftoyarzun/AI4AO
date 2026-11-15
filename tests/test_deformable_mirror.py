@@ -377,3 +377,50 @@ def test_load_calibration_converts_legacy_pitch_convention(tiny_wfs_params, tiny
     Nact = tiny_dm_params["Nactuator"]
     expected = dm.mechCoupling ** ((Nact / (Nact - 1)) ** 2)
     assert torch.allclose(legacy.mechCoupling, expected, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# GetActuatorPositions
+# ---------------------------------------------------------------------------
+
+def _peak_centroids(dm):
+    """(x, y) centroid of each influence function above half its maximum, in the
+    same pupil-pixel coordinates as GetActuatorPositions."""
+    IF = dm.IF.detach().abs()
+    w = IF * (IF > 0.5 * IF.amax(dim=(-2, -1), keepdim=True))
+    w = w / w.sum(dim=(-2, -1), keepdim=True)
+    x, y = dm.positions[0, 0], dm.positions[0, 1]
+    return torch.stack(((w * x).sum(dim=(-2, -1)), (w * y).sum(dim=(-2, -1))), dim=-1)
+
+
+@pytest.mark.parametrize("flip_lr,flip_tb", [(False, False), (True, False), (False, True), (True, True)])
+def test_get_actuator_positions_matches_influence_function_centres(tiny_wfs_params, tiny_dm_params, device,
+                                                                   flip_lr, flip_tb):
+    """The positions include anamorphosis, rotation, flips and shift: they sit
+    where MakeZonalModes centres each influence function."""
+    wfs_params = dict(tiny_wfs_params(), Nres=40)
+    dm_params = dict(tiny_dm_params, Nactuator=9, moffatParam=50.0, MechCoupling=0.2,
+                     FlipLeftRight=flip_lr, FlipTopBottom=flip_tb)
+    misreg = dict(rotationAngle=17.0, shiftX=0.03, shiftY=-0.02, anamorphosisAngle=25.0,
+                  tangentialScaling=4.0, radialScaling=-3.0)
+    dm = DeformableMirror(wfs_params, dm_params, device, misreg=misreg)
+    dm.eval()
+    positions = dm.GetActuatorPositions()
+    assert positions.shape == (int(dm.totalAct), 2)
+
+    # interior actuators only: the pupil clips the edge ones
+    interior = positions.norm(dim=-1) < 0.35 * dm.Nres
+    assert interior.sum() >= 9
+    centres = _peak_centroids(dm)
+    assert torch.allclose(positions[interior], centres[interior], atol=0.15)
+
+
+def test_get_actuator_positions_is_differentiable(deformable_mirror):
+    deformable_mirror.train()
+    positions = deformable_mirror.GetActuatorPositions()
+    # weighted sum: the plain sum over the symmetric grid doesn't depend on the rotation
+    weights = torch.arange(positions.numel(), dtype=positions.dtype, device=positions.device)
+    (positions.flatten() * weights).sum().backward()
+    for name in ("_rotationAngle", "_grid_shift", "_radialScaling", "_tangentialScaling"):
+        grad = getattr(deformable_mirror, name).grad
+        assert grad is not None and grad.abs().sum() > 0, name

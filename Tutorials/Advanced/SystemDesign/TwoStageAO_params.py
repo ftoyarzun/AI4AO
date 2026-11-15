@@ -77,6 +77,7 @@ DMParams1 = dict(
         "MechCoupling": 0.36,
         "FlipLeftRight": False,
         "FlipTopBottom": False,
+        "Nmodes": None,  # placeholder, resolved in the notebook from dm1.totalAct (zonal M2C)
     }
 )
 
@@ -89,6 +90,7 @@ DMParams2 = dict(
         "MechCoupling": 0.36,
         "FlipLeftRight": False,
         "FlipTopBottom": False,
+        "Nmodes": None,  # placeholder, resolved in the notebook from dm2.totalAct (zonal M2C)
     }
 )
 

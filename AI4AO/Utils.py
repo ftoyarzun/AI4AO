@@ -1,5 +1,6 @@
 
 import collections
+import os
 import torch # type: ignore[import]
 import numpy as np
 import matplotlib.pyplot as plt
@@ -199,6 +200,119 @@ def estimate_psf_sampling(psf):
     A = torch.stack([torch.ones_like(f), f], dim=1)
     a, b = torch.linalg.lstsq(A, signal[start:stop, None] ** (2 / 3)).solution.flatten()
     return float(-b / a)
+
+
+def jacobian_column(output, parameter, index=0):
+    """
+    Derivative of every element of ``output`` with respect to one scalar entry
+    of ``parameter`` (flat index ``index``), as a tensor shaped like ``output``:
+    e.g. the map d(WFS frame)/d(DM rotation). One column of the Jacobian,
+    computed with two backward passes (the "double-backward trick"): for a
+    dummy ``u``, ``g(u) = J^T u`` is linear in ``u``, so ``dg[index]/du`` is
+    column ``index`` of ``J``. Works through property setters and in-place
+    parameter updates, which ``torch.func.jvp`` doesn't.
+
+    ``output`` must have been computed with grad enabled from ``parameter``.
+    The graph is kept, so several columns can be taken from the same output.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from AI4AO.Utils import jacobian_column
+    >>> w = torch.tensor([2.0, 3.0], requires_grad=True)
+    >>> y = torch.stack([w[0] * w[1], w[0] ** 2, w[1]])
+    >>> jacobian_column(y, w, 0)            # dy/dw0 = (w1, 2 w0, 0)
+    tensor([3., 4., 0.])
+    """
+    u = torch.zeros_like(output, requires_grad=True)
+    (g,) = torch.autograd.grad(output, parameter, grad_outputs=u, create_graph=True, retain_graph=True)
+    (column,) = torch.autograd.grad(g.reshape(-1)[index], u, retain_graph=True)
+    return column
+
+
+def figure_to_rgb(fig):
+    """Render a matplotlib figure to an (H, W, 3) uint8 array, e.g. one frame
+    of an animation for ``save_gif``."""
+    fig.canvas.draw()
+    return np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+
+
+def _gif_palette(frames, colors, cmaps, accents):
+    """A P-mode PIL image holding the shared GIF palette (see save_gif)."""
+    from PIL import Image
+    import matplotlib.colors as mcolors
+    if cmaps:
+        entries = [(255, 255, 255), (0, 0, 0)]
+        entries += [(int(v),) * 3 for v in np.linspace(30, 240, 12)]          # text antialiasing
+        entries += [tuple(int(round(c * 255)) for c in mcolors.to_rgb(a)) for a in accents]
+        per = (colors - len(entries)) // len(cmaps)
+        if per < 2:
+            raise ValueError(f"save_gif: {colors} colours are too few for {len(cmaps)} colormaps")
+        for name in cmaps:
+            cmap = plt.get_cmap(name)
+            entries += [tuple(int(round(c * 255)) for c in cmap(t)[:3]) for t in np.linspace(0, 1, per)]
+        entries += [(255, 255, 255)] * (colors - len(entries))
+        palette = Image.new("P", (1, 1))
+        palette.putpalette([c for rgb in entries[:colors] for c in rgb])
+        return palette
+    # median cut over up to 30 evenly spaced frames; near-white snapped to white
+    sample = frames[:: max(1, len(frames) // 30)]
+    h, w = sample[0].shape[:2]
+    mosaic = Image.fromarray(np.concatenate(sample, axis=0))
+    palette = mosaic.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
+    pal = np.array(palette.getpalette()[: 3 * colors]).reshape(-1, 3)
+    pal[(pal >= 248).all(axis=1)] = 255
+    palette.putpalette(pal.astype(np.uint8).flatten().tolist())
+    return palette
+
+
+def save_gif(frames, path, fps=12, colors=128, cmaps=None, accents=(), hold_first=0.0, hold_last=1.0):
+    """
+    Write RGB frames (a list of (H, W, 3) uint8 arrays, e.g. from
+    ``figure_to_rgb``) as a looping GIF, a lighter alternative to embedding
+    ``FuncAnimation.to_jshtml()`` in a notebook. Returns the file size in MB.
+
+    All frames share one palette of ``colors`` entries, so colours don't flicker:
+
+    - ``cmaps`` given (the matplotlib colormap names drawn in the frames, e.g.
+      ``["RdBu_r", "viridis"]``): a fixed palette of white, black, a grey ramp
+      for text, the ``accents`` colours, and the rest split evenly over the
+      colormaps. Every colormap level stays representable (a median-cut
+      palette drops rare saturated colours) and the files are usually smaller.
+    - ``cmaps=None``: a median-cut palette over sampled frames, with near-white
+      entries snapped to pure white.
+
+    No dithering. ``hold_first``/``hold_last`` add display time (s) to the
+    first/last frame.
+
+    Examples
+    --------
+    >>> import tempfile, os
+    >>> import numpy as np
+    >>> import matplotlib.pyplot as plt
+    >>> from AI4AO.Utils import figure_to_rgb, save_gif
+    >>> fig, ax = plt.subplots(figsize=(2, 2), dpi=50)
+    >>> im = ax.imshow(np.zeros((8, 8)), cmap="viridis", vmin=0, vmax=1)
+    >>> frames = []
+    >>> for k in range(4):
+    ...     im.set_data(np.full((8, 8), k / 3))
+    ...     frames.append(figure_to_rgb(fig))
+    >>> plt.close(fig)
+    >>> path = os.path.join(tempfile.mkdtemp(), "demo.gif")
+    >>> size_mb = save_gif(frames, path, fps=10, cmaps=["viridis"])
+    >>> size_mb < 0.1
+    True
+    """
+    from PIL import Image
+    frames = [np.asarray(f, dtype=np.uint8) for f in frames]
+    palette = _gif_palette(frames, colors, cmaps, accents)
+    images = [Image.fromarray(f).quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
+    durations = [1000.0 / fps] * len(images)
+    durations[0] += 1000 * hold_first
+    durations[-1] += 1000 * hold_last
+    images[0].save(path, save_all=True, append_images=images[1:], loop=0, disposal=1,
+                   duration=[int(round(d)) for d in durations])
+    return os.path.getsize(path) / 1e6
 
 
 def imshow(

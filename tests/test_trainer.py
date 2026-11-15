@@ -502,7 +502,8 @@ def test_rollout_window_and_metrics_match_hand_computation(noisy_twin):
     assert torch.all(res.opd_reconstructed[:3] == 0)
     assert res.opd_reconstructed[3].abs().sum() > 0
 
-    pupil = ds.pupil.bool()
+    pupil = noisy_twin.wfs.pupil.bool()                       # the aperture, obstruction excluded
+    assert (pupil != ds.pupil.bool()).any(), "the test twin needs a central obstruction"
     v = res.residual_opd[3:][..., pupil].double()           # frames int(0.3 n) .. n-1
     assert metrics["nm_rms"] == pytest.approx(float(v.pow(2).mean().sqrt()) * 1e9, rel=1e-9)
     peak0 = noisy_twin.wfs.GetPSF(torch.zeros_like(res.opd[0][:1]), res.pupil[0][:1], 4, PSF_FOV).amax()
