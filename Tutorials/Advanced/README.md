@@ -28,6 +28,7 @@ One fixed instrument (`CNNComparison_params.py`, a modulated Pyramid WFS + 17-ac
 | `TemporalPredictiveReconstructor.ipynb` | Uses the last N frames to predict the correction ahead of loop latency |
 | `UnsupervisedFineTuning.ipynb` | Fine-tunes a pretrained reconstructor from WFS frames alone (physics loss, no ground-truth OPD) |
 | `FrameDenoiser.ipynb` | Denoises raw WFS frames (with optional frame history) before a linear reconstructor |
+| `GradientDescentReconstructor.ipynb` | No training: fits the OPD behind each frame by gradient descent through the frozen twin (`AI4AO.GDReconstructor`), vs the linear reconstructor in and out of its linear range. Uses the `basics/` demo instrument (`../../basics/wfs_params_exp.py`). |
 | `DiagnosingAReconstructor.ipynb` | Looks inside a trained reconstructor CNN with `AI4AO.CNNDiagnostics`: feature maps, gradient flow, saliency, per-mode Jacobians, training-time monitoring, and four diagnostics-driven fixes. Needs `basics/05_TrainingAReconstructor.ipynb` run first, and uses its params file (`../../basics/wfs_params_exp.py`) instead of one of its own, so the weights match. |
 
 ## `SystemDesign/` — multi-sensor and learned-optics systems

@@ -36,6 +36,7 @@ PSFDataset
 :caption: Training and calibration
 
 Trainer
+GDReconstructor
 TwinCalibrator
 LossFunctions
 CNNDiagnostics
