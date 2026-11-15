@@ -168,6 +168,30 @@ class DeformableMirror(nn.Module):
 
         return actuator_positions @ M.T
 
+    def GetActuatorPositions(self):
+        """
+        Actuator centres on the pupil grid, shape (totalAct, 2) as (x, y) =
+        (column, row) offsets in pupil pixels from the pupil centre: where
+        ``MakeZonalModes`` centres each influence function, with the
+        anamorphosis, rotation, flips and shift applied. Differentiable with
+        respect to the geometry parameters.
+
+        Examples
+        --------
+        >>> import torch
+        >>> from mmengine import Config
+        >>> from AI4AO import DeformableMirror
+        >>> p = Config.fromfile("Tutorials/basics/wfs_params_exp.py")
+        >>> dm = DeformableMirror(p.WFSParams, p.DMParams, "cpu")
+        Total number of actuators: 101
+        >>> before = dm.GetActuatorPositions()
+        >>> dm.flip_lr = True                   # mirrors x
+        >>> torch.allclose(dm.GetActuatorPositions(), before * torch.tensor([-1.0, 1.0]))
+        True
+        """
+        positions = self.rotate_coordinates(self.anamorphosis_coordinates(self.actuator_positions))
+        return positions * self.flip_matrix[0, :, 0, 0] + self.grid_shift[0, :, 0, 0]
+
     def _CollapseIfGlobal(self, raw_param, transform):
         # per_actuator_calibration=True: use each actuator's own raw value.
         # per_actuator_calibration=False: use a differentiable mean of the raw
